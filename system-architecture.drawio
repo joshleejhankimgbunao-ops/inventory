@@ -1,0 +1,138 @@
+<mxfile host="app.diagrams.net" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36" version="29.6.0">
+  <diagram id="pos-arch-1" name="System Architecture">
+    <mxGraphModel dx="2020" dy="929" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1920" pageHeight="1080" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontStyle=1;fontSize=24;" value="Proposed System Architecture&#xa;Web-Based Point of Sale and Inventory Management System with Product Recommendation and Quotation" vertex="1">
+          <mxGeometry height="80" width="1200" x="170" y="10" as="geometry" />
+        </mxCell>
+        <mxCell id="usersBox" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#6c8ebf;fontStyle=1;align=center;verticalAlign=top;spacingTop=8;" value="USERS" vertex="1">
+          <mxGeometry height="350" width="240" x="40" y="185" as="geometry" />
+        </mxCell>
+        <mxCell id="superadmin" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;" value="Super Admin" vertex="1">
+          <mxGeometry height="70" width="180" x="70" y="245" as="geometry" />
+        </mxCell>
+        <mxCell id="admin" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;" value="Admin" vertex="1">
+          <mxGeometry height="70" width="180" x="70" y="345" as="geometry" />
+        </mxCell>
+        <mxCell id="cashier" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;" value="Cashier / Staff" vertex="1">
+          <mxGeometry height="70" width="180" x="70" y="445" as="geometry" />
+        </mxCell>
+        <mxCell id="webServer" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#82b366;fontStyle=1;" value="Web Server&#xa;(Cloud / Local Host)" vertex="1">
+          <mxGeometry height="70" width="360" x="590" y="115" as="geometry" />
+        </mxCell>
+        <mxCell id="appBox" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#6c8ebf;fontStyle=1;align=center;verticalAlign=top;spacingTop=8;" value="WEB-BASED APPLICATION (POS SYSTEM)" vertex="1">
+          <mxGeometry height="280" width="860" x="340" y="220" as="geometry" />
+        </mxCell>
+        <mxCell id="m1" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;" value="POS Module&#xa;(Sales &amp; Transactions)" vertex="1">
+          <mxGeometry height="90" width="240" x="390" y="280" as="geometry" />
+        </mxCell>
+        <mxCell id="m2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;" value="Inventory&#xa;Management" vertex="1">
+          <mxGeometry height="90" width="240" x="660" y="280" as="geometry" />
+        </mxCell>
+        <mxCell id="m3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;" value="Product&#xa;Recommendation" vertex="1">
+          <mxGeometry height="90" width="240" x="390" y="390" as="geometry" />
+        </mxCell>
+        <mxCell id="m4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;" value="Quotation&#xa;Module" vertex="1">
+          <mxGeometry height="90" width="240" x="660" y="390" as="geometry" />
+        </mxCell>
+        <mxCell id="m5" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;" value="User&#xa;Management" vertex="1">
+          <mxGeometry height="90" width="240" x="930" y="280" as="geometry" />
+        </mxCell>
+        <mxCell id="m6" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;" value="Reports &amp;&#xa;Analytics" vertex="1">
+          <mxGeometry height="90" width="240" x="930" y="390" as="geometry" />
+        </mxCell>
+        <mxCell id="dbBox" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#82b366;fontStyle=1;align=center;verticalAlign=top;spacingTop=8;" value="DATABASE (MongoDB / Cloud)" vertex="1">
+          <mxGeometry height="380" width="270" x="1275" y="220" as="geometry" />
+        </mxCell>
+        <mxCell id="db1" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;" value="Products" vertex="1">
+          <mxGeometry height="50" width="200" x="1310" y="280" as="geometry" />
+        </mxCell>
+        <mxCell id="db2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;" value="Sales &amp; Transactions" vertex="1">
+          <mxGeometry height="50" width="200" x="1310" y="345" as="geometry" />
+        </mxCell>
+        <mxCell id="db3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;" value="Inventory Records" vertex="1">
+          <mxGeometry height="50" width="200" x="1310" y="410" as="geometry" />
+        </mxCell>
+        <mxCell id="db4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;" value="Users" vertex="1">
+          <mxGeometry height="50" width="200" x="1310" y="475" as="geometry" />
+        </mxCell>
+        <mxCell id="db5" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;" value="Quotations" vertex="1">
+          <mxGeometry height="50" width="200" x="1310" y="540" as="geometry" />
+        </mxCell>
+        <mxCell id="hwBox" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#d6b656;fontStyle=1;align=center;verticalAlign=top;spacingTop=8;" value="Hardware &amp; Devices" vertex="1">
+          <mxGeometry height="150" width="680" x="200" y="570" as="geometry" />
+        </mxCell>
+        <mxCell id="hw1" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;" value="Computers / Tablets /&#xa;POS Terminals" vertex="1">
+          <mxGeometry height="80" width="270" x="250" y="620" as="geometry" />
+        </mxCell>
+        <mxCell id="hw2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;" value="Receipt Printer" vertex="1">
+          <mxGeometry height="80" width="270" x="550" y="620" as="geometry" />
+        </mxCell>
+        <mxCell id="network" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontStyle=1;" value="Network&#xa;Internet / Local Network" vertex="1">
+          <mxGeometry height="120" width="200" x="980" y="590" as="geometry" />
+        </mxCell>
+        <mxCell id="e1" edge="1" parent="1" source="superadmin" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;" target="appBox">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="295" y="280" />
+              <mxPoint x="295" y="380" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e2" edge="1" parent="1" source="admin" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;" target="appBox">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="320" y="380" />
+              <mxPoint x="320" y="380" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e3" edge="1" parent="1" source="cashier" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;" target="appBox">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="295" y="480" />
+              <mxPoint x="295" y="380" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e4" edge="1" parent="1" source="webServer" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;startArrow=block;startFill=1;endArrow=block;endFill=1;" target="appBox">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e5" edge="1" parent="1" source="appBox" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;startArrow=block;startFill=1;endArrow=block;endFill=1;" target="dbBox">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1250" y="360" />
+              <mxPoint x="1250" y="380" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e6" edge="1" parent="1" source="appBox" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;" target="hwBox">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e7" edge="1" parent="1" source="network" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;startArrow=block;startFill=1;endArrow=block;endFill=1;" target="dbBox">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1230" y="650" />
+              <mxPoint x="1230" y="410" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e8" edge="1" parent="1" source="network" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;startArrow=block;startFill=1;endArrow=block;endFill=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;" target="hwBox">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1300" y="730" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e9" edge="1" parent="1" source="network" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;startArrow=block;startFill=1;endArrow=block;endFill=1;" target="webServer">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1240" y="660" />
+              <mxPoint x="1240" y="165" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
