@@ -221,7 +221,7 @@ const Partners = ({ viewOnly = false }) => {
 
     return (
         <div className="h-[calc(100vh-80px)] flex flex-col p-2 gap-2">
-            <div className="bg-white rounded-xl border border-gray-100 shadow-sm flex flex-col h-full relative border-t-8 border-t-[#111827]">
+            <div className="bg-slate-200/50 rounded-xl border border-gray-100 shadow-sm flex flex-col h-full relative border-t-8 border-t-[#111827]">
                 <div className="p-5 pb-0 shrink-0">
                     {/* Header */}
                     <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-6 gap-3">

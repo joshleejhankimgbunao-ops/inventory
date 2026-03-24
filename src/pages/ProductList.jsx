@@ -21,7 +21,7 @@ const ProductList = () => {
 
     // Pagination
     const [currentPage, setCurrentPage] = useState(1);
-    const itemsPerPage = 15;
+    const itemsPerPage = 20;
     
     // Derived Suppliers List for Dropdown
     const suggestedSuppliers = useMemo(() => {
@@ -347,26 +347,28 @@ const ProductList = () => {
     };
 
     return (
-        <div className="h-[calc(100vh-80px)] flex flex-col gap-2 p-2 overflow-auto md:overflow-hidden">
-             
-             {/* Header Section - NEW */}
-             <div className="bg-white dark:bg-gray-800 p-3 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 flex items-center justify-between md:shrink-0">
-                <div className="flex items-center gap-2">
-                    <div className="text-gray-900 dark:text-white">
-                        <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
-                    </div>
+        <div className="h-[calc(100vh-80px)] flex flex-col gap-2 overflow-auto md:overflow-hidden p-2">
 
-                        
-                    <div>
-                        <h1 className="text-[8px] font-black text-gray-900 dark:text-white leading-tight">Product Master List</h1>
-                        <p className="text-gray-500 dark:text-gray-400 text-xs font-medium mt-0.5">Manage catalog, prices, and stock levels</p>
+             {/* Unified Product List Container */}
+             <div className="flex-1 flex flex-col bg-slate-200/50 dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 border-t-8 border-t-[#111827] overflow-hidden p-4 gap-4">
+                 
+                 {/* Header Section */}
+                 <div className="flex items-center justify-between md:shrink-0">
+                    <div className="flex items-center gap-2">
+                        <div className="text-gray-900 dark:text-white">
+                            <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+                        </div>
+
+                        <div>
+                            <h1 className="text-xl font-black text-gray-900 dark:text-white leading-tight">Product Master List</h1>
+                            <p className="text-gray-500 dark:text-gray-400 text-xs font-medium mt-0.5">Manage catalog, prices, and stock levels</p>
+                        </div>
                     </div>
-                </div>
-             </div>
+                 </div>
 
              {/* Header Stats */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-2 md:shrink-0">
-                <div className="bg-white dark:bg-gray-800 p-3 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 flex items-center justify-between transition-colors">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 md:shrink-0">
+                <div className="bg-white dark:bg-gray-900 p-3 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 flex items-center justify-between transition-colors">
                     <div>
                         <p className="text-xs text-gray-500 dark:text-gray-400 font-bold uppercase tracking-wider">Total Products</p>
                         <h2 className="text-xl font-black text-gray-900 dark:text-white">{inventory.filter(i => !i.isArchived).length} <span className="text-xs font-medium text-gray-400">active</span></h2>
@@ -376,7 +378,7 @@ const ProductList = () => {
                     </div>
                 </div>
                 {isAdminOrAbove() && (
-                <div className="bg-white dark:bg-gray-800 p-3 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 flex items-center justify-between transition-colors">
+                <div className="bg-white dark:bg-gray-900 p-3 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 flex items-center justify-between transition-colors">
                     <div>
                         <p className="text-xs text-gray-500 dark:text-gray-400 font-bold uppercase tracking-wider">Total Value</p>
                         <h2 className="text-xl font-black text-gray-900 dark:text-white">₱{inventory.filter(i => !i.isArchived).reduce((acc, item) => acc + (item.price * item.stock), 0).toLocaleString()}</h2>
@@ -386,7 +388,7 @@ const ProductList = () => {
                     </div>
                 </div>
                 )}
-                <div className="bg-white dark:bg-gray-800 p-3 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 flex items-center justify-between transition-colors">
+                <div className="bg-white dark:bg-gray-900 p-3 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 flex items-center justify-between transition-colors">
                     <div>
                         <p className="text-xs text-gray-500 dark:text-gray-400 font-bold uppercase tracking-wider">Categories</p>
                         <h2 className="text-xl font-black text-gray-900 dark:text-white">{categories.length - 1}</h2>
@@ -397,10 +399,10 @@ const ProductList = () => {
                 </div>
             </div>
 
-            {/* Main Content */}
-            <div className="md:flex-1 bg-white dark:bg-gray-800 rounded-xl shadow-md border border-gray-100 dark:border-gray-700 flex flex-col md:overflow-hidden transition-colors">
+            {/* Main Content Area */}
+            <div className="flex-1 flex flex-col md:overflow-hidden transition-colors bg-transparent pt-1">
                 {/* Utilities Bar */}
-                <div className="p-3 border-b border-gray-100 dark:border-gray-700 flex flex-col sm:flex-row justify-between items-center gap-3 bg-gray-50/50 dark:bg-gray-800/50">
+                <div className="px-3 pb-3 flex flex-col sm:flex-row justify-between items-center gap-3 bg-transparent">
                     <div className="flex items-center gap-2 w-full sm:w-auto">
                         <div className="relative w-full sm:w-64 group">
                              <input 
@@ -526,24 +528,22 @@ const ProductList = () => {
                 )}
 
                 {/* Data Table */}
-                <div className="flex-1 md:overflow-auto px-5 pb-5">
+                <div className="flex-1 md:overflow-auto px-3 pb-3">
                     <table className="w-full text-left border-separate border-spacing-0 min-w-[900px]">
                         <thead className="sticky top-0 z-10 shadow-sm">
                             <tr className="bg-gray-900 dark:bg-gray-700 text-white uppercase tracking-wider">
-                                <th className="px-4 py-2 text-[10px] font-bold text-center border border-gray-700 w-[100px]">Code</th>
-                                <th className="px-4 py-2 text-[10px] font-bold text-left border border-gray-700">Product</th>
-                                <th className="px-4 py-2 text-[10px] font-bold text-center border border-gray-700">Color / Variant</th>
-                                <th className="px-4 py-2 text-[10px] font-bold text-center border border-gray-700">Size</th>
-                                <th className="px-4 py-2 text-[10px] font-bold text-center border border-gray-700">Category</th>
-                                <th className="px-4 py-2 text-[10px] font-bold text-center border border-gray-700">Price</th>
-                                <th className="px-4 py-2 text-[10px] font-bold text-center border border-gray-700">Stock</th>
-                                {isAdminOrAbove() && <th className="px-4 py-2 text-[10px] font-bold text-center border border-gray-700 w-[100px]">Actions</th>}
+                                <th className="px-4 py-2 text-[10px] font-bold text-center border border-gray-700 w-[10%]">Code</th>
+                                <th className="px-4 py-2 text-[10px] font-bold text-center border border-gray-700 w-[25%]">Product</th>
+                                <th className="px-4 py-2 text-[10px] font-bold text-center border border-gray-700 w-[20%]">Category</th>
+                                <th className="px-4 py-2 text-[10px] font-bold text-center border border-gray-700 w-[15%]">Price</th>
+                                <th className="px-4 py-2 text-[10px] font-bold text-center border border-gray-700 w-[15%]">Stock</th>
+                                {isAdminOrAbove() && <th className="px-4 py-2 text-[10px] font-bold text-center border border-gray-700 w-[15%]">Actions</th>}
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-50 dark:divide-gray-700">
                             {filteredProducts.length === 0 ? (
                                 <tr>
-                                    <td colSpan={isAdminOrAbove() ? "8" : "7"} className="px-6 py-12 text-center text-gray-400 dark:text-gray-500">
+                                    <td colSpan={isAdminOrAbove() ? "6" : "5"} className="px-6 py-12 text-center text-gray-400 dark:text-gray-500">
                                         <div className="flex flex-col items-center justify-center">
                                             <svg className="w-12 h-12 mb-3 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293H9.414a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 005.586 13H4"></path></svg>
                                             <p className="text-sm font-medium">No products found.</p>
@@ -563,8 +563,8 @@ const ProductList = () => {
                                         </td>
                                         {/* Product (Brand + Name) */}
                                         <td className="px-4 py-2 whitespace-nowrap border border-gray-200 dark:border-gray-700">
-                                            <div className="flex items-center gap-2.5">
-                                                <div className={`h-8 w-8 rounded-lg flex items-center justify-center font-bold text-[10px] shrink-0 border ${
+                                            <div className="flex items-center gap-3">
+                                                <div className={`h-10 w-10 rounded-lg flex items-center justify-center font-bold text-[10px] shrink-0 border ${
                                                     product.isArchived 
                                                     ? 'bg-gray-50 text-gray-300 border-gray-100 dark:bg-gray-800 dark:text-gray-600 dark:border-gray-700' 
                                                     : 'bg-gray-100 text-gray-500 border-gray-200 dark:bg-gray-700 dark:text-gray-400 dark:border-gray-600'
@@ -572,35 +572,38 @@ const ProductList = () => {
                                                     {product.code.substring(0,2)}
                                                 </div>
                                                 <div className="flex flex-col min-w-0">
-                                                    <span className={`text-sm font-bold leading-tight truncate ${product.isArchived ? 'text-gray-400 dark:text-gray-500 line-through' : 'text-gray-900 dark:text-white'}`}>
-                                                        {product.name}
-                                                    </span>
-                                                    {product.brand && (
-                                                        <span className={`text-[10px] font-medium leading-tight truncate ${product.isArchived ? 'text-gray-300 dark:text-gray-600' : 'text-gray-400 dark:text-gray-500'}`}>
-                                                            {product.brand}
+                                                    <div className="flex items-center gap-2">
+                                                        <span className={`text-sm font-bold leading-tight truncate ${product.isArchived ? 'text-gray-400 dark:text-gray-500 line-through' : 'text-gray-900 dark:text-white'}`}>
+                                                            {product.name}
                                                         </span>
+                                                        {product.brand && (
+                                                            <span className={`text-[10px] font-medium leading-tight px-1.5 py-0.5 rounded-md ${product.isArchived ? 'bg-gray-50 text-gray-300 dark:bg-gray-800 dark:text-gray-600' : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'}`}>
+                                                                {product.brand}
+                                                            </span>
+                                                        )}
+                                                        {product.isArchived && <span className="shrink-0 px-1.5 py-0.5 rounded text-[10px] bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400 font-bold uppercase">Archived</span>}
+                                                    </div>
+                                                    {(product.size || product.color) && (
+                                                        <div className="flex items-center gap-2 mt-1.5">
+                                                            {product.size && (
+                                                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium border ${product.isArchived ? 'bg-gray-50 text-gray-400 border-gray-200 dark:bg-gray-800 dark:text-gray-600 dark:border-gray-700' : 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800/30'}`}>
+                                                                    Size: {product.size}
+                                                                </span>
+                                                            )}
+                                                            {product.color && (
+                                                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium border ${product.isArchived ? 'bg-gray-50 text-gray-400 border-gray-200 dark:bg-gray-800 dark:text-gray-600 dark:border-gray-700' : 'bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-900/30 dark:text-purple-400 dark:border-purple-800/30'}`}>
+                                                                    Color: {product.color}
+                                                                </span>
+                                                            )}
+                                                        </div>
                                                     )}
                                                 </div>
-                                                {product.isArchived && <span className="shrink-0 px-1.5 py-0.5 rounded text-[10px] bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400 font-bold uppercase">Archived</span>}
                                             </div>
                                         </td>
-                                        {/* Color / Variant */}
-                                        <td className={`px-4 py-2 whitespace-nowrap text-center border border-gray-200 dark:border-gray-700`}>
-                                            {product.color ? (
-                                                <span className={`text-xs font-semibold px-2 py-0.5 rounded-md ${product.isArchived ? 'bg-gray-50 text-gray-300 dark:bg-gray-800 dark:text-gray-600' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300'}`}>
-                                                    {product.color}
-                                                </span>
-                                            ) : (
-                                                <span className="text-gray-300 dark:text-gray-600 text-xs">—</span>
-                                            )}
-                                        </td>
-                                        {/* Size */}
-                                        <td className={`px-4 py-2 whitespace-nowrap text-xs text-center border border-gray-200 dark:border-gray-700 ${product.isArchived ? 'text-gray-300 dark:text-gray-600' : 'text-gray-600 dark:text-gray-400'}`}>
-                                            {product.size || <span className="text-gray-300 dark:text-gray-600">—</span>}
-                                        </td>
+                                        
                                         {/* Category */}
                                         <td className={`px-4 py-2 whitespace-nowrap text-center border border-gray-200 dark:border-gray-700`}>
-                                            <span className={`px-2 py-1 rounded-md text-[10px] font-semibold ${product.isArchived ? 'bg-gray-50 text-gray-300 dark:bg-gray-800 dark:text-gray-600' : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'}`}>{product.category}</span>
+                                            <span className={`px-2.5 py-1.5 rounded-md text-xs font-semibold ${product.isArchived ? 'bg-gray-50 text-gray-300 dark:bg-gray-800 dark:text-gray-600' : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'}`}>{product.category}</span>
                                         </td>
                                         {/* Price */}
                                         <td className={`px-4 py-2 whitespace-nowrap text-sm font-bold text-center border border-gray-200 dark:border-gray-700 ${product.isArchived ? 'text-gray-300 dark:text-gray-600' : 'text-gray-900 dark:text-white'}`}>
@@ -664,7 +667,7 @@ const ProductList = () => {
                 </div>
 
                 {/* Pagination Controls */}
-                <div className="shrink-0 flex justify-between items-center px-5 py-3 border-t border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50">
+                <div className="shrink-0 flex justify-between items-center pt-3 pb-1 mt-auto border-t border-slate-300 dark:border-gray-700 bg-transparent">
                         <div className="text-xs text-gray-500 dark:text-gray-400 font-medium">
                             Showing <span className="font-bold text-gray-900 dark:text-white">{indexOfFirstItem + 1}</span> - <span className="font-bold text-gray-900 dark:text-white">{Math.min(indexOfLastItem, filteredProducts.length)}</span> of <span className="font-bold text-gray-900 dark:text-white">{filteredProducts.length}</span>
                         </div>
@@ -708,6 +711,7 @@ const ProductList = () => {
                             </button>
                         </div>
                 </div>
+            </div>
             </div>
 
             {/* Modal */}
@@ -909,19 +913,14 @@ const ProductList = () => {
                                         <label className="block text-[10px] font-bold text-gray-500 dark:text-gray-400 mb-1">
                                             {modalMode === 'add' ? 'Initial Stock' : 'Stock Correction'} <span className="text-red-400">*</span>
                                         </label>
-                                        <input 
-                                            type="text"
-                                            inputMode="numeric"
-                                            pattern="\\d*"
+                                        <input
+                                            type="number"
+                                            min="0"
                                             value={formData.stock}
-                                            onChange={e => {
-                                                const v = (e.target.value || '').replace(/\D/g, '');
-                                                setFormData({ ...formData, stock: v });
-                                            }}
-                                            onInvalid={(e) => e.target.setCustomValidity('Please enter an integer stock quantity (e.g., 10).')}
-                                            onInput={(e) => e.target.setCustomValidity('')}
+                                            onChange={e => setFormData({ ...formData, stock: e.target.value })}
                                             className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
                                             placeholder="0"
+                                            required
                                         />
                                         {modalMode === 'edit' && <p className="text-[10px] text-gray-400 mt-0.5">Use Inventory page for daily stock ops.</p>}
                                     </div>

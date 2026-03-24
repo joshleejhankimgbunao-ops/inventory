@@ -713,7 +713,7 @@ const Login = ({ onLogin }) => {
         </div>
       </div>
 
-      {/* Professional Footer */}
+      {/* Footer */}
       <div className="absolute bottom-4 w-full text-center z-0 pointer-events-none">
         <div className="flex flex-col items-center justify-center space-y-1 opacity-60">
              <p className="text-[10px] font-bold text-gray-100 tracking-[0.2em] ">

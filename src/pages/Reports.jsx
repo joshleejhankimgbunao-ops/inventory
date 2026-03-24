@@ -329,7 +329,8 @@ const Reports = () => {
   };
 
   return (
-    <div id="report-container" className="relative h-[calc(100%-0.25rem)] max-h-[calc(100%-0.25rem)] bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mx-1 mt-1 mb-0 border-t-8 border-t-[#111827] p-4">
+        <div className="h-[calc(100vh-80px)] flex flex-col gap-2 overflow-auto md:overflow-hidden p-2">
+    <div id="report-container" className="relative h-full flex flex-col bg-slate-200/50 rounded-2xl shadow-sm border border-gray-100 overflow-hidden border-t-8 border-t-[#111827] p-4">
       <div className="h-full flex flex-col gap-3 overflow-hidden">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 shrink-0">
           <div className="flex items-center gap-2">
@@ -487,12 +488,14 @@ const Reports = () => {
             <div className="relative overflow-hidden bg-white rounded-xl p-3 shadow-sm border-x border-b border-gray-100">
               <div className="absolute top-0 left-0 right-0 h-1.5 bg-linear-to-r from-gray-700 to-black" />
               <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1">Sales Growth</p>
-              <p className="text-xl font-black text-gray-900">
-                {salesGrowthPercent === null
-                  ? 'N/A'
-                  : `${salesGrowthPercent >= 0 ? '+' : ''}${salesGrowthPercent.toFixed(1)}%`}
-              </p>
-              <p className="text-[10px] font-semibold text-gray-400 mt-1">vs previous period</p>
+              <div className="flex items-baseline gap-2">
+                <p className="text-xl font-black text-gray-900">
+                  {salesGrowthPercent === null
+                    ? 'N/A'
+                    : `${salesGrowthPercent >= 0 ? '+' : ''}${salesGrowthPercent.toFixed(1)}%`}
+                </p>
+                <p className="text-[10px] font-semibold text-gray-400">vs prev period</p>
+              </div>
             </div>
           </div>
         )}
@@ -689,6 +692,7 @@ const Reports = () => {
           </div>
         )}
       </div>
+    </div>
     </div>
   );
 };

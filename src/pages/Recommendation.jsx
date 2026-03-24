@@ -57,9 +57,9 @@ const Recommendation = () => {
     }, [inventory, searchTerm, selectedCategory]);
 
     return (
-        <div className="h-full flex flex-col w-full overflow-hidden">
+        <div className="h-full flex flex-col w-full overflow-hidden p-4 gap-2 mb-1 bg-slate-200/50 rounded-2xl shadow-inner border border-slate-300">
             {/* Fixed Header Section */}
-            <div className="p-2 pb-1 shrink-0 space-y-2 bg-gray-50 z-10">
+            <div className="shrink-0 space-y-2 z-10">
                 <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-2">
                     <div className="flex items-center gap-2">
                         <div>

@@ -847,7 +847,7 @@ const Dashboard = ({ onLogout }) => {
         {/* Sidebar - Responsive */}
         <aside 
           className={`
-            fixed top-16 bottom-0 left-0 z-40 bg-white border-r border-gray-100 flex flex-col shadow-xl transition-all duration-300 ease-in-out
+            fixed top-16 bottom-0 left-0 z-40 bg-[#111827] border-r border-gray-800 flex flex-col shadow-xl transition-all duration-300 ease-in-out
             md:translate-x-0 
             ${isMobileMenuOpen ? 'translate-x-0 w-56' : '-translate-x-full w-56'} 
             ${isSidebarHovered ? 'md:w-56' : 'md:w-16'}
@@ -867,7 +867,7 @@ const Dashboard = ({ onLogout }) => {
                  return (
                     <React.Fragment key={item.name}>
                         {showHeader && (isSidebarHovered || isMobileMenuOpen) && (
-                            <li className="px-3 py-2 mt-6 first:mt-2 text-xs font-extrabold text-[#111827]/60 uppercase tracking-widest">
+                            <li className="px-3 py-2 mt-6 first:mt-2 text-xs font-semibold text-gray-500 uppercase tracking-widest">
                                 {item.category}
                             </li>
                         )}
@@ -879,12 +879,12 @@ const Dashboard = ({ onLogout }) => {
                             }}
                             className={`group w-full flex items-center ${(isSidebarHovered || isMobileMenuOpen) ? 'space-x-3 px-3' : 'justify-center px-0'} py-2 rounded-lg transition-all duration-300 ease-out text-sm outline-none border border-transparent ${
                             isActive
-                                ? 'font-semibold bg-[#111827] text-white shadow-lg shadow-gray-900/30 transform scale-[1.02]' 
-                                : 'font-medium text-gray-500 hover:bg-gray-100 hover:border-gray-200 hover:text-gray-800 active:scale-95'
+                                ? 'font-semibold bg-white text-gray-900 shadow-lg shadow-black/20 transform scale-[1.02]' 
+                                : 'font-medium text-gray-400 hover:bg-gray-800 hover:border-gray-700 hover:text-white active:scale-95'
                             }`}
                             title={(!isSidebarHovered && !isMobileMenuOpen) ? item.name : ''}
                         >
-                            <span className={`transition-all duration-300 shrink-0 ${isActive ? 'text-white' : 'text-gray-600 group-hover:text-gray-900 group-hover:scale-110'}`}>
+                            <span className={`transition-all duration-300 shrink-0 ${isActive ? 'text-gray-900' : 'text-gray-400 group-hover:text-white group-hover:scale-110'}`}>
                             {item.icon}
                             </span>
                             <span className={`whitespace-nowrap transition-all duration-300 transform ${(isSidebarHovered || isMobileMenuOpen) ? 'opacity-100 translate-x-0 w-auto' : 'opacity-0 -translate-x-10 w-0 overflow-hidden hidden md:block'} ${(!isActive) ? 'group-hover:translate-x-1' : ''}`}>
@@ -898,10 +898,10 @@ const Dashboard = ({ onLogout }) => {
             </ul>
           </nav>
 
-          <div className="p-3 border-t border-gray-100 bg-gray-50/50">
+          <div className="p-3 border-t border-gray-800 bg-[#111827]">
              <button
                onClick={handleLogoutClick}
-               className={`w-full flex items-center ${(isSidebarHovered || isMobileMenuOpen) ? 'space-x-3 px-3' : 'justify-center px-0'} py-2 rounded-lg text-sm font-bold text-gray-600 hover:bg-red-50 hover:text-red-600 transition-colors`}
+               className={`w-full flex items-center ${(isSidebarHovered || isMobileMenuOpen) ? 'space-x-3 px-3' : 'justify-center px-0'} py-2 rounded-lg text-sm font-bold text-gray-400 hover:bg-red-500/10 hover:text-red-400 transition-colors`}
                title={(!isSidebarHovered && !isMobileMenuOpen) ? "Sign Out" : ""}
              >
                <svg className="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>

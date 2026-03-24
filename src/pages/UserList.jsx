@@ -215,31 +215,33 @@ const UserList = () => {
     };
 
     return (
-        <div className="h-[calc(100vh-80px)] flex flex-col gap-2 p-2 overflow-auto md:overflow-hidden">
-            
-            {/* Header Area */}
-            <div className="bg-white dark:bg-gray-800 p-5 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 flex items-center justify-between md:shrink-0">
-                <div className="flex items-center gap-2">
-                    <div className="text-gray-900 dark:text-white">
-                        <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
-                    </div>
-                    <div>
-                        <h1 className="text-[8px] font-black text-gray-900 dark:text-white leading-tight">User Management</h1>
-                        <p className="text-gray-500 dark:text-gray-400 text-xs font-medium mt-0.5">Manage system access and roles</p>
-                    </div>
-                </div>
-                <div className="hidden md:block">
-                     <span className="px-3 py-1 bg-gray-100 dark:bg-gray-700 rounded-full text-xs font-bold text-gray-600 dark:text-gray-300">
-                        Total Users: {users.length}
-                     </span>
-                </div>
-            </div>
+        <div className="h-[calc(100vh-80px)] flex flex-col gap-2 overflow-auto md:overflow-hidden p-2">
 
-            {/* Main Content */}
-            <div className="md:flex-1 bg-white dark:bg-gray-800 rounded-xl shadow-md border border-gray-100 dark:border-gray-700 flex flex-col md:overflow-hidden transition-colors">
+            {/* Unified User List Container */}
+            <div className="flex-1 flex flex-col bg-slate-200/50 dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 border-t-8 border-t-[#111827] overflow-hidden">
                 
-                {/* Toolbar */}
-                <div className="p-4 border-b border-gray-100 dark:border-gray-700 flex flex-col sm:flex-row justify-between items-center gap-4 bg-gray-50/50 dark:bg-gray-800/50">
+                {/* Header Area */}
+                <div className="p-4 sm:p-5 flex items-center justify-between md:shrink-0">
+                    <div className="flex items-center gap-2">
+                        <div className="text-gray-900 dark:text-white">
+                            <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
+                        </div>
+                        <div>
+                            <h1 className="text-xl font-black text-gray-900 dark:text-white leading-tight">User Management</h1>
+                            <p className="text-gray-500 dark:text-gray-400 text-xs font-medium mt-0.5">Manage system access and roles</p>
+                        </div>
+                    </div>
+                    <div className="hidden md:block">
+                         <span className="px-3 py-1 bg-white dark:bg-gray-700 shadow-sm border border-gray-200 rounded-full text-xs font-bold text-gray-600 dark:text-gray-300">
+                            Total Users: {users.length}
+                         </span>
+                    </div>
+                </div>
+
+                {/* Main Content Area */}
+                <div className="flex-1 flex flex-col md:overflow-hidden transition-colors bg-transparent pt-3">
+                    {/* Toolbar */}
+                    <div className="px-5 pb-4 flex flex-col sm:flex-row justify-between items-center gap-4 bg-transparent">
                     <div className="relative w-full sm:w-64 group">
                         <input 
                             type="text" 
@@ -386,7 +388,7 @@ const UserList = () => {
                 </div>
 
                 {/* Pagination Controls */}
-                <div className="shrink-0 flex justify-between items-center px-5 py-3 border-t border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50">
+                <div className="shrink-0 flex justify-between items-center px-5 py-3 border-t border-slate-300 dark:border-gray-700 bg-transparent">
                         <div className="text-xs text-gray-500 dark:text-gray-400 font-medium">
                             Showing <span className="font-bold text-gray-900 dark:text-white">{filteredUsers.length === 0 ? 0 : indexOfFirstItem + 1}</span> to <span className="font-bold text-gray-900 dark:text-white">{Math.min(indexOfLastItem, filteredUsers.length)}</span> of <span className="font-bold text-gray-900 dark:text-white">{filteredUsers.length}</span> results
                         </div>
@@ -430,6 +432,7 @@ const UserList = () => {
                             </button>
                         </div>
                 </div>
+            </div>
             </div>
 
             {/* Modal */}

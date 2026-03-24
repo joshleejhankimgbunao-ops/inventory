@@ -139,7 +139,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
     }, []);
 
     return (
-        <div className="flex flex-col p-2 gap-2 h-full overflow-hidden mb-1">
+        <div className="flex flex-col p-4 gap-2 h-full overflow-hidden mb-1 bg-slate-200/50 rounded-2xl shadow-inner border border-slate-300">
             {/* Header Section */}
             <div className="flex items-center justify-between mb-2 shrink-0">
                 <div className="flex items-center gap-2">
@@ -283,7 +283,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                             <StatCard title="Orders" value={selectedDateOrders.toString()} icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path></svg>} color="amber" onClick={() => onNavigate && onNavigate('History Logs')} titleClassName="text-sm" valueClassName="text-lg" />
 
                             <StatCard
-                                title="Total Revenue"
+                                title="Total Inventory Value"
                                 value={formatMoney(totalInventoryValue)}
                                 icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8c-4.418 0-8 1.79-8 4v4h16v-4c0-2.21-3.582-4-8-4z"/></svg>}
                                 color="indigo"

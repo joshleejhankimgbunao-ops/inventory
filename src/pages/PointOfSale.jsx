@@ -580,7 +580,7 @@ const PointOfSale = () => {
             )}
 
             {/* Left Side: Product Grid */}
-            <div className="min-h-[400px] md:min-h-0 flex-1 bg-white rounded-xl shadow-sm border border-gray-100 flex flex-col overflow-hidden border-t-8 border-t-[#111827]">
+            <div className="min-h-[400px] md:min-h-0 flex-1 bg-slate-200/50 rounded-xl shadow-sm border border-gray-100 flex flex-col overflow-hidden border-t-8 border-t-[#111827]">
                 {/* Header */}
                 <div className="p-5 pb-0 flex items-center gap-2 shrink-0">
                     <div>
@@ -589,13 +589,13 @@ const PointOfSale = () => {
                         </svg>
                     </div>
                     <div>
-                        <h1 className="text-[8px] font-black text-gray-900 leading-tight">Point of Sale</h1>
+                        <h1 className="text-xl font-black text-gray-900 leading-tight">Point of Sale</h1>
                         <p className="text-gray-500 text-xs mt-1">Process transactions and manage orders</p>
                     </div>
                 </div>
                 
                 {/* Search and Filter Header */}
-                <div className="px-5 pb-5 pt-5 border-b border-gray-100 bg-white z-10 shrink-0">
+                <div className="px-5 pb-5 pt-5 border-b border-gray-200 bg-transparent z-10 shrink-0">
                     <div className="flex gap-3 mb-0">
                         <div className="relative w-full sm:w-64 group">
                             <input
@@ -624,10 +624,10 @@ const PointOfSale = () => {
                 </div>
 
                 {/* Product List */}
-                <div className="flex-1 overflow-y-auto p-4 bg-gray-50/50">
+                <div className="flex-1 overflow-y-auto p-4 bg-transparent">
                     {filteredProducts.length === 0 ? (
                         <div className="flex flex-col items-center justify-center h-full">
-                            <div className="flex flex-col items-center justify-center text-gray-500 border-2 border-dashed border-gray-300 rounded-xl p-8 bg-gray-50/50">
+                            <div className="flex flex-col items-center justify-center text-gray-500 border-2 border-dashed border-gray-300 rounded-xl p-8 bg-transparent">
                                 <div className="bg-white p-4 rounded-full mb-4 shadow-sm ring-1 ring-gray-200">
                                     <svg className="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293H9.414a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 005.586 13H4"></path>
@@ -752,8 +752,8 @@ const PointOfSale = () => {
             </div>
 
             {/* Right Side: Cart / Order Summary */}
-            <div className="w-full md:w-80 bg-white rounded-xl shadow-xl border border-gray-100 flex flex-col min-h-[300px] md:h-full z-20">
-                <div className="p-3 border-b border-gray-100 flex justify-between items-center bg-[#111827] rounded-t-xl shrink-0">
+            <div className="w-full md:w-80 bg-slate-200/50 rounded-2xl shadow-inner border border-slate-300 flex flex-col min-h-[300px] md:h-full z-20">
+                <div className="p-3 border-b border-gray-100 flex justify-between items-center bg-[#111827] rounded-t-2xl shrink-0">
                     <div className="flex items-center gap-2">
                         <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"></path></svg>
                         <h3 className="font-semibold text-lg text-white">Current Order</h3>
@@ -823,8 +823,8 @@ const PointOfSale = () => {
                     )}
                 </div>
 
-                <div className="p-3 bg-gray-50/50 backdrop-blur-sm border-t border-gray-200 rounded-b-xl shrink-0 z-30">
-                    <div className="space-y-2 mb-3">
+                <div className="p-3 bg-white border-t border-slate-300 rounded-b-2xl shrink-0 z-30">
+                    <div className="space-y-2 mb-3 bg-gray-50/50 p-2 rounded-lg border border-gray-100">
                         {/* Cash & Change Inputs */}
                          <div className="flex justify-between items-center text-sm text-gray-600 font-bold">
                             <span>Cash Tendered</span>

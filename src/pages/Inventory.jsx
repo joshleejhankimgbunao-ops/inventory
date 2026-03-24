@@ -179,8 +179,8 @@ const Inventory = () => {
 
     return (
         <div className="h-[calc(100vh-80px)] flex flex-col overflow-auto md:overflow-hidden p-2 gap-2">
-            <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-100 dark:border-gray-700 shadow-sm flex flex-col md:h-full relative border-t-8 border-t-[#111827] dark:border-t-gray-600 transition-colors">
-            
+            <div className="bg-slate-200/50 dark:bg-gray-800 rounded-xl border border-gray-100 dark:border-gray-700 shadow-sm flex flex-col md:h-full relative border-t-8 border-t-[#111827] dark:border-t-gray-600 transition-colors">
+
             {/* Header Area */}
             <div className="p-3 pb-0 md:shrink-0">
                 <div className="flex items-center gap-2 mb-4">
@@ -516,7 +516,7 @@ const Inventory = () => {
                                 className="w-full py-3 rounded-xl font-bold uppercase tracking-widest text-white shadow-lg transition-transform transform hover:-translate-y-0.5 mt-2"
                                 style={{ backgroundColor: '#111827' }}
                             >
-                                Confirm {modalAction === 'IN' ? 'Receipt' : 'Removal'}
+                                Confirm {modalAction === 'IN' ? 'Stock' : 'Removal'}
                             </button>
                         </form>
                     </div>
