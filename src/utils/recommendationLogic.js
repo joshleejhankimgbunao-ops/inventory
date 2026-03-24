@@ -1,38 +1,34 @@
-export const getAlternatives = (targetItem, inventory) => {
-    if (!targetItem || !inventory) return [];
-    
+// --- Internal Scoring Helper ---
+const _getSystemSuggestions = (targetItem, inventory) => {
     return inventory.filter(item => {
-        // 1. Must be different from target
+        // Must be different
         if (item.code === targetItem.code) return false;
-        // 1.5 Exclude items explicitly removed from alternatives
-        if (item.excludedFromAlternatives) return false;
         
-        // 2. Must have stock
+        // Exclusions/Manuals are handled by caller if needed
+
+        // Must have stock
         if (item.stock === 0) return false;
 
-        // 3. Category Match Priority
+        // Matching Logic
         const sameCategory = item.category === targetItem.category;
         
-        // 4. Name Match (e.g., both "Plywood")
-        // Split name to find keywords, safe check for empty name
         const targetName = targetItem.name || '';
         const itemName = item.name || '';
+        // Look for similar keyword in name (first or second word)
         const keyword = targetName.split(' ')[1] || targetName.split(' ')[0] || '';
-        const similarName = itemName.toLowerCase().includes(keyword.toLowerCase());
+        // Skip keyword matching if keyword is too short or common
+        const hasKeyword = keyword && keyword.length > 2;
+        const similarName = hasKeyword && itemName.toLowerCase().includes(keyword.toLowerCase());
         
-        // 5. Size Match
         const sameSize = item.size === targetItem.size;
 
-        // Broaden matching: include items that match by category OR name OR size
         return sameCategory || similarName || sameSize;
     }).sort((a, b) => {
-        // Scoring Logic for Better Recommendations
         let scoreA = 0;
         let scoreB = 0;
 
         if (a.category === targetItem.category) scoreA += 5;
         if (a.size === targetItem.size) scoreA += 3;
-        // Closer price gets higher score
         scoreA -= Math.abs(a.price - targetItem.price) / 100;
 
         if (b.category === targetItem.category) scoreB += 5;
@@ -40,7 +36,33 @@ export const getAlternatives = (targetItem, inventory) => {
         scoreB -= Math.abs(b.price - targetItem.price) / 100;
 
         return scoreB - scoreA;
-    }).slice(0, 3); // Get top 3 alternatives
+    });
+};
+
+export const getAlternatives = (targetItem, inventory) => {
+    if (!targetItem || !inventory) return [];
+    
+    const manualCodes = targetItem.manualAlternatives || [];
+    const excludedCodes = targetItem.excludedAlternatives || [];
+
+    // 1. Get explicitly manually added alternatives
+    const manualAlternatives = inventory.filter(item => manualCodes.includes(item.code));
+
+    // 2. Get AI suggestions (filtered for exclusions/duplicates)
+    const suggestions = _getSystemSuggestions(targetItem, inventory).filter(item => {
+        if (excludedCodes.includes(item.code)) return false;
+        if (manualCodes.includes(item.code)) return false; // Already manually added
+        return true;
+    }).slice(0, 3); // Limit suggestions
+
+    return [...manualAlternatives, ...suggestions];
+};
+
+// Returns raw top suggestions without filtering exclusions (for UI flagging)
+export const getRawSystemRecommendations = (targetItem, inventory) => {
+    if (!targetItem || !inventory) return [];
+    // Return top 5 potential recommendations
+    return _getSystemSuggestions(targetItem, inventory).slice(0, 5);
 };
 
 // --- Helper Functions for Stock Logic ---

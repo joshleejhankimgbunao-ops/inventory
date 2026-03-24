@@ -13,7 +13,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
 
     // helper for currency display (show or mask based on toggle)
     const formatMoney = (amount) => {
-        if (!showFinancials) return '****';
+        if (!showFinancials) return '₱ ••••••';
         return `₱ ${amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
     };
 
@@ -139,28 +139,27 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
     }, []);
 
     return (
-        <div className="flex flex-col p-4 gap-2 h-full overflow-hidden mb-1 bg-slate-200/50 rounded-2xl shadow-inner border border-slate-300">
+        <div className="flex flex-col p-4 gap-2 h-auto md:h-full md:overflow-hidden mb-1 bg-slate-200/50 rounded-2xl shadow-inner border border-slate-300">
             {/* Header Section */}
-            <div className="flex items-center justify-between mb-2 shrink-0">
+            <div className="flex flex-col md:flex-row md:items-center justify-between mb-4 shrink-0 gap-4 md:gap-0">
                 <div className="flex items-center gap-2">
-                    <div>
-                        <svg className="w-7 h-7 text-gray-900" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path></svg>
+                    <div className="shrink-0 hidden sm:block">
+                        <svg className="w-10 h-10 md:w-7 md:h-7 text-gray-900" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path></svg>
                     </div>
                     <div>
-                        <h1 className="text-[8px] font-black text-gray-900 dark:text-white leading-tight">Dashboard Overview</h1>
+                        <h1 className="text-xl md:text-[8px] font-black text-gray-900 dark:text-white leading-tight">Dashboard Overview</h1>
                         <p className="text-gray-500 font-medium text-xs mt-1">Welcome Back, {currentUserName}!</p>
                     </div>
                 </div>
-                <div className="flex items-center gap-2">
-                    <div className="relative">
+                <div className="flex flex-wrap items-center gap-2">
+                    <div className="relative z-20">
                         <select
                             value={dateRange}
                             onChange={(e) => setDateRange(e.target.value)}
-                            className="px-3 py-1.5 rounded-lg text-xs font-medium transition-all hover:opacity-90 border-none outline-none cursor-pointer appearance-none pr-8"
+                            className="appearance-none px-4 py-2 rounded-lg text-xs font-bold transition-all hover:opacity-90 cursor-pointer pr-10 border border-gray-700 shadow-md"
                             style={{
                                 backgroundColor: '#111827',
-                                color: '#ffffff',
-                                boxShadow: '0 6px 10px -3px rgba(0, 0, 0, 0.18)'
+                                color: '#ffffff'
                             }}
                         >
                             <option value="today">Today</option>
@@ -170,7 +169,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                             <option value="specific_date">Select Date</option>
                             <option value="custom">Custom Range</option>
                         </select>
-                        <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none">
+                        <div className="absolute inset-y-0 right-0 flex items-center px-3 pointer-events-none">
                             <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
                             </svg>
@@ -178,36 +177,36 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                     </div>
 
                     {dateRange === 'custom' && (
-                        <div className="flex items-center gap-2 bg-gray-50 p-1.5 rounded-lg border border-gray-200 ml-2">
+                        <div className="flex items-center gap-2 bg-white p-1 rounded-lg border border-gray-300 shadow-sm ml-0 sm:ml-2">
                             <input
                                 type="date"
                                 value={customStartDate}
                                 max={new Date().toISOString().split('T')[0]}
                                 onChange={(e) => setCustomStartDate(e.target.value)}
-                                style={{ colorScheme: 'dark' }}
-                                className="px-2 py-1.5 rounded-lg border border-gray-900 text-xs font-bold text-white bg-gray-900 focus:ring-2 focus:ring-gray-200 outline-none cursor-pointer"
+                                style={{ colorScheme: 'light' }}
+                                className="px-2 py-1.5 rounded-md border border-gray-300 text-xs font-bold text-gray-900 bg-white focus:ring-2 focus:ring-gray-900 outline-none cursor-pointer"
                             />
-                            <span className="text-gray-400 text-xs">to</span>
+                            <span className="text-gray-500 text-xs font-bold">to</span>
                             <input
                                 type="date"
                                 value={customEndDate}
                                 max={new Date().toISOString().split('T')[0]}
                                 onChange={(e) => setCustomEndDate(e.target.value)}
-                                style={{ colorScheme: 'dark' }}
-                                className="px-2 py-1.5 rounded-lg border border-gray-900 text-xs font-bold text-white bg-gray-900 focus:ring-2 focus:ring-gray-200 outline-none cursor-pointer"
+                                style={{ colorScheme: 'light' }}
+                                className="px-2 py-1.5 rounded-md border border-gray-300 text-xs font-bold text-gray-900 bg-white focus:ring-2 focus:ring-gray-900 outline-none cursor-pointer"
                             />
                         </div>
                     )}
 
                     {dateRange === 'specific_date' && (
-                        <div className="flex items-center gap-2 bg-gray-50 p-1.5 rounded-lg border border-gray-200 ml-2">
+                        <div className="flex items-center gap-2 bg-white p-1 rounded-lg border border-gray-300 shadow-sm ml-0 sm:ml-2">
                             <input
                                 type="date"
                                 value={specificDate}
                                 max={new Date().toISOString().split('T')[0]}
                                 onChange={(e) => setSpecificDate(e.target.value)}
-                                style={{ colorScheme: 'dark' }}
-                                className="px-2 py-1.5 rounded-lg border border-gray-900 text-xs font-bold text-white bg-gray-900 focus:ring-2 focus:ring-gray-200 outline-none cursor-pointer"
+                                style={{ colorScheme: 'light' }}
+                                className="px-2 py-1.5 rounded-md border border-gray-300 text-xs font-bold text-gray-900 bg-white focus:ring-2 focus:ring-gray-900 outline-none cursor-pointer"
                             />
                         </div>
                     )}
@@ -215,7 +214,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                     {isAdminOrAbove() && (
                     <button 
                         onClick={() => setShowFinancials(!showFinancials)}
-                        className="p-1.5 rounded-lg bg-white border border-gray-200 text-gray-500 hover:text-gray-900 hover:bg-gray-50 transition-all shadow-am"
+                        className="p-2 rounded-lg bg-white border-2 border-gray-200 text-gray-600 hover:text-gray-900 hover:bg-gray-50 transition-all shadow-sm"
                         title={showFinancials ? "Hide Financial Values" : "Show Financial Values"}
                     >
                         {showFinancials ? (
@@ -427,18 +426,33 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                                 <h3 className="text-base font-black text-gray-900 uppercase tracking-wide">{showPieAnalytics ? 'Top-Selling Products' : 'Sales Analytics'}</h3>
                             </div>
                             {isSuperAdminUser && (
-                                <div className="flex items-center gap-1 rounded-lg border border-gray-200 p-1 bg-gray-50">
+                                <div className="flex p-0.5 bg-gray-100/80 rounded-lg border border-gray-200/60 shadow-inner">
                                     <button
                                         onClick={() => setSuperAdminAnalyticsView('sales')}
-                                        className={`px-2 py-1 text-[10px] font-bold rounded-md transition-colors ${superAdminAnalyticsView === 'sales' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-100'}`}
+                                        className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-wide transition-all duration-300 ease-out ${
+                                            superAdminAnalyticsView === 'sales' 
+                                                ? 'bg-white text-gray-900 shadow-sm ring-1 ring-gray-200' 
+                                                : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200/50'
+                                        }`}
                                     >
-                                        SALES
+                                        <svg className={`w-3.5 h-3.5 transition-transform duration-300 ${superAdminAnalyticsView === 'sales' ? 'scale-110' : 'scale-100'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" />
+                                        </svg>
+                                        Trends
                                     </button>
                                     <button
                                         onClick={() => setSuperAdminAnalyticsView('pie')}
-                                        className={`px-2 py-1 text-[10px] font-bold rounded-md transition-colors ${superAdminAnalyticsView === 'pie' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-100'}`}
+                                        className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-wide transition-all duration-300 ease-out ${
+                                            superAdminAnalyticsView === 'pie' 
+                                                ? 'bg-white text-gray-900 shadow-sm ring-1 ring-gray-200' 
+                                                : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200/50'
+                                        }`}
                                     >
-                                        PIE
+                                        <svg className={`w-3.5 h-3.5 transition-transform duration-300 ${superAdminAnalyticsView === 'pie' ? 'scale-110' : 'scale-100'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M11 3.055A9.001 9.001 0 1020.945 13H11V3.055z" />
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M20.488 9H15V3.512A9.025 9.025 0 0120.488 9z" />
+                                        </svg>
+                                        Mix
                                     </button>
                                 </div>
                             )}

@@ -178,13 +178,13 @@ const Inventory = () => {
     };
 
     return (
-        <div className="h-[calc(100vh-80px)] flex flex-col overflow-auto md:overflow-hidden p-2 gap-2">
-            <div className="bg-slate-200/50 dark:bg-gray-800 rounded-xl border border-gray-100 dark:border-gray-700 shadow-sm flex flex-col md:h-full relative border-t-8 border-t-[#111827] dark:border-t-gray-600 transition-colors">
+        <div className="h-auto md:h-[calc(100vh-80px)] flex flex-col gap-2 md:overflow-hidden p-2">
+            <div className="bg-slate-200/50 dark:bg-gray-800 rounded-xl border border-gray-100 dark:border-gray-700 shadow-sm flex flex-col md:h-full md:overflow-hidden relative border-t-8 border-t-[#111827] dark:border-t-gray-600 transition-colors">
 
             {/* Header Area */}
             <div className="p-3 pb-0 md:shrink-0">
                 <div className="flex items-center gap-2 mb-4">
-                    <div>
+                    <div className="hidden sm:block">
                         <svg className="w-6 h-6 text-gray-900 dark:text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
                         </svg>
@@ -319,7 +319,7 @@ const Inventory = () => {
             </div>
 
             {/* Inventory Table */}
-            <div className="flex-1 md:overflow-auto px-4 pb-4">
+            <div className="flex-1 overflow-x-auto md:overflow-y-auto px-4 pb-4">
                 <table className="w-full text-left border-separate border-spacing-0 table-fixed min-w-[700px]">
                     <thead className="sticky top-0 z-10 shadow-sm">
                         <tr className="bg-gray-900 dark:bg-gray-700 text-white uppercase tracking-wider">

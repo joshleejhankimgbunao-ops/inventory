@@ -368,6 +368,19 @@ const Profile = () => {
                 localStorage.setItem('users', JSON.stringify(cleaned));
             }
 
+            // Check for name change involving historical data
+            let oldCashierName = '';
+            try {
+                if (savedCashier) {
+                    const sc = JSON.parse(savedCashier);
+                    oldCashierName = sc.adminDisplayName;
+                }
+            } catch (e) {}
+
+            if (oldCashierName && oldCashierName !== profileData.adminDisplayName) {
+                renameUserReferences(oldCashierName, profileData.adminDisplayName);
+            }
+
             // Also update Auto Print only
             handleSaveInternal({ ...settings, autoPrintReceipts: autoPrint });
 
@@ -396,6 +409,11 @@ const Profile = () => {
             // update user record in localStorage (include username change!)
             const users = JSON.parse(localStorage.getItem('users') || '[]');
             const username = sessionStorage.getItem('userName');
+            
+            if (username && username !== profileData.adminDisplayName) {
+                renameUserReferences(username, profileData.adminDisplayName);
+            }
+
             const updated = users.map(u => {
                 if (u.name === username || u.username === username) {
                     return {
@@ -609,7 +627,7 @@ const Profile = () => {
             
             {/* Header */}
             <div className="mb-8 flex items-center gap-4">
-                <div className="bg-gray-900 text-white p-3 rounded-2xl shadow-lg">
+                <div className="bg-gray-900 text-white p-3 rounded-2xl shadow-lg hidden sm:block">
                     <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
                 </div>
                 <div>

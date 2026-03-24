@@ -9,7 +9,7 @@ const PASSWORD_RULE = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{8,}$/;
 
 const UserList = () => {
     const { currentUserName } = useAuth();
-    const { logActivity } = useInventory();
+    const { logActivity, renameUserReferences } = useInventory();
 
     // Mock Data (with LocalStorage Persistence)
     const [users, setUsers] = useState(() => {
@@ -179,6 +179,11 @@ const UserList = () => {
         } else {
             if (!isFormModified) return;
 
+            // Check if name changed and update references
+            if (selectedUser.name !== formData.name) {
+                renameUserReferences(selectedUser.name, formData.name);
+            }
+
             setUsers(users.map(u => u.id === selectedUser.id ? { ...u, ...formData } : u));
             logActivity(currentUserName, 'Updated User', `Updated user: ${formData.name}`);
             showToast('User Updated', `${formData.name}'s profile has been updated.`, 'success', 'user-action');
@@ -215,26 +220,21 @@ const UserList = () => {
     };
 
     return (
-        <div className="h-[calc(100vh-80px)] flex flex-col gap-2 overflow-auto md:overflow-hidden p-2">
+        <div className="h-auto md:h-[calc(100vh-80px)] flex flex-col gap-2 md:overflow-hidden p-2">
 
             {/* Unified User List Container */}
-            <div className="flex-1 flex flex-col bg-slate-200/50 dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 border-t-8 border-t-[#111827] overflow-hidden">
+            <div className="flex-1 flex flex-col bg-slate-200/50 dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 border-t-8 border-t-[#111827] md:overflow-hidden">
                 
                 {/* Header Area */}
-                <div className="p-4 sm:p-5 flex items-center justify-between md:shrink-0">
+                <div className="relative z-20 p-4 sm:p-5 flex items-center justify-between md:shrink-0">
                     <div className="flex items-center gap-2">
-                        <div className="text-gray-900 dark:text-white">
+                        <div className="text-gray-900 dark:text-white hidden sm:block">
                             <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
                         </div>
                         <div>
                             <h1 className="text-xl font-black text-gray-900 dark:text-white leading-tight">User Management</h1>
                             <p className="text-gray-500 dark:text-gray-400 text-xs font-medium mt-0.5">Manage system access and roles</p>
                         </div>
-                    </div>
-                    <div className="hidden md:block">
-                         <span className="px-3 py-1 bg-white dark:bg-gray-700 shadow-sm border border-gray-200 rounded-full text-xs font-bold text-gray-600 dark:text-gray-300">
-                            Total Users: {users.length}
-                         </span>
                     </div>
                 </div>
 
@@ -266,9 +266,9 @@ const UserList = () => {
                 </div>
 
                 {/* Table */}
-                <div className="flex-1 md:overflow-auto px-5 pb-5">
+                <div className="flex-1 overflow-auto px-5 pb-5 custom-scrollbar">
                      <table className="w-full text-left border-separate border-spacing-0 min-w-[800px]">
-                        <thead className="sticky top-0 z-10 shadow-sm">
+                        <thead className="sticky top-0 z-20 shadow-sm">
                             <tr className="bg-gray-900 dark:bg-gray-700 text-white uppercase tracking-wider">
                                 <th className="px-6 py-3 text-xs font-bold text-center border border-gray-700 pl-6">ID</th>
                                 <th className="px-6 py-3 text-xs font-bold text-left border border-gray-700">Name</th>

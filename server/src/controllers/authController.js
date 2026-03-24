@@ -64,6 +64,9 @@ const login = async (req, res, next) => {
       return res.status(401).json({ message: 'Invalid credentials.' });
     }
 
+    user.lastLogin = Date.now();
+    await user.save({ validateBeforeSave: false });
+
     const token = signToken(user._id);
     return res.json({
       token,

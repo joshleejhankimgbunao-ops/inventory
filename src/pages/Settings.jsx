@@ -16,6 +16,7 @@ const Settings = () => {
         currency: 'PHP',
         darkMode: false,
         autoPrintReceipts: false,
+        autoSync: true, // Default to Auto-Sync ON
         lowStockAlert: 10,
         maxStockLimit: 100, // Default Max Stock Limit
         desktopNotifications: true,
@@ -51,7 +52,8 @@ const Settings = () => {
         'storeSecondaryEmail',
         'contactPhone',
         'contactPhoneSecondary',
-        'currency'
+        'currency',
+        'autoSync'
     ]), []);
 
     const isGeneralModified = useMemo(() => {
@@ -157,12 +159,12 @@ const Settings = () => {
     };
 
     return (
-        <div className="h-[calc(100vh-80px)] flex flex-col gap-2 p-2 md:overflow-hidden overflow-y-auto">
+        <div className="h-auto md:h-[calc(100vh-80px)] flex flex-col gap-2 p-2 md:overflow-hidden">
 
             {/* Header */}
-            <div className="bg-slate-200/50 dark:bg-gray-800 p-4 sm:p-5 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shrink-0 border-t-8 border-t-[#111827]">
+            <div className="relative z-20 bg-slate-200/50 dark:bg-gray-800 p-4 sm:p-5 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shrink-0 border-t-8 border-t-[#111827]">
                 <div className="flex items-center gap-2 min-w-0">
-                    <div className="text-gray-900 dark:text-white shrink-0">
+                    <div className="text-gray-900 dark:text-white shrink-0 hidden sm:block">
                         <svg className="w-7 h-7 sm:w-8 sm:h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
                     </div>
                     <div className="min-w-0">
@@ -312,6 +314,28 @@ const Settings = () => {
                                             <option value="PHP">Philippine Peso (PHP)</option>
                                             <option value="USD">US Dollar (USD)</option>
                                         </select>
+                                    </div>
+                                </div>
+                             </div>
+
+                             {/* System Preferences Section */}
+                             <div>
+                                <h3 className="text-lg font-black text-gray-900 dark:text-white mb-1">System Preferences</h3>
+                                <p className="text-sm text-gray-500 mb-4">Configure global application behavior.</p>
+                                
+                                <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-100 dark:border-gray-700 p-1">
+                                    <div className="flex items-center justify-between p-4 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-lg transition-colors">
+                                        <div>
+                                            <p className="font-bold text-gray-900 dark:text-white text-sm">Auto-Sync Transactions</p>
+                                            <p className="text-xs text-gray-500">Automatically sync offline transactions when connection is restored</p>
+                                        </div>
+                                        <button 
+                                            className={`w-11 h-6 rounded-full relative transition-colors ${!settings.autoSync ? 'bg-gray-200 dark:bg-gray-600' : ''}`} 
+                                            style={{ backgroundColor: settings.autoSync ? '#111827' : '' }}
+                                            onClick={() => setSettings(prev => ({ ...prev, autoSync: !prev.autoSync }))}
+                                        >
+                                            <span className={`absolute top-1 left-1 bg-white w-4 h-4 rounded-full shadow-sm transition-transform ${settings.autoSync ? 'translate-x-5' : ''}`}></span>
+                                        </button>
                                     </div>
                                 </div>
                              </div>

@@ -113,7 +113,8 @@ const Dashboard = ({ onLogout }) => {
   }, []);
 
   useEffect(() => {
-    if (appSettings.desktopNotifications && 'Notification' in window && Notification.permission === 'default') {
+    // Check if Notification API is available in the browser first
+    if (appSettings.desktopNotifications && 'Notification' in window && window.Notification && window.Notification.permission === 'default') {
         const toastId = toast((t) => ( 
             <div className="flex flex-col gap-2 min-w-[200px]">
                 <span className="font-bold text-sm">Enable Desktop Alerts?</span>
@@ -122,11 +123,14 @@ const Dashboard = ({ onLogout }) => {
                     <button 
                         onClick={() => {
                             toast.dismiss(t.id);
-                            Notification.requestPermission().then(perm => {
-                                if (perm === 'granted') {
-                                    new Notification("Notifications Enabled", { body: "You will now receive stock alerts." });
-                                }
-                            });
+                            // Safe access to Notification
+                            if ('Notification' in window && window.Notification) {
+                                window.Notification.requestPermission().then(perm => {
+                                    if (perm === 'granted') {
+                                        new window.Notification("Notifications Enabled", { body: "You will now receive stock alerts." });
+                                    }
+                                });
+                            }
                         }}
                         className="bg-white border-2 border-gray-200 text-gray-900 font-black px-3 py-1.5 rounded-lg hover:bg-gray-50 transition-colors"
                     >
@@ -198,8 +202,9 @@ const Dashboard = ({ onLogout }) => {
               ), { duration: 6000 });
 
               // 2. ALSO Show Desktop Notification (Only if enabled & allowed)
-              if (appSettings.desktopNotifications && Notification.permission === 'granted') {
-                 new Notification("Inventory Alert!", {
+              // Safe check for Notification API existence
+              if (appSettings.desktopNotifications && 'Notification' in window && window.Notification && window.Notification.permission === 'granted') {
+                 new window.Notification("Inventory Alert!", {
                     body: `You have ${criticalItems.length} ${criticalItems.length === 1 ? 'item that is' : 'items that are'} low on stock.`,
                     icon: logo,
                     requireInteraction: true
@@ -911,8 +916,8 @@ const Dashboard = ({ onLogout }) => {
         </aside>
 
         {/* Main Content Area */}
-        <main className={`flex-1 transition-all duration-300 ease-in-out bg-gray-50 p-2 ml-0 ${isSidebarHovered ? 'md:ml-56' : 'md:ml-16'} ${isFixedLayout ? 'overflow-hidden h-full' : 'overflow-y-auto h-full'}`}>
-           <div className={`w-full ${isFixedLayout ? 'h-full' : ''}`}>
+        <main className={`flex-1 transition-all duration-300 ease-in-out bg-gray-50 p-2 ml-0 ${isSidebarHovered ? 'md:ml-56' : 'md:ml-16'} ${isFixedLayout ? 'md:overflow-hidden h-full overflow-y-auto' : 'overflow-y-auto h-full'}`}>
+           <div className={`w-full ${isFixedLayout ? 'md:h-full min-h-full' : ''}`}>
              
              <Suspense fallback={<PageSkeleton />}>
              <Routes>

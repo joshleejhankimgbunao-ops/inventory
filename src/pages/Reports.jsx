@@ -329,63 +329,37 @@ const Reports = () => {
   };
 
   return (
-        <div className="h-[calc(100vh-80px)] flex flex-col gap-2 overflow-auto md:overflow-hidden p-2">
-    <div id="report-container" className="relative h-full flex flex-col bg-slate-200/50 rounded-2xl shadow-sm border border-gray-100 overflow-hidden border-t-8 border-t-[#111827] p-4">
-      <div className="h-full flex flex-col gap-3 overflow-hidden">
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 shrink-0">
-          <div className="flex items-center gap-2">
-            <svg className="w-7 h-7 text-gray-900" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-            </svg>
-            <div>
-              <h1 className="text-[8px] font-black text-gray-900 leading-tight">Reports</h1>
-              <p className="text-gray-500 text-xs font-medium mt-1">
-                {isAdminInventoryOnly ? 'View inventory status and export data' : 'View sales performance and export data'}
-              </p>
+        <div className="h-auto md:h-[calc(100vh-80px)] flex flex-col gap-2 md:overflow-hidden p-2">
+    <div id="report-container" className="relative h-auto md:h-full flex flex-col bg-slate-200/50 rounded-2xl shadow-sm border border-gray-100 md:overflow-hidden border-t-8 border-t-[#111827] p-4">
+      <div className="h-auto md:h-full flex flex-col gap-3 md:overflow-hidden">
+        <div className="flex flex-col gap-4 shrink-0 border-b border-gray-200 pb-4">
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+            
+            <div className="flex items-center gap-2">
+              <svg className="w-7 h-7 text-gray-900 hidden sm:block" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+              </svg>
+              <div className="shrink-0">
+                <h1 className="text-[8px] font-black text-gray-900 leading-tight">Reports</h1>
+                <p className="text-gray-500 text-xs font-medium mt-1">
+                  {isAdminInventoryOnly ? 'View inventory status' : 'View sales performance'}
+                </p>
+              </div>
             </div>
-          </div>
 
-          <div className="flex items-center gap-3">
-            {!isAdminInventoryOnly ? (
-              <>
-                <div className="inline-flex rounded-lg bg-gray-100 p-1">
+            <div className="flex flex-col items-start sm:items-end gap-2 w-full sm:w-auto">
+              {!isAdminInventoryOnly ? (
+                <div className="inline-flex rounded-lg bg-gray-100 p-1 self-start sm:self-end shrink-0">
                   <button type="button" onClick={() => setReportType('sales')} className={`px-3 py-1 rounded-md text-xs font-semibold ${reportType === 'sales' ? 'bg-gray-900 text-white' : 'text-gray-700'}`}>Sales</button>
                   <button type="button" onClick={() => setReportType('inventory')} className={`px-3 py-1 rounded-md text-xs font-semibold ${reportType === 'inventory' ? 'bg-gray-900 text-white' : 'text-gray-700'}`}>Inventory</button>
                 </div>
-
-                <div className="relative flex items-center gap-2">
-                  <select value={dateRange} onChange={(e) => setDateRange(e.target.value)} className="px-3 py-1.5 rounded-lg text-xs font-medium bg-gray-900 text-white appearance-none pr-8" style={{ minWidth: 140 }}>
-                    <option value="all">All Time</option>
-                    <option value="today">Today</option>
-                    <option value="week">This Week</option>
-                    <option value="month">This Month</option>
-                    <option value="year">This Year</option>
-                    <option value="specific_date">Select Date</option>
-                    <option value="custom">Custom Range</option>
-                  </select>
-                  <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none">
-                    <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" /></svg>
-                  </div>
-
-                  {dateRange === 'specific_date' && (
-                    <input type="date" value={specificDate} max={new Date().toISOString().split('T')[0]} onChange={(e) => setSpecificDate(e.target.value)} className="ml-2 px-2 py-1.5 rounded-lg border border-gray-900 text-xs bg-white" style={{ minWidth: 140 }} />
-                  )}
-
-                  {dateRange === 'custom' && (
-                    <div className="flex items-center gap-2 ml-2">
-                      <input type="date" value={customStartDate} max={new Date().toISOString().split('T')[0]} onChange={(e) => setCustomStartDate(e.target.value)} className="px-2 py-1.5 rounded-lg border border-gray-900 text-xs bg-white" style={{ minWidth: 140 }} />
-                      <span className="text-gray-400 text-xs">to</span>
-                      <input type="date" value={customEndDate} max={new Date().toISOString().split('T')[0]} onChange={(e) => setCustomEndDate(e.target.value)} className="px-2 py-1.5 rounded-lg border border-gray-900 text-xs bg-white" style={{ minWidth: 140 }} />
-                    </div>
-                  )}
-                </div>
-              </>
-            ) : (
-              <div className="flex items-center gap-2">
-                <div className="inline-flex items-center rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-semibold text-gray-700">
+              ) : (
+                <div className="inline-flex items-center rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-semibold text-gray-700 self-start sm:self-end shrink-0">
                   Inventory Only
                 </div>
+              )}
 
+              <div className="flex items-center gap-2 flex-wrap">
                 <div className="relative flex items-center gap-2">
                   <select value={dateRange} onChange={(e) => setDateRange(e.target.value)} className="px-3 py-1.5 rounded-lg text-xs font-medium bg-gray-900 text-white appearance-none pr-8" style={{ minWidth: 140 }}>
                     <option value="all">All Time</option>
@@ -412,58 +386,60 @@ const Reports = () => {
                     </div>
                   )}
                 </div>
-              </div>
-            )}
-
-            <div className="pdf-exclude relative group">
-              <button
-                type="button"
-                onClick={() => setShowExportMenu((prev) => !prev)}
-                className="inline-flex items-center justify-center h-8 w-8 rounded-lg bg-gray-900 text-white hover:opacity-90 transition-opacity"
-                aria-label="Export"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 16V4m0 12l-4-4m4 4l4-4M4 20h16" />
-                </svg>
-              </button>
-              <div className="pointer-events-none absolute right-0 top-full mt-2 z-20 rounded-md bg-gray-900/95 px-2.5 py-1.5 text-[10px] font-semibold text-white shadow-lg opacity-0 translate-y-1 transition-all duration-200 group-hover:opacity-100 group-hover:translate-y-0 group-focus-within:opacity-100 group-focus-within:translate-y-0 whitespace-nowrap">
-                Export
-              </div>
-
-              {showExportMenu && (
-                <div className="absolute right-0 top-full mt-2 z-30 w-44 rounded-lg border border-gray-200 bg-white shadow-xl p-2 space-y-2">
-                  {!isAdminInventoryOnly && (
-                    <select
-                      value={exportType}
-                      onChange={(e) => setExportType(e.target.value)}
-                      className="w-full px-2 py-1.5 rounded-md text-xs font-semibold border border-gray-200 bg-white text-gray-700"
-                    >
-                      <option value="sales">Sales</option>
-                      <option value="inventory">Inventory</option>
-                      <option value="combined">Combined</option>
-                    </select>
-                  )}
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => { handleDownloadPDF(isAdminInventoryOnly ? 'inventory' : exportType); setShowExportMenu(false); }}
-                      className="px-2 py-1.5 rounded-md text-[10px] font-bold bg-gray-900 text-white hover:opacity-90"
-                    >
-                      PDF
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => { handleExportCSV(isAdminInventoryOnly ? 'inventory' : exportType); setShowExportMenu(false); }}
-                      className="px-2 py-1.5 rounded-md text-[10px] font-bold bg-gray-100 text-gray-800 hover:bg-gray-200"
-                    >
-                      CSV
-                    </button>
+                
+                <div className="pdf-exclude relative group shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setShowExportMenu((prev) => !prev)}
+                    className="inline-flex items-center justify-center h-8 w-8 rounded-lg bg-gray-900 text-white hover:opacity-90 transition-opacity"
+                    aria-label="Export"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 16V4m0 12l-4-4m4 4l4-4M4 20h16" />
+                    </svg>
+                  </button>
+                  <div className="pointer-events-none absolute right-0 top-full mt-2 z-20 rounded-md bg-gray-900/95 px-2.5 py-1.5 text-[10px] font-semibold text-white shadow-lg opacity-0 translate-y-1 transition-all duration-200 group-hover:opacity-100 group-hover:translate-y-0 group-focus-within:opacity-100 group-focus-within:translate-y-0 whitespace-nowrap">
+                    Export
                   </div>
+    
+                  {showExportMenu && (
+                    <div className="absolute left-0 top-full mt-2 z-30 w-44 rounded-lg border border-gray-200 bg-white shadow-xl p-2 space-y-2">
+                      {!isAdminInventoryOnly && (
+                        <select
+                          value={exportType}
+                          onChange={(e) => setExportType(e.target.value)}
+                          className="w-full px-2 py-1.5 rounded-md text-xs font-semibold border border-gray-200 bg-white text-gray-700"
+                        >
+                          <option value="sales">Sales</option>
+                          <option value="inventory">Inventory</option>
+                          <option value="combined">Combined</option>
+                        </select>
+                      )}
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => { handleDownloadPDF(isAdminInventoryOnly ? 'inventory' : exportType); setShowExportMenu(false); }}
+                          className="px-2 py-1.5 rounded-md text-[10px] font-bold bg-gray-900 text-white hover:opacity-90"
+                        >
+                          PDF
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { handleExportCSV(isAdminInventoryOnly ? 'inventory' : exportType); setShowExportMenu(false); }}
+                          className="px-2 py-1.5 rounded-md text-[10px] font-bold bg-gray-100 text-gray-800 hover:bg-gray-200"
+                        >
+                          CSV
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
-              )}
+              </div>
             </div>
           </div>
         </div>
+
+
 
         {!showInventoryOnlyLayout && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">

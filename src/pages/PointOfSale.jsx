@@ -8,7 +8,7 @@ import { getAuthToken } from '../services/apiClient';
 import { createSaleApi, listProductsApi } from '../services/inventoryApi';
 
 const PointOfSale = () => {
-    const { processedInventory: inventory, setInventory, transactions, setTransactions, logAction, logActivity } = useInventory();
+    const { processedInventory: inventory, setInventory, transactions, setTransactions, logAction, logActivity, addToSyncQueue, syncQueue, isOnline } = useInventory();
     const { appSettings: settings, currentUserName } = useAuth();
 
     const showErrorDetails = (message) => {
@@ -162,16 +162,18 @@ const PointOfSale = () => {
         };
 
         const authToken = getAuthToken();
-        const canSyncToBackend = Boolean(authToken) && cart.every(item => item.id);
+        const isOnline = Boolean(authToken) && navigator.onLine && cart.every(item => item.id);
 
-        if (canSyncToBackend) {
-            try {
+        try {
+            if (isOnline) {
                 const apiItems = cart.map(item => ({
                     productId: item.id,
                     quantity: item.qty,
                 }));
 
                 const savedSale = await createSaleApi(apiItems, 'cash');
+                
+                // If we get here, sync was successful
                 const remoteProducts = await listProductsApi();
                 if (Array.isArray(remoteProducts) && remoteProducts.length > 0) {
                     setInventory(remoteProducts);
@@ -200,12 +202,20 @@ const PointOfSale = () => {
                 logActivity(currentUserName, 'Processed Sale', `Transaction ${remoteTransaction.id} — ₱${Number(remoteTransaction.total).toLocaleString()}`);
                 showToast("Transaction Complete", "Sale recorded successfully.", "success", "pos-checkout");
                 return;
-            } catch (error) {
-                showErrorDetails(error.message || 'Failed to save sale to server.');
-                return;
             }
+        } catch (error) {
+            console.warn("Online sync failed, falling back to offline mode:", error);
         }
 
+        // Queue for Sync (Offline Mode)
+        // Ensure items have IDs for backend sync later
+        addToSyncQueue({ ...transactionData, items: cart.map(i => ({ ...i, id: i.id || i._id })) });
+
+        if (isOnline) {
+             showToast("Offline Mode", "Transaction saved locally and will sync when online.", "info", "pos-offline-sync");
+        }
+
+        // Offline / Fallback Handling
         // Deduct stock from inventory
         const newInventory = inventory.map(item => {
             const cartItem = cart.find(c => c.code === item.code);
@@ -447,6 +457,8 @@ const PointOfSale = () => {
 
     return (
         <div className="h-[calc(100vh-80px)] flex flex-col gap-2 overflow-y-auto md:overflow-hidden p-2">
+            
+
 
             <div className="flex flex-col md:flex-row flex-1 gap-2 md:min-h-0">
             {/* Receipt Modal */}
@@ -583,7 +595,7 @@ const PointOfSale = () => {
             <div className="min-h-[400px] md:min-h-0 flex-1 bg-slate-200/50 rounded-xl shadow-sm border border-gray-100 flex flex-col overflow-hidden border-t-8 border-t-[#111827]">
                 {/* Header */}
                 <div className="p-5 pb-0 flex items-center gap-2 shrink-0">
-                    <div>
+                    <div className="hidden sm:block">
                         <svg className="w-7 h-7 text-gray-900" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
                         </svg>
@@ -596,8 +608,8 @@ const PointOfSale = () => {
                 
                 {/* Search and Filter Header */}
                 <div className="px-5 pb-5 pt-5 border-b border-gray-200 bg-transparent z-10 shrink-0">
-                    <div className="flex gap-3 mb-0">
-                        <div className="relative w-full sm:w-64 group">
+                    <div className="flex flex-col md:flex-row gap-4 mb-0">
+                        <div className="relative w-full md:max-w-xs group">
                             <input
                                 type="text"
                                 placeholder="Search products..."
@@ -614,7 +626,7 @@ const PointOfSale = () => {
                         <select
                             value={selectedCategory}
                             onChange={(e) => setSelectedCategory(e.target.value)}
-                            className={`appearance-none px-3 py-2 rounded-xl text-sm font-bold inline-flex items-center transition-all border-2 ${selectedCategory !== 'All' ? 'bg-gray-900 dark:bg-gray-600 text-white border-gray-900 dark:border-gray-500' : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-200 dark:border-gray-600 hover:border-gray-400'}`}
+                            className={`appearance-none w-full md:w-56 px-3 py-2 rounded-xl text-sm font-bold inline-flex items-center transition-all border-2 ${selectedCategory !== 'All' ? 'bg-gray-900 dark:bg-gray-600 text-white border-gray-900 dark:border-gray-500' : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-200 dark:border-gray-600 hover:border-gray-400'}`}
                         >
                             {categories.map(cat => (
                                 <option key={cat} value={cat} className="bg-white text-gray-900 py-1">{cat}</option>

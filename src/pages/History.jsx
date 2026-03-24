@@ -275,13 +275,13 @@ const History = () => {
     };
 
     return (
-        <div className="h-[calc(100vh-80px)] flex flex-col overflow-auto md:overflow-hidden p-2 gap-2">
-            <div className="bg-white rounded-xl shadow-sm border border-gray-100 md:flex-1 flex flex-col border-t-8 border-t-[#111827] md:overflow-hidden">
+        <div className="h-auto md:h-[calc(100vh-80px)] flex flex-col md:overflow-hidden p-2 gap-2">
+            <div className="bg-slate-200/50 rounded-xl shadow-sm border border-gray-100 md:flex-1 flex flex-col border-t-8 border-t-[#111827] md:overflow-hidden">
                 {/* Header + Controls */}
                 <div className="p-5 flex flex-col gap-5 md:shrink-0">
                     <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                         <div className="flex items-center gap-2">
-                            <div>
+                            <div className="hidden sm:block">
                                 <svg className="w-7 h-7 text-gray-900" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
                                 </svg>
@@ -485,7 +485,7 @@ const History = () => {
                         )}
                 </div>
                 {/* Content Area */}
-                <div className="flex-1 md:overflow-y-auto w-full px-4 pb-4 pt-0 max-h-[calc(100vh-220px)]">
+                <div className="w-full px-4 pb-4 pt-0 overflow-x-auto md:flex-1 md:overflow-y-auto md:max-h-[calc(100vh-220px)]">
                         {activeTab === 'sales' ? (
                             <table className="w-full text-left border-separate border-spacing-0 table-fixed min-w-[700px]">
                                <thead className="sticky top-0 z-10 shadow-sm">

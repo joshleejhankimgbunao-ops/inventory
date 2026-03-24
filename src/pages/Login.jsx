@@ -213,6 +213,20 @@ const Login = ({ onLogin }) => {
         setPin('');
         setNeedsPin(false);
         logActivity(backendName, 'Logged In');
+        
+        // Update Last Login in LocalStorage (for UserList sync if using mock data)
+        try {
+            const users = JSON.parse(localStorage.getItem('users') || '[]');
+            const now = new Date();
+            const formattedDate = now.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) + ' ' + now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+            
+            const userIndex = users.findIndex(u => u.username === email || u.email === email);
+            if (userIndex !== -1) {
+                users[userIndex].lastLogin = formattedDate;
+                localStorage.setItem('users', JSON.stringify(users));
+            }
+        } catch(e) {}
+
         onLogin();
         showToast('Access Granted', `Welcome back, ${backendName}!`, 'success', 'login-result');
         return true;
@@ -294,6 +308,7 @@ const Login = ({ onLogin }) => {
                             'error',
                             'login-result'
                         );
+                        setPin(''); // Clear PIN for retry
                         setCooldown(true);
                         cooldownTimer.current = setTimeout(() => setCooldown(false), 2000);
                         setTimeout(() => setErrorShake(false), 500);
@@ -339,6 +354,27 @@ const Login = ({ onLogin }) => {
         }
 
         if (loginSuccess) {
+          // Update Last Login in LocalStorage Users List
+          try {
+              const users = JSON.parse(localStorage.getItem('users') || '[]');
+              const now = new Date();
+              const formattedDate = now.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) + ' ' + now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+              
+              // Find matching user to update
+              const userIndex = users.findIndex(u => 
+                  u.username === email || 
+                  (loggedInUser.role === ROLES.SUPER_ADMIN && u.role === ROLES.SUPER_ADMIN) || // Match Super Admin
+                  (loggedInUser.role === ROLES.CASHIER && u.username === 'cashier' && email === 'cashier') // Match default Cashier
+              );
+
+              if (userIndex !== -1) {
+                  users[userIndex].lastLogin = formattedDate;
+                  localStorage.setItem('users', JSON.stringify(users));
+              }
+          } catch(e) {
+              console.error("Failed to update last login", e);
+          }
+
           setEmail('');
           setPassword('');
           setPin('');
@@ -383,6 +419,7 @@ const Login = ({ onLogin }) => {
                 'error',
                 'login-result'
               );
+              setPin(''); // Clear PIN for retry
               setCooldown(true);
               cooldownTimer.current = setTimeout(() => setCooldown(false), 2000);
               setTimeout(() => setErrorShake(false), 500);
@@ -391,6 +428,13 @@ const Login = ({ onLogin }) => {
         setIsLoading(false);
     }, 1500);
   };
+
+  // Auto-submit when PIN is complete
+  useEffect(() => {
+    if (needsPin && pin.length === 6 && !isLoading && !cooldown) {
+      handleSubmit({ preventDefault: () => {} });
+    }
+  }, [pin, needsPin, isLoading, cooldown]);
    
   return (
     <div className="relative flex min-h-screen items-center justify-center bg-[#111827] p-4 overflow-hidden">
@@ -416,7 +460,7 @@ const Login = ({ onLogin }) => {
                 <img src={logo} alt="Logo" className="h-full w-full object-contain drop-shadow-sm rounded-full" />
             </div>
             <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Welcome Back</h2>
-            <p className="text-[10px] font-medium text-gray-500 mt-1">Inventory & Point of Sale Management System</p>
+            <p className="text-xs font-medium text-gray-500 mt-1 mb-6">Inventory & Point of Sale Management System</p>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-3" autoComplete="off">
@@ -542,30 +586,56 @@ const Login = ({ onLogin }) => {
                 </button>
               </div>
             )}
-            <button
-              type="submit"
-              disabled={isLoading || cooldown}
-              className="w-full rounded-xl text-sm font-semibold tracking-wide hover:opacity-90 transition-all duration-300 shadow-lg transform active:scale-95 hover:-translate-y-0.5 py-2 mt-2 flex items-center justify-center gap-2 relative overflow-hidden group"
-              style={{ backgroundColor: '#111827', color: '#ffffff' }}
-            >
-              <div className="absolute inset-0 w-full h-full bg-white/10 group-hover:scale-x-100 scale-x-0 transition-transform origin-left duration-500"></div>
-              {isLoading ? (
-                  <>
-                    <svg className="animate-spin -ml-1 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                    {needsPin ? 'Verifying PIN...' : 'Signing In...'}
-                  </>
-              ) : (
-                  <>
-                    {needsPin ? 'Verify PIN' : 'Sign In'}
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-5 h-5">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" />
-                    </svg>
-                  </>
+            <div className="relative group/tooltip">
+              <button
+                type="submit"
+                disabled={needsPin || isLoading || cooldown}
+                className={`w-full h-10 rounded-xl text-sm font-semibold tracking-wide mt-2 flex items-center justify-center gap-2 relative overflow-hidden ${(needsPin && !isLoading) ? 'bg-transparent text-black shadow-none cursor-default' : 'bg-[#111827] text-white shadow-lg transition-all duration-300'} ${(!needsPin && !isLoading) ? 'hover:opacity-90 transform active:scale-95 hover:-translate-y-0.5' : ''}`}
+              >
+                {isLoading ? (
+                    <>
+                      {needsPin ? (
+                        <>
+                        <svg className="animate-spin -ml-1 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        <span className="text-white font-bold animate-pulse">Verifying PIN...</span>
+                        </>
+                      ) : (
+                        // Standard Loading State (for normal login)
+                        <div className="flex items-center gap-2">
+                             <svg className="animate-spin -ml-1 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            <span>Signing In...</span>
+                        </div>
+                      )}
+                    </>
+                ) : (
+                    <>
+                      {needsPin ? (
+                        /* Empty state for cleaner UI since instructions are already above */
+                        <span></span>
+                      ) : (
+                        <>
+                        Sign In
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-5 h-5">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" />
+                        </svg>
+                        </>
+                      )}
+                    </>
+                )}
+              </button>
+              {needsPin && !isLoading && (
+                  <div className="absolute -top-10 left-1/2 -translate-x-1/2 px-2 py-1 bg-gray-900 text-white text-[10px] rounded shadow-sm opacity-0 group-hover/tooltip:opacity-100 transition-opacity pointer-events-none whitespace-nowrap">
+                      Auto-login after 6 digits
+                      <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-1 border-4 border-transparent border-t-gray-900"></div>
+                  </div>
               )}
-            </button>
+            </div>
               </>
             )}
           </form>

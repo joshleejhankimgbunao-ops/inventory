@@ -2,7 +2,7 @@ import React, { createContext, useState, useEffect, useMemo, useContext } from '
 import { getLowStockThreshold } from '../utils/recommendationLogic';
 import { useAuth } from './AuthContext';
 import { getAuthToken } from '../services/apiClient';
-import { listProductsApi } from '../services/inventoryApi';
+import { listProductsApi, createSaleApi } from '../services/inventoryApi';
 
 const InventoryContext = createContext();
 
@@ -174,6 +174,94 @@ export const InventoryProvider = ({ children }) => {
        localStorage.setItem('inventoryLogs', JSON.stringify(inventoryLogs));
      }, [inventoryLogs]);
 
+     // 3.1 Sync Queue State (Offline Config)
+     const [syncQueue, setSyncQueue] = useState(() => {
+        try {
+            const savedQueue = localStorage.getItem('syncQueue');
+            return savedQueue ? JSON.parse(savedQueue) : [];
+        } catch (error) {
+            console.error("Failed to parse sync queue:", error);
+            return [];
+        }
+     });
+
+     // Persist Sync Queue
+     useEffect(() => {
+        localStorage.setItem('syncQueue', JSON.stringify(syncQueue));
+     }, [syncQueue]);
+
+     // Online Status Tracking
+     const [isOnline, setIsOnline] = useState(navigator.onLine);
+
+     useEffect(() => {
+        const handleStatusChange = () => {
+            setIsOnline(navigator.onLine);
+        };
+
+        window.addEventListener('online', handleStatusChange);
+        window.addEventListener('offline', handleStatusChange);
+
+        return () => {
+            window.removeEventListener('online', handleStatusChange);
+            window.removeEventListener('offline', handleStatusChange);
+        };
+     }, []);
+
+     // Background Sync Mechanism
+     useEffect(() => {
+        const processSyncQueue = async () => {
+            // Check for Auto-Sync setting (default true if undefined)
+            const autoSyncEnabled = appSettings?.autoSync !== false;
+
+            if (syncQueue.length === 0 || !navigator.onLine || !autoSyncEnabled) return;
+
+            const queueItem = syncQueue[0]; // FIFO
+            try {
+                // Ensure we have a valid token before trying to sync
+                const token = getAuthToken();
+                if (!token) return;
+
+                console.log("Attempting to sync transaction:", queueItem.id);
+
+                const apiItems = queueItem.items.map(item => ({
+                    productId: item.id || item._id, // Handle legacy IDs
+                    quantity: item.qty
+                }));
+
+                await createSaleApi(apiItems, queueItem.paymentMethod || 'cash');
+                
+                // If successful, remove from queue
+                setSyncQueue(prev => prev.slice(1));
+                
+                // Refresh inventory from server to ensure consistency
+                const remoteProducts = await listProductsApi();
+                if (Array.isArray(remoteProducts) && remoteProducts.length > 0) {
+                    setInventory(remoteProducts);
+                }
+                
+                console.log("Sync successful for:", queueItem.id);
+            } catch (error) {
+                console.error("Sync failed for transaction:", queueItem.id, error);
+                // We leave it in the queue to retry later
+            }
+        };
+
+        const intervalId = setInterval(processSyncQueue, 15000); // Check every 15s
+        
+        // Also run immediately when online status changes
+        const handleOnline = () => processSyncQueue();
+        window.addEventListener('online', handleOnline);
+
+        return () => {
+            clearInterval(intervalId);
+            window.removeEventListener('online', handleOnline);
+        };
+     }, [syncQueue, appSettings]);
+
+     const addToSyncQueue = (transaction) => {
+        setSyncQueue(prev => [...prev, transaction]);
+     };
+
      // 4. Activity Logs (Login/System Access + All Actions)
      const [activityLogs, setActivityLogs] = useState(() => {
        try {
@@ -261,7 +349,10 @@ export const InventoryProvider = ({ children }) => {
             processedInventory,
             logAction,
             handleResetHistory,
-            renameUserReferences
+            renameUserReferences,
+            syncQueue,
+            addToSyncQueue,
+            isOnline
         }}>
             {children}
         </InventoryContext.Provider>
