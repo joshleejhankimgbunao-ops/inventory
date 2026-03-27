@@ -11,21 +11,27 @@ const usersSeed = [
   {
     name: 'Owner Account',
     username: 'owner',
+    email: 'owner@example.com',
     password: 'Owner123!',
+    pin: '123456',
     role: 'superadmin',
     isActive: true,
   },
   {
     name: 'Admin Account',
     username: 'admin1',
+    email: 'admin1@example.com',
     password: 'Admin123!',
+    pin: '123456',
     role: 'admin',
     isActive: true,
   },
   {
     name: 'Cashier Account',
     username: 'cashier1',
+    email: 'cashier1@example.com',
     password: 'Cashier123!',
+    pin: '123456',
     role: 'cashier',
     isActive: true,
   },
@@ -42,6 +48,7 @@ const productsSeed = [
 const shouldReset = process.argv.includes('--reset');
 
 const hashPassword = async (plainText) => bcrypt.hash(plainText, 10);
+const hashPin = async (plainText) => bcrypt.hash(plainText, 10);
 
 const seedUsers = async () => {
   if (shouldReset) {
@@ -51,17 +58,29 @@ const seedUsers = async () => {
   const createdUsers = [];
 
   for (const userData of usersSeed) {
-    const existing = await User.findOne({ username: userData.username.toLowerCase() }).select('+password');
+    const existing = await User.findOne({ username: userData.username.toLowerCase() }).select('+password +pinHash');
 
     if (existing) {
+      if (!existing.email && userData.email) {
+        existing.email = userData.email.toLowerCase();
+      }
+
+      if (!existing.pinHash && userData.pin) {
+        existing.pinHash = await hashPin(userData.pin);
+      }
+
+      await existing.save({ validateBeforeSave: false });
       createdUsers.push(existing);
       continue;
     }
 
     const hashedPassword = await hashPassword(userData.password);
+    const hashedPin = userData.pin ? await hashPin(userData.pin) : undefined;
     const created = await User.create({
       ...userData,
+      email: userData.email ? userData.email.toLowerCase() : undefined,
       password: hashedPassword,
+      pinHash: hashedPin,
     });
 
     createdUsers.push(created);
@@ -154,9 +173,9 @@ const runSeed = async () => {
     console.log(`Products: ${products.length}`);
     console.log(`Sample sale: ${sale ? 'created/present' : 'not created'}`);
     console.log('Sample credentials:');
-    console.log(' - superadmin: owner / Owner123!');
-    console.log(' - admin: admin1 / Admin123!');
-    console.log(' - cashier: cashier1 / Cashier123!');
+    console.log(' - superadmin: owner / Owner123! / PIN 123456 / owner@example.com');
+    console.log(' - admin: admin1 / Admin123! / PIN 123456 / admin1@example.com');
+    console.log(' - cashier: cashier1 / Cashier123! / PIN 123456 / cashier1@example.com');
   } catch (error) {
     console.error('Seeding failed:', error.message);
     process.exitCode = 1;

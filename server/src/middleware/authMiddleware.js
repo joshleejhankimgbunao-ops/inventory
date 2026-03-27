@@ -17,6 +17,13 @@ const requireAuth = async (req, res, next) => {
       return res.status(401).json({ message: 'Unauthorized: invalid user.' });
     }
 
+    if (user.authRevokedAt) {
+      const tokenIssuedAtMs = Number(decoded.iat || 0) * 1000;
+      if (!tokenIssuedAtMs || tokenIssuedAtMs <= user.authRevokedAt.getTime()) {
+        return res.status(401).json({ message: 'Unauthorized: token has been revoked.' });
+      }
+    }
+
     req.user = user;
     return next();
   } catch (error) {

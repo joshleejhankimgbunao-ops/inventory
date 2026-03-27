@@ -14,10 +14,21 @@ const userSchema = new mongoose.Schema(
       trim: true,
       lowercase: true,
     },
+    email: {
+      type: String,
+      unique: true,
+      sparse: true,
+      trim: true,
+      lowercase: true,
+    },
     password: {
       type: String,
       required: true,
       minlength: 6,
+      select: false,
+    },
+    pinHash: {
+      type: String,
       select: false,
     },
     role: {
@@ -30,6 +41,29 @@ const userSchema = new mongoose.Schema(
       default: true,
     },
     lastLogin: {
+      type: Date,
+    },
+    passwordResetTokenHash: {
+      type: String,
+      select: false,
+    },
+    passwordResetExpiresAt: {
+      type: Date,
+    },
+    passwordResetRequestedAt: {
+      type: Date,
+    },
+    pinResetTokenHash: {
+      type: String,
+      select: false,
+    },
+    pinResetExpiresAt: {
+      type: Date,
+    },
+    pinResetRequestedAt: {
+      type: Date,
+    },
+    authRevokedAt: {
       type: Date,
     },
   },

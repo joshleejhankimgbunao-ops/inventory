@@ -3,7 +3,7 @@ import { showToast } from '../utils/toastHelper';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
 import { ROLES } from '../constants/roles';
-import { loginApi } from '../services/authApi';
+import { loginApi, requestPasswordResetApi, requestPinResetApi } from '../services/authApi';
 import { setAuthToken } from '../services/apiClient';
 import DateTimeDisplay from '../components/DateTimeDisplay';
 import logo from '../assets/logo.png';
@@ -90,110 +90,67 @@ const Login = ({ onLogin }) => {
     }
   };
 
+  const handleForgotSubmit = async () => {
+    const emailValue = forgotEmail.trim().toLowerCase();
+
+    if (!emailValue) {
+      showToast('Missing Field', 'Enter your registered email.', 'error', 'login-result');
+      return;
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailValue)) {
+      showToast('Invalid Email', 'Enter a valid registered email address.', 'error', 'login-result');
+      return;
+    }
+
+    setIsLoading(true);
+
+    try {
+      if (forgotType === 'pin') {
+        await requestPinResetApi(emailValue);
+      } else {
+        await requestPasswordResetApi(emailValue);
+      }
+
+      showToast(
+        'Request Submitted',
+        'If your account exists, a reset link has been sent to that registered email.',
+        'success',
+        'login-result'
+      );
+      setShowForgot(false);
+      setForgotEmail('');
+    } catch (error) {
+      showToast('Request Failed', error.message || 'Unable to process reset request.', 'error', 'login-result');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleSubmit = (e) => {
     e.preventDefault();
     setErrorShake(false);
 
-    // helper for the first authentication phase; separated to avoid deep
-    // nesting within the setTimeout callback.
-    const performFirstPhase = () => {
-        const savedSettings = localStorage.getItem('appSettings');
-        const settings = savedSettings ? JSON.parse(savedSettings) : { adminUser: 'admin', adminPassword: '123456' };
-        const validUser = settings.adminUser || 'admin';
-        const validPass = settings.adminPassword || '123456';
+    if (!email || !password) {
+      showToast('Missing Fields', 'Username and password are required.', 'error', 'login-result');
+      return;
+    }
 
-        // if a cashier profile exists and the supplied email matches, try it first
-        const cashierProfileRaw = localStorage.getItem('cashierProfile');
-        if (cashierProfileRaw) {
-            try {
-                const cd = JSON.parse(cashierProfileRaw);
-                const cashierUser = cd.adminUser || 'cashier';
-                const cashierPass = cd.adminPassword || '123456';
-                // reject explicitly if using last-old username
-                const oldUser = localStorage.getItem('cashierOldUser');
-                if (oldUser && email === oldUser && email !== cashierUser) {
-                    setErrorShake(true);
-                    setIsLoading(false);
-                    showToast('Access Denied', 'Invalid username or password credentials.', 'error', 'login-result');
-                    setCooldown(true); cooldownTimer.current = setTimeout(() => setCooldown(false), 2000);
-                    setTimeout(() => setErrorShake(false), 500);
-                    return;
-                }
-                if (email === cashierUser && password === cashierPass) {
-                    setNeedsPin(true);
-                    setIsLoading(false);
-                    showToast('Enter PIN', 'Please provide your 6-digit security PIN.', 'info', 'login-result');
-                    return;
-                }
-            } catch(e) {}
-        }
-        // check user list next so other custom users override built-in
-        const users = JSON.parse(localStorage.getItem('users') || '[]');
-        const foundUser = users.find(u => u.username === email && u.password === password);
-        if (foundUser) {
-            if (foundUser.status === 'Inactive' || foundUser.isArchived) {
-                setErrorShake(true);
-                setCooldown(true); cooldownTimer.current = setTimeout(() => setCooldown(false), 2000);
-                setTimeout(() => setErrorShake(false), 500);
-                setIsLoading(false);
-                showToast(
-                    foundUser.isArchived ? 'Account Archived' : 'Account Inactive',
-                    foundUser.isArchived ? 'This account has been archived. Contact admin.' : 'Your account is deactivated. Contact admin.',
-                    'error',
-                    'login-result'
-                );
-                return;
-            }
-            setNeedsPin(true);
-            setIsLoading(false);
-            showToast('Enter PIN', 'Please provide your 6-digit security PIN.', 'info', 'login-result');
-            return;
-        }
+    setIsLoading(true);
 
-        // not a custom user – fall back to built-in super admin
-        if (email === validUser && password === validPass) {
-            setNeedsPin(true);
-            setIsLoading(false);
-            showToast('Enter PIN', 'Please provide your 6-digit security PIN.', 'info', 'login-result');
-            return;
-        }
-
-        // cashier credentials – prefer stored profile if available
-        const savedCashier = localStorage.getItem('cashierProfile');
-        let cashierOk = false;
-        if (savedCashier) {
-            try {
-                const cd = JSON.parse(savedCashier);
-                const cashierUser = cd.adminUser || 'cashier';
-                const cashierPass = cd.adminPassword || '123456';
-                if (email === cashierUser && password === cashierPass) cashierOk = true;
-            } catch (e) {}
-        } else {
-            if (email === 'cashier' && password === '123456') cashierOk = true;
-        }
-
-        if (cashierOk) {
-            setNeedsPin(true);
-            setIsLoading(false);
-            showToast('Enter PIN', 'Please provide your 6-digit security PIN.', 'info', 'login-result');
-        } else {
-            setErrorShake(true);
-            setIsLoading(false);
-            showToast('Access Denied', 'Invalid username or password credentials.', 'error', 'login-result');
-            setCooldown(true); cooldownTimer.current = setTimeout(() => setCooldown(false), 2000);
-            setTimeout(() => setErrorShake(false), 500);
-        }
-    };
-
-    const tryBackendLogin = async () => {
-      if (!email || !password) {
-        return false;
-      }
-
+    setTimeout(async () => {
       try {
-        const response = await loginApi(email, password);
+        const response = await loginApi(email, password, needsPin ? pin : undefined);
+
+        if (response?.requiresPin) {
+          setNeedsPin(true);
+          setPin('');
+          showToast('Enter PIN', 'Please provide your 6-digit security PIN.', 'info', 'login-result');
+          return;
+        }
+
         if (!response?.token || !response?.user) {
-          return false;
+          throw new Error('Invalid login response from server.');
         }
 
         const backendRole = response.user.role || ROLES.CASHIER;
@@ -213,220 +170,19 @@ const Login = ({ onLogin }) => {
         setPin('');
         setNeedsPin(false);
         logActivity(backendName, 'Logged In');
-        
-        // Update Last Login in LocalStorage (for UserList sync if using mock data)
-        try {
-            const users = JSON.parse(localStorage.getItem('users') || '[]');
-            const now = new Date();
-            const formattedDate = now.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) + ' ' + now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-            
-            const userIndex = users.findIndex(u => u.username === email || u.email === email);
-            if (userIndex !== -1) {
-                users[userIndex].lastLogin = formattedDate;
-                localStorage.setItem('users', JSON.stringify(users));
-            }
-        } catch(e) {}
 
         onLogin();
         showToast('Access Granted', `Welcome back, ${backendName}!`, 'success', 'login-result');
-        return true;
-      } catch {
-        return false;
-      }
-    };
-
-    // first phase: check username/password only
-    if (!needsPin) {
-      setIsLoading(true);
-      setTimeout(async () => {
-        const backendSuccess = await tryBackendLogin();
-        if (!backendSuccess) {
-          performFirstPhase();
-        } else {
-          setIsLoading(false);
-        }
-      }, 800);
-      return;
-    }
-
-    // second phase: now pin must be checked along with credentials
-    setIsLoading(true);
-    setTimeout(() => {
-        const savedSettings = localStorage.getItem('appSettings');
-        const settings = savedSettings ? JSON.parse(savedSettings) : { adminUser: 'admin', adminPassword: '123456', adminPin: '123456' };
-        const validUser = settings.adminUser || 'admin';
-        const validPass = settings.adminPassword || '123456';
-        const validPin = settings.adminPin || '123456';
-
-        let loginSuccess = false;
-        let loggedInUser = null;
-
-        if (email === validUser && password === validPass && pin === validPin) {
-             loginSuccess = true;
-             loggedInUser = {
-                 name: settings.adminDisplayName || 'Admin User',
-                 role: ROLES.SUPER_ADMIN
-             };
-        }
-
-        if (!loginSuccess) {
-            // prefer cashier profile if available (only apply if email matches)
-            const cashierProfileRaw2 = localStorage.getItem('cashierProfile');
-            if (cashierProfileRaw2) {
-                try {
-                    const cd = JSON.parse(cashierProfileRaw2);
-                    const cdPin = cd.adminPin !== undefined ? cd.adminPin : '123456';
-                    const cashierPass = cd.adminPassword !== undefined && cd.adminPassword !== '' ? cd.adminPassword : '123456';
-                    const oldUser = localStorage.getItem('cashierOldUser');
-                    if (oldUser && email === oldUser && email !== (cd.adminUser || 'cashier')) {
-                        // block use of retired username
-                        loginSuccess = false;
-                    } else if (email === (cd.adminUser || 'cashier') && password === cashierPass && pin === cdPin) {
-                         loginSuccess = true;
-                         loggedInUser = {
-                             name: cd.adminDisplayName || "Cashier",
-                             role: ROLES.CASHIER,
-                             avatar: cd.avatar || null
-                         };
-                    }
-                } catch(e) {}
-            }
-            // if not matched by profile, check generic user list
-            if (!loginSuccess) {
-                const users = JSON.parse(localStorage.getItem('users') || '[]');
-                const foundUser = users.find(u => u.username === email && u.password === password && u.pin === pin);
-
-                if (foundUser) {
-                    if (foundUser.status === 'Inactive' || foundUser.isArchived) {
-                        setIsLoading(false);
-                        setErrorShake(true);
-                        showToast(
-                            foundUser.isArchived ? 'Account Archived' : 'Account Inactive',
-                            foundUser.isArchived 
-                                ? 'This account has been archived. Contact admin to restore access.' 
-                                : 'Your account is deactivated. Contact admin.',
-                            'error',
-                            'login-result'
-                        );
-                        setPin(''); // Clear PIN for retry
-                        setCooldown(true);
-                        cooldownTimer.current = setTimeout(() => setCooldown(false), 2000);
-                        setTimeout(() => setErrorShake(false), 500);
-                        return;
-                    }
-                    loginSuccess = true;
-                    loggedInUser = {
-                        name: foundUser.name,
-                        role: foundUser.role === ROLES.ADMIN ? ROLES.ADMIN : ROLES.CASHIER,
-                        avatar: foundUser.avatar || null
-                    };
-                }
-            }
-        }
-
-        if (!loginSuccess) {
-            // if a custom cashier profile exists, check it first so that new PIN/password
-            // override the built‑in defaults. only fall back to the hard‑coded account when
-            // no profile is stored (prevent old PIN from working after change).
-            const savedCashier = localStorage.getItem('cashierProfile');
-            if (savedCashier) {
-                try {
-                    const cd = JSON.parse(savedCashier);
-                    const cdPin = cd.adminPin !== undefined ? cd.adminPin : '123456';
-                    const cashierPass = cd.adminPassword !== undefined && cd.adminPassword !== '' ? cd.adminPassword : '123456';
-                    if (email === (cd.adminUser || 'cashier') && password === cashierPass && pin === cdPin) {
-                         loginSuccess = true;
-                         loggedInUser = {
-                             name: cd.adminDisplayName || "Cashier",
-                             role: ROLES.CASHIER,
-                             avatar: cd.avatar || null
-                         };
-                    }
-                } catch(e) {}
-            }
-            // only if there was no stored cashier profile do we allow the built-in credentials
-            if (!loginSuccess && !savedCashier) {
-                if (email === 'cashier' && password === '123456' && pin === '123456') {
-                    loginSuccess = true;
-                    loggedInUser = { name: "Cashier", role: 'cashier' };
-                }
-            }
-        }
-
-        if (loginSuccess) {
-          // Update Last Login in LocalStorage Users List
-          try {
-              const users = JSON.parse(localStorage.getItem('users') || '[]');
-              const now = new Date();
-              const formattedDate = now.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) + ' ' + now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-              
-              // Find matching user to update
-              const userIndex = users.findIndex(u => 
-                  u.username === email || 
-                  (loggedInUser.role === ROLES.SUPER_ADMIN && u.role === ROLES.SUPER_ADMIN) || // Match Super Admin
-                  (loggedInUser.role === ROLES.CASHIER && u.username === 'cashier' && email === 'cashier') // Match default Cashier
-              );
-
-              if (userIndex !== -1) {
-                  users[userIndex].lastLogin = formattedDate;
-                  localStorage.setItem('users', JSON.stringify(users));
-              }
-          } catch(e) {
-              console.error("Failed to update last login", e);
-          }
-
-          setEmail('');
-          setPassword('');
-          setPin('');
-          sessionStorage.setItem('userRole', loggedInUser.role);
-          // re-evaluate display name using freshest storage data
-          let displayName = loggedInUser.name;
-          if (loggedInUser.role === ROLES.CASHIER) {
-              const cp = localStorage.getItem('cashierProfile');
-              if (cp) {
-                  try { displayName = JSON.parse(cp).adminDisplayName || displayName; } catch {};
-              }
-          } else if (loggedInUser.role === ROLES.ADMIN) {
-              const users = JSON.parse(localStorage.getItem('users')||'[]');
-              const u = users.find(u => u.username === email);
-              if (u && u.name) displayName = u.name;
-          }
-          sessionStorage.setItem('userName', displayName);
-            const resolvedAvatar = loggedInUser.avatar || (loggedInUser.role === ROLES.SUPER_ADMIN ? settings.avatar || null : null);
-            if (resolvedAvatar) {
-              sessionStorage.setItem('userAvatar', resolvedAvatar);
-            } else {
-              sessionStorage.removeItem('userAvatar');
-            }
-          setUserRole(loggedInUser.role);
-          setCurrentUserName(displayName);
-            setCurrentUserAvatar(resolvedAvatar);
-          logActivity(displayName, 'Logged In');
-
-          onLogin(); 
-          showToast(
-            'Access Granted',
-            `Welcome back, ${displayName}!`,
-            'success',
-            'login-result'
-          );
-        } else {
-              setErrorShake(true);
-              setIsLoading(false);
-              showToast(
-                'Access Denied',
-                'Invalid credentials or PIN.',
-                'error',
-                'login-result'
-              );
-              setPin(''); // Clear PIN for retry
-              setCooldown(true);
-              cooldownTimer.current = setTimeout(() => setCooldown(false), 2000);
-              setTimeout(() => setErrorShake(false), 500);
-            }
-        
+      } catch (error) {
+        setErrorShake(true);
+        setCooldown(true);
+        cooldownTimer.current = setTimeout(() => setCooldown(false), 2000);
+        setTimeout(() => setErrorShake(false), 500);
+        showToast('Access Denied', error.message || 'Invalid username, password, or PIN.', 'error', 'login-result');
+      } finally {
         setIsLoading(false);
-    }, 1500);
+      }
+    }, 800);
   };
 
   // Auto-submit when PIN is complete
@@ -653,8 +409,8 @@ const Login = ({ onLogin }) => {
                     <h2 className="text-sm font-bold text-gray-900">Reset {forgotType === 'password' ? 'Password' : 'PIN'}</h2>
                     <p className="text-xs text-gray-600 mt-0.5">
                       {forgotType === 'password'
-                        ? 'Enter your registered email or username. A reset link will be sent to your account email.'
-                        : 'Enter your registered email or username. Reset instructions for your 6-digit PIN will be sent.'}
+                        ? 'Enter your registered account email. A reset link will be sent to that same email.'
+                        : 'Enter your registered account email. PIN reset instructions will be sent to that same email.'}
                     </p>
                   </div>
                 </div>
@@ -664,8 +420,8 @@ const Login = ({ onLogin }) => {
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8m-2 11H5a2 2 0 01-2-2V7a2 2 0 012-2h14a2 2 0 012 2v10a2 2 0 01-2 2z"></path></svg>
                   </div>
                   <input
-                    type="email"
-                    placeholder="Enter Email Address"
+                    type="text"
+                    placeholder="Enter registered email"
                     value={forgotEmail}
                     onChange={e => setForgotEmail(e.target.value)}
                     className="w-full pl-10 pr-3 py-2.5 text-sm rounded-lg border border-gray-300 focus:border-gray-900 focus:ring-2 focus:ring-gray-200 outline-none"
@@ -682,27 +438,11 @@ const Login = ({ onLogin }) => {
                   </button>
                   <button
                     type="button"
-                    className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-gray-900 hover:opacity-90 transition-opacity"
-                    onClick={() => {
-                    const users = JSON.parse(localStorage.getItem('users') || '[]');
-                    let expected = '';
-                    if (email) {
-                      const found = users.find(u => u.username === email || u.email === email);
-                      if (found && found.email) expected = found.email;
-                    }
-                    if (!expected) {
-                      const sa = users.find(u => u.role === ROLES.SUPER_ADMIN);
-                      if (sa && sa.email) expected = sa.email;
-                    }
-                    if (expected && forgotEmail.trim().toLowerCase() === expected.toLowerCase()) {
-                      showToast('Coming soon','Backend required','info');
-                      setShowForgot(false);
-                    } else {
-                      showToast('Email mismatch','Please use the email address stored in your profile','error','login-result');
-                    }
-                  } }
+                    className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-gray-900 hover:opacity-90 transition-opacity disabled:opacity-60 disabled:cursor-not-allowed"
+                    disabled={isLoading}
+                    onClick={handleForgotSubmit}
                   >
-                    Send Reset Link
+                    {isLoading ? 'Sending...' : 'Send Reset Link'}
                   </button>
                 </div>
               </div>

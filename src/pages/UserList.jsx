@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
 import { ROLES, roleNames } from '../constants/roles';
+import { registerApi, updateUserByUsernameApi } from '../services/authApi';
 
 const PASSWORD_RULE = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{8,}$/;
 
@@ -145,7 +146,7 @@ const UserList = () => {
         );
     }, [formData, selectedUser, modalMode]);
 
-    const handleSave = (e) => {
+    const handleSave = async (e) => {
         e.preventDefault();
         
         if (!formData.name || !formData.email || !formData.username) {
@@ -168,16 +169,48 @@ const UserList = () => {
         }
 
         if (modalMode === 'add') {
-            const newUser = {
-                id: newItemId, // Use the ID we calculated earlier
-                ...formData,
-                lastLogin: 'Never'
-            };
-            setUsers([...users, newUser]);
-            logActivity(currentUserName, 'Created User', `Added new user: ${formData.name}`);
-            showToast('User Created', `${formData.name} added to the system.`, 'success', 'user-action');
+            try {
+                const response = await registerApi({
+                    name: formData.name,
+                    username: formData.username,
+                    email: formData.email,
+                    password: formData.password,
+                    pin: formData.pin,
+                    role: formData.role,
+                });
+
+                const newUser = {
+                    id: newItemId,
+                    ...formData,
+                    backendId: response?.user?.id,
+                    status: 'Active',
+                    lastLogin: 'Never',
+                };
+
+                setUsers([...users, newUser]);
+                logActivity(currentUserName, 'Created User', `Added new user: ${formData.name}`);
+                showToast('User Created', `${formData.name} added to the system.`, 'success', 'user-action');
+            } catch (error) {
+                showToast('Create Failed', error.message || 'Unable to create user account.', 'error', 'user-validation');
+                return;
+            }
         } else {
             if (!isFormModified) return;
+
+            try {
+                await updateUserByUsernameApi(selectedUser.username, {
+                    name: formData.name,
+                    username: formData.username,
+                    email: formData.email,
+                    role: formData.role,
+                    isActive: formData.status === 'Active',
+                    ...(formData.password ? { password: formData.password } : {}),
+                    ...(formData.pin ? { pin: formData.pin } : {}),
+                });
+            } catch (error) {
+                showToast('Update Failed', error.message || 'Unable to update user account.', 'error', 'user-validation');
+                return;
+            }
 
             // Check if name changed and update references
             if (selectedUser.name !== formData.name) {

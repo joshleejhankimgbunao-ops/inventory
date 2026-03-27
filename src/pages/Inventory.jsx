@@ -110,8 +110,11 @@ const Inventory = () => {
 
     const handleStockSubmit = async (e) => {
         e.preventDefault();
-        const qty = parseInt(stockForm.quantity);
-        if (!selectedItem || isNaN(qty) || qty <= 0) return;
+        const qty = Number(stockForm.quantity);
+        if (!selectedItem || !Number.isInteger(qty) || qty <= 0) {
+            showToast('Invalid Quantity', 'Please enter a valid quantity (whole number).', 'error', 'stock-qty');
+            return;
+        }
 
         const currentStock = selectedItem.stock || 0;
         if (modalAction === 'OUT') {
@@ -469,18 +472,18 @@ const Inventory = () => {
                             <div>
                                 <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Quantity</label>
                                 <input 
-                                    type="text"
-                                    inputMode="numeric"
-                                    pattern="\\d*"
+                                    type="number"
+                                    min="1"
+                                    step="1"
                                     autoFocus
                                     required
                                     value={stockForm.quantity}
                                     onChange={e => {
-                                        const v = (e.target.value || '').replace(/\D/g, '');
-                                        setStockForm({ ...stockForm, quantity: v });
+                                        const next = e.target.value;
+                                        if (next === '' || /^\d+$/.test(next)) {
+                                            setStockForm({ ...stockForm, quantity: next });
+                                        }
                                     }}
-                                    onInvalid={(e) => e.target.setCustomValidity('Please enter a valid quantity (whole number).')}
-                                    onInput={(e) => e.target.setCustomValidity('')}
                                     className="w-full text-xl font-black text-center p-2.5 bg-gray-50 dark:bg-gray-700 border-2 border-gray-200 dark:border-gray-600 rounded-xl focus:border-gray-900 dark:focus:border-gray-400 outline-none transition-colors text-gray-900 dark:text-white placeholder-gray-300"
                                     placeholder="0"
                                 />

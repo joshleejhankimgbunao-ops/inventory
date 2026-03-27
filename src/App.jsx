@@ -3,6 +3,7 @@ import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-
 import { Toaster, ToastBar } from 'react-hot-toast';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
+import ResetCredential from './pages/ResetCredential';
 import { getAuthToken, clearAuthToken } from './services/apiClient';
 import './App.css';
 
@@ -14,17 +15,18 @@ function App() {
   
   const navigate = useNavigate();
   const location = useLocation();
+  const isPublicRoute = ['/login', '/reset-password', '/reset-pin'].includes(location.pathname);
 
   useEffect(() => {
     // If user is not authenticated and tries to access protected route (anything not /login), redirect
-    if (!isAuthenticated && location.pathname !== '/login') {
+    if (!isAuthenticated && !isPublicRoute) {
          navigate('/login', { replace: true });
     }
     // If user IS authenticated and tries to go to login, redirect to dashboard home
-    if (isAuthenticated && location.pathname === '/login') {
+    if (isAuthenticated && (location.pathname === '/login' || location.pathname === '/reset-password' || location.pathname === '/reset-pin')) {
          navigate('/', { replace: true });
     }
-  }, [isAuthenticated, location.pathname, navigate]);
+  }, [isAuthenticated, isPublicRoute, location.pathname, navigate]);
 
   const handleLogin = () => {
     sessionStorage.setItem('isLoggedIn', 'true');
@@ -107,6 +109,12 @@ function App() {
       <Routes>
         <Route path="/login" element={
           !isAuthenticated ? <Login onLogin={handleLogin} /> : <Navigate to="/" replace />
+        } />
+        <Route path="/reset-password" element={
+          !isAuthenticated ? <ResetCredential mode="password" /> : <Navigate to="/" replace />
+        } />
+        <Route path="/reset-pin" element={
+          !isAuthenticated ? <ResetCredential mode="pin" /> : <Navigate to="/" replace />
         } />
         <Route path="/*" element={
           isAuthenticated ? <Dashboard onLogout={handleLogout} /> : <Navigate to="/login" replace />

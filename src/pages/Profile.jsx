@@ -3,6 +3,7 @@ import { toast } from 'react-hot-toast';
 import { showToast } from '../utils/toastHelper';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
+import { updateMyEmailApi } from '../services/authApi';
 
 const PASSWORD_RULE = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{8,}$/;
 
@@ -256,7 +257,28 @@ const Profile = () => {
        );
     }, [profileData, settings, userRole, autoPrint, newPin, confirmPin, oldPin, currentPassword, confirmPassword, allPasswordChecksMet, storedPasswordValue]);
 
-    const handleSave = () => {
+    const handleSave = async () => {
+        const normalizedEmail = (profileData.email || '').trim().toLowerCase();
+
+        if (!normalizedEmail) {
+            showToast('Error', 'Email is required.', 'error');
+            return;
+        }
+
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+            showToast('Error', 'Enter a valid email address.', 'error');
+            return;
+        }
+
+        try {
+            await updateMyEmailApi(normalizedEmail);
+        } catch (error) {
+            showToast('Error', error.message || 'Unable to update account email.', 'error');
+            return;
+        }
+
+        profileData.email = normalizedEmail;
+
         if (profileData.adminPassword && profileData.adminPassword !== confirmPassword) {
             showToast('Error', 'Passwords do not match!', 'error');
             return; 
