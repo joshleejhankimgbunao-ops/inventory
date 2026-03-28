@@ -5,7 +5,12 @@
   "main": "src/server.js",
   "scripts": {
     "dev": "nodemon src/server.js",
+    "dev:local": "node scripts/runWithEnv.js local dev",
+    "dev:atlas": "node scripts/runWithEnv.js atlas dev",
     "start": "node src/server.js",
+    "start:local": "node scripts/runWithEnv.js local start",
+    "start:atlas": "node scripts/runWithEnv.js atlas start",
+    "sync:users:local-to-atlas": "node scripts/syncUsersLocalToAtlas.js",
     "seed": "node src/scripts/seed.js",
     "seed:reset": "node src/scripts/seed.js --reset",
     "test": "echo \"No tests yet\""

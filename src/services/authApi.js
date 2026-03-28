@@ -18,10 +18,31 @@ export const meApi = async () => {
   return apiRequest('/api/auth/me');
 };
 
+export const verifyCurrentPasswordApi = async (currentPassword) => {
+  return apiRequest('/api/auth/me/verify-password', {
+    method: 'POST',
+    body: JSON.stringify({ currentPassword }),
+  });
+};
+
+export const verifyCurrentPinApi = async (currentPin) => {
+  return apiRequest('/api/auth/me/verify-pin', {
+    method: 'POST',
+    body: JSON.stringify({ currentPin }),
+  });
+};
+
 export const updateMyEmailApi = async (email) => {
   return apiRequest('/api/auth/me/email', {
     method: 'PATCH',
     body: JSON.stringify({ email }),
+  });
+};
+
+export const updateMyProfileApi = async (payload) => {
+  return apiRequest('/api/auth/me/profile', {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
   });
 };
 

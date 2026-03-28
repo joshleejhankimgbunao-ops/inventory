@@ -159,14 +159,33 @@ const History = () => {
     const indexOfLastItem = currentPage * itemsPerPage;
     const indexOfFirstItem = indexOfLastItem - itemsPerPage;
     
-    // items are naturally chronological (oldest -> newest) in the arrays usually
-    // We want to show based on sortOrder
     const sortedItems = useMemo(() => {
-        const list = [...currentList];
-        if (sortOrder === 'desc') {
-            return list.reverse(); // Newest first
-        }
-        return list; // Oldest first
+        const withMeta = currentList.map((item, index) => {
+            const parsedTime = new Date(item.date).getTime();
+            return {
+                item,
+                index,
+                time: Number.isNaN(parsedTime) ? null : parsedTime,
+            };
+        });
+
+        withMeta.sort((a, b) => {
+            if (a.time !== null && b.time !== null && a.time !== b.time) {
+                return sortOrder === 'desc' ? b.time - a.time : a.time - b.time;
+            }
+
+            if (a.time !== null && b.time === null) {
+                return -1;
+            }
+
+            if (a.time === null && b.time !== null) {
+                return 1;
+            }
+
+            return sortOrder === 'desc' ? b.index - a.index : a.index - b.index;
+        });
+
+        return withMeta.map((entry) => entry.item);
     }, [currentList, sortOrder]);
 
     const currentItems = sortedItems.slice(indexOfFirstItem, indexOfLastItem);

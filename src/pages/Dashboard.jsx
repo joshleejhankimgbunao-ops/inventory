@@ -70,6 +70,7 @@ const Dashboard = ({ onLogout }) => {
     if (path.startsWith('/profile')) return 'Profile';
     return 'Dashboard';
   }, [location.pathname]);
+    const isProfilePage = location.pathname.startsWith('/profile');
 
   // Handle Navigation and Close Menu
   const handleNavigation = (menuName, path) => {
@@ -916,7 +917,7 @@ const Dashboard = ({ onLogout }) => {
         </aside>
 
         {/* Main Content Area */}
-        <main className={`flex-1 transition-all duration-300 ease-in-out bg-gray-50 p-2 ml-0 ${isSidebarHovered ? 'md:ml-56' : 'md:ml-16'} ${isFixedLayout ? 'md:overflow-hidden h-full overflow-y-auto' : 'overflow-y-auto h-full'}`}>
+        <main className={`flex-1 transition-all duration-300 ease-in-out bg-gray-50 ml-0 ${isSidebarHovered ? 'md:ml-56' : 'md:ml-16'} ${isProfilePage ? 'p-2 overflow-hidden h-full' : isFixedLayout ? 'p-2 md:overflow-hidden h-full overflow-y-auto' : 'p-2 overflow-y-auto h-full'}`}>
            <div className={`w-full ${isFixedLayout ? 'md:h-full min-h-full' : ''}`}>
              
              <Suspense fallback={<PageSkeleton />}>

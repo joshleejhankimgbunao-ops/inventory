@@ -79,3 +79,26 @@ button, a, [role="button"], select, .clickable {
   cursor: pointer;
 }
 
+/* Hide scrollbar visuals but keep content scrollable */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+/* Compact field sizing for Profile right-side form card */
+.profile-form-card input,
+.profile-form-card select {
+  min-height: 36px;
+  font-size: 12px;
+}
+
+.profile-form-card button {
+  font-size: 11px;
+}
+

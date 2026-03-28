@@ -6,6 +6,8 @@ import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
 import { ROLES } from '../constants/roles';
 
+const EMAIL_RULE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 const Partners = ({ viewOnly = false }) => {
     const { appSettings: settings, currentUserName, userRole } = useAuth();
     const { processedInventory: inventory, logActivity } = useInventory();
@@ -90,6 +92,13 @@ const Partners = ({ viewOnly = false }) => {
     const handleAddPartner = (e) => {
         if (isViewOnly) return;
         e.preventDefault();
+        const normalizedEmail = (newPartner.email || '').trim().toLowerCase();
+
+        if (!EMAIL_RULE.test(normalizedEmail)) {
+            showToast('Invalid Email', 'Please enter a complete valid email address (e.g. name@example.com).', 'error', 'partner-validation');
+            return;
+        }
+
         // Validate contact length if present
         const contactDigits = (newPartner.contact || '').toString().replace(/\D/g, '');
         if (contactDigits && contactDigits.length !== 11) {
@@ -100,6 +109,7 @@ const Partners = ({ viewOnly = false }) => {
         if (isEditMode) {
              const updatedItem = {
                 ...newPartner,
+                     email: normalizedEmail,
                 [activeTab === 'suppliers' ? 'products' : 'type']: newPartner.note || (activeTab === 'suppliers' ? 'General' : 'Regular')
             };
 
@@ -114,6 +124,7 @@ const Partners = ({ viewOnly = false }) => {
             const newItem = {
                 id: Date.now(),
                 ...newPartner,
+                email: normalizedEmail,
                 isArchived: false,
                 [activeTab === 'suppliers' ? 'products' : 'type']: newPartner.note || (activeTab === 'suppliers' ? 'General' : 'Regular')
             };
@@ -508,12 +519,13 @@ const Partners = ({ viewOnly = false }) => {
                                         <label className="block text-xs font-bold text-gray-700 mb-1">Email</label>
                                         <input 
                                             type="email" 
-                                            placeholder="e.g. email@example.com"
+                                            placeholder="e.g. partner@example.com"
                                             className="w-full bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-gray-900 outline-none transition-all" 
                                             value={newPartner.email}
                                             onChange={e => setNewPartner({...newPartner, email: e.target.value})}
                                             required
                                         />
+                                        <p className="text-[10px] text-gray-400 mt-1">Use a complete valid email address (e.g. name@example.com).</p>
                                     </div>
                                 </div>
                                 <div>

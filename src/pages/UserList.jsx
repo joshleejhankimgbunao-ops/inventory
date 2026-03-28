@@ -7,6 +7,38 @@ import { ROLES, roleNames } from '../constants/roles';
 import { registerApi, updateUserByUsernameApi } from '../services/authApi';
 
 const PASSWORD_RULE = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{8,}$/;
+const EMAIL_RULE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const getFieldErrorsFromMessage = (message = '') => {
+    const lowerMessage = String(message).toLowerCase();
+    const nextErrors = {};
+
+    if (lowerMessage.includes('username or email already in use') || lowerMessage.includes('email already in use')) {
+        nextErrors.email = 'Email is already in use by another account.';
+    }
+
+    if (lowerMessage.includes('valid email')) {
+        nextErrors.email = nextErrors.email || 'Please enter a complete valid email address.';
+    }
+
+    if (lowerMessage.includes('phone number must be exactly 11 digits')) {
+        nextErrors.phone = 'Phone number must be exactly 11 digits.';
+    }
+
+    if (lowerMessage.includes('pin must be exactly 6 digits')) {
+        nextErrors.pin = 'PIN must be exactly 6 digits.';
+    }
+
+    if (lowerMessage.includes('password must be at least')) {
+        nextErrors.password = 'Password must meet minimum security requirements.';
+    }
+
+    if (lowerMessage.includes('user not found')) {
+        nextErrors.username = 'No backend account found for this user. Sync or recreate this account first.';
+    }
+
+    return nextErrors;
+};
 
 const UserList = () => {
     const { currentUserName } = useAuth();
@@ -43,6 +75,7 @@ const UserList = () => {
     
     const initialFormState = { name: '', username: '', email: '', phone: '', role: ROLES.CASHIER, status: 'Active', password: '', pin: '' };
     const [formData, setFormData] = useState(initialFormState);
+    const [fieldErrors, setFieldErrors] = useState({});
     const [newItemId, setNewItemId] = useState(null);
     const passwordChecks = {
         length: (formData.password || '').length >= 8,
@@ -99,6 +132,7 @@ const UserList = () => {
     // Handlers
     const handleOpenAdd = () => {
         setModalMode('add');
+        setFieldErrors({});
         const nextId = users.length > 0 ? Math.max(...users.map(u => u.id)) + 1 : 1;
         setNewItemId(nextId);
         
@@ -118,6 +152,7 @@ const UserList = () => {
 
     const handleOpenEdit = (user) => {
         setModalMode('edit');
+        setFieldErrors({});
         setSelectedUser(user);
         setFormData({ 
             name: user.name, 
@@ -148,22 +183,38 @@ const UserList = () => {
 
     const handleSave = async (e) => {
         e.preventDefault();
+        const normalizedEmail = (formData.email || '').trim().toLowerCase();
+        const nextFieldErrors = {};
+        setFieldErrors({});
         
         if (!formData.name || !formData.email || !formData.username) {
+            if (!formData.name) nextFieldErrors.name = 'Full name is required.';
+            if (!formData.username) nextFieldErrors.username = 'Username is required.';
+            if (!formData.email) nextFieldErrors.email = 'Email address is required.';
+            setFieldErrors(nextFieldErrors);
             showToast('Missing Information', 'Name, Username, and Email are required', 'error', 'user-validation');
             return;
         }
 
+        if (!EMAIL_RULE.test(normalizedEmail)) {
+            setFieldErrors({ email: 'Please enter a complete valid email address.' });
+            showToast('Invalid Email', 'Please enter a complete valid email address (e.g. name@example.com).', 'error', 'user-validation');
+            return;
+        }
+
         if (formData.phone && formData.phone.length !== 11) {
+            setFieldErrors({ phone: 'Phone number must be exactly 11 digits.' });
             showToast('Invalid Phone', 'Phone number must be exactly 11 digits.', 'error', 'user-validation');
             return;
         }
         if (formData.pin && formData.pin.length !== 6) {
+            setFieldErrors({ pin: 'PIN must be exactly 6 digits.' });
             showToast('Invalid PIN', 'PIN must be exactly 6 digits.', 'error', 'user-validation');
             return;
         }
 
         if (formData.password && !PASSWORD_RULE.test(formData.password)) {
+            setFieldErrors({ password: 'Password must meet minimum security requirements.' });
             showToast('Weak Password', 'Password must be at least 8 characters and include uppercase, lowercase, number, and special character.', 'error', 'user-validation');
             return;
         }
@@ -173,7 +224,7 @@ const UserList = () => {
                 const response = await registerApi({
                     name: formData.name,
                     username: formData.username,
-                    email: formData.email,
+                    email: normalizedEmail,
                     password: formData.password,
                     pin: formData.pin,
                     role: formData.role,
@@ -182,6 +233,7 @@ const UserList = () => {
                 const newUser = {
                     id: newItemId,
                     ...formData,
+                    email: normalizedEmail,
                     backendId: response?.user?.id,
                     status: 'Active',
                     lastLogin: 'Never',
@@ -191,6 +243,7 @@ const UserList = () => {
                 logActivity(currentUserName, 'Created User', `Added new user: ${formData.name}`);
                 showToast('User Created', `${formData.name} added to the system.`, 'success', 'user-action');
             } catch (error) {
+                setFieldErrors(getFieldErrorsFromMessage(error.message));
                 showToast('Create Failed', error.message || 'Unable to create user account.', 'error', 'user-validation');
                 return;
             }
@@ -201,27 +254,28 @@ const UserList = () => {
                 await updateUserByUsernameApi(selectedUser.username, {
                     name: formData.name,
                     username: formData.username,
-                    email: formData.email,
+                    email: normalizedEmail,
                     role: formData.role,
                     isActive: formData.status === 'Active',
                     ...(formData.password ? { password: formData.password } : {}),
                     ...(formData.pin ? { pin: formData.pin } : {}),
                 });
             } catch (error) {
+                setFieldErrors(getFieldErrorsFromMessage(error.message));
                 showToast('Update Failed', error.message || 'Unable to update user account.', 'error', 'user-validation');
                 return;
             }
 
-            // Check if name changed and update references
             if (selectedUser.name !== formData.name) {
                 renameUserReferences(selectedUser.name, formData.name);
             }
 
-            setUsers(users.map(u => u.id === selectedUser.id ? { ...u, ...formData } : u));
+            setUsers(users.map(u => u.id === selectedUser.id ? { ...u, ...formData, email: normalizedEmail } : u));
             logActivity(currentUserName, 'Updated User', `Updated user: ${formData.name}`);
             showToast('User Updated', `${formData.name}'s profile has been updated.`, 'success', 'user-action');
         }
         setIsModalOpen(false);
+        setFieldErrors({});
     };
 
     const toggleArchive = (user) => {
@@ -511,6 +565,7 @@ const UserList = () => {
                                         onChange={e => {
                                             const val = e.target.value;
                                             if (/^[a-zA-Z\s.-]*$/.test(val)) {
+                                                setFieldErrors(prev => ({ ...prev, name: '' }));
                                                 setFormData({...formData, name: val});
                                             }
                                         }}
@@ -518,6 +573,7 @@ const UserList = () => {
                                         placeholder="John Doe"
                                     />
                                     <p className="text-[10px] text-gray-400 mt-1">Use letters, spaces, periods, or hyphens.</p>
+                                    {fieldErrors.name && <p className="text-rose-500 text-[11px] mt-1">{fieldErrors.name}</p>}
                                 </div>
                             </div>
                             
@@ -558,11 +614,15 @@ const UserList = () => {
                                         type="email" 
                                         required
                                         value={formData.email}
-                                        onChange={e => setFormData({...formData, email: e.target.value})}
+                                        onChange={e => {
+                                            setFieldErrors(prev => ({ ...prev, email: '' }));
+                                            setFormData({...formData, email: e.target.value});
+                                        }}
                                         className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
-                                        placeholder="user@system.com"
+                                        placeholder="user@example.com"
                                     />
-                                    <p className="text-[10px] text-gray-400 mt-1">Used for login and notifications; must be valid.</p>
+                                    <p className="text-[10px] text-gray-400 mt-1">Used for login and notifications; must be a complete valid email address.</p>
+                                    {fieldErrors.email && <p className="text-rose-500 text-[11px] mt-1">{fieldErrors.email}</p>}
                                 </div>
                                 <div>
                                     <label className="block text-xs font-bold text-gray-500 dark:text-gray-400  tracking-wider mb-1">Phone Number</label>
@@ -572,7 +632,10 @@ const UserList = () => {
                                         onChange={e => {
                                             // Allow only digits, limit to 11
                                             const digits = e.target.value.replace(/\D/g, '');
-                                            if (digits.length <= 11) setFormData({...formData, phone: digits});
+                                            if (digits.length <= 11) {
+                                                setFieldErrors(prev => ({ ...prev, phone: '' }));
+                                                setFormData({...formData, phone: digits});
+                                            }
                                         }}
                                         className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white" required
                                         placeholder="09171234567"
@@ -581,6 +644,7 @@ const UserList = () => {
                                     {formData.phone && formData.phone.length !== 11 && (
                                         <p className="text-rose-500 text-[11px] mt-1">Phone number must be exactly 11 digits.</p>
                                     )}
+                                    {fieldErrors.phone && <p className="text-rose-500 text-[11px] mt-1">{fieldErrors.phone}</p>}
                                 </div>
                             </div>
 
@@ -594,6 +658,7 @@ const UserList = () => {
                                         value={formData.username}
                                         onChange={e => {
                                             const val = e.target.value.toLowerCase().replace(/[^a-z0-9_.]/g, '');
+                                            setFieldErrors(prev => ({ ...prev, username: '' }));
                                             setFormData({...formData, username: val});
                                         }}
                                         className={`w-full p-2 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white ${modalMode === 'add' ? 'bg-gray-100 dark:bg-gray-800 text-gray-500 cursor-not-allowed' : 'bg-white dark:bg-gray-700'}`}
@@ -601,6 +666,7 @@ const UserList = () => {
                                     />
                                     {modalMode === 'add' && <p className="text-[10px] text-gray-400 mt-1">Auto-generated based on ID</p>}
                                     {modalMode === 'edit' && <p className="text-[10px] text-gray-400 mt-1">Alphanumeric, underscores and dots allowed. Cannot be changed for new users.</p>}
+                                    {fieldErrors.username && <p className="text-rose-500 text-[11px] mt-1">{fieldErrors.username}</p>}
                                 </div>
                                 <div>
                                     <label className="block text-xs font-bold text-gray-500 dark:text-gray-400  tracking-wider mb-1">
@@ -611,7 +677,10 @@ const UserList = () => {
                                             type={modalMode === 'add' ? "text" : "password"} // Show text for auto-gen password
                                             disabled={modalMode === 'add'}
                                             value={formData.password}
-                                            onChange={e => setFormData({...formData, password: e.target.value})}
+                                            onChange={e => {
+                                                setFieldErrors(prev => ({ ...prev, password: '' }));
+                                                setFormData({...formData, password: e.target.value});
+                                            }}
                                             className={`w-full p-2 border rounded-lg text-xs font-medium focus:ring-2 outline-none text-gray-900 dark:text-white ${modalMode === 'add' ? 'bg-gray-100 dark:bg-gray-800 text-gray-500 cursor-not-allowed font-mono' : 'bg-white dark:bg-gray-700'} ${
                                                 formData.password
                                                     ? allPasswordChecksMet
@@ -637,6 +706,7 @@ const UserList = () => {
                                     </div>
                                     {modalMode === 'add' && <p className="text-[10px] text-gray-400 mt-1">Auto-generated secure password</p>}
                                     {modalMode === 'edit' && <p className="text-[10px] text-gray-400 mt-1">Leave blank to keep existing password.</p>}
+                                    {fieldErrors.password && <p className="text-rose-500 text-[11px] mt-1">{fieldErrors.password}</p>}
                                     {modalMode === 'edit' && formData.password && (
                                         <div className="mt-2 rounded-lg border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-800 p-2">
                                             <p className="text-[10px] font-bold uppercase tracking-wide text-gray-600 dark:text-gray-300 mb-1.5">Password Requirements</p>
@@ -680,12 +750,16 @@ const UserList = () => {
                                         maxLength={6}
                                         onChange={e => {
                                             const digits = e.target.value.replace(/\D/g, '');
-                                            if (digits.length <= 6) setFormData({...formData, pin: digits});
+                                            if (digits.length <= 6) {
+                                                setFieldErrors(prev => ({ ...prev, pin: '' }));
+                                                setFormData({...formData, pin: digits});
+                                            }
                                         }}
                                         className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
                                     />
                                     {modalMode === 'add' && <p className="text-[10px] text-gray-400 mt-1">Auto-generated 6‑digit PIN</p>}
                                     {modalMode === 'edit' && <p className="text-[10px] text-gray-400 mt-1">Leave blank to retain current PIN or enter a new 6‑digit code.</p>}
+                                    {fieldErrors.pin && <p className="text-rose-500 text-[11px] mt-1">{fieldErrors.pin}</p>}
                                 </div>
                             </div>
 

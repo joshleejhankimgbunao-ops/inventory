@@ -329,9 +329,9 @@ const Reports = () => {
   };
 
   return (
-        <div className="h-auto md:h-[calc(100vh-80px)] flex flex-col gap-2 md:overflow-hidden p-2">
-    <div id="report-container" className="relative h-auto md:h-full flex flex-col bg-slate-200/50 rounded-2xl shadow-sm border border-gray-100 md:overflow-hidden border-t-8 border-t-[#111827] p-4">
-      <div className="h-auto md:h-full flex flex-col gap-3 md:overflow-hidden">
+        <div className="h-auto md:h-[calc(100vh-80px)] flex flex-col gap-2 md:overflow-visible p-2">
+    <div id="report-container" className="relative h-auto md:h-full flex flex-col bg-slate-200/50 rounded-2xl shadow-sm border border-gray-100 md:overflow-visible border-t-8 border-t-[#111827] p-4">
+      <div className="h-auto md:h-full flex flex-col gap-3 md:overflow-visible">
         <div className="flex flex-col gap-4 shrink-0 border-b border-gray-200 pb-4">
           <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
             
@@ -403,7 +403,7 @@ const Reports = () => {
                   </div>
     
                   {showExportMenu && (
-                    <div className="absolute left-0 top-full mt-2 z-30 w-44 rounded-lg border border-gray-200 bg-white shadow-xl p-2 space-y-2">
+                    <div className="absolute right-0 top-full mt-2 z-30 w-44 rounded-lg border border-gray-200 bg-white shadow-xl p-2 space-y-2">
                       {!isAdminInventoryOnly && (
                         <select
                           value={exportType}

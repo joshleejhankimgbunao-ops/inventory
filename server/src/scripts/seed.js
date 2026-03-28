@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 
 const bcrypt = require('bcryptjs');
 const mongoose = require('mongoose');
@@ -9,30 +9,12 @@ const Sale = require('../models/Sale');
 
 const usersSeed = [
   {
-    name: 'Owner Account',
-    username: 'owner',
-    email: 'owner@example.com',
-    password: 'Owner123!',
-    pin: '123456',
+    name: process.env.SEED_SUPERADMIN_NAME || 'JJ Bunao',
+    username: process.env.SEED_SUPERADMIN_USERNAME || 'joshlee',
+    email: process.env.SEED_SUPERADMIN_EMAIL || 'jjbunao1@gmail.com',
+    password: process.env.SEED_SUPERADMIN_PASSWORD || 'Bunao123.',
+    pin: process.env.SEED_SUPERADMIN_PIN || '111111',
     role: 'superadmin',
-    isActive: true,
-  },
-  {
-    name: 'Admin Account',
-    username: 'admin1',
-    email: 'admin1@example.com',
-    password: 'Admin123!',
-    pin: '123456',
-    role: 'admin',
-    isActive: true,
-  },
-  {
-    name: 'Cashier Account',
-    username: 'cashier1',
-    email: 'cashier1@example.com',
-    password: 'Cashier123!',
-    pin: '123456',
-    role: 'cashier',
     isActive: true,
   },
 ];
@@ -172,10 +154,7 @@ const runSeed = async () => {
     console.log(`Users: ${users.length}`);
     console.log(`Products: ${products.length}`);
     console.log(`Sample sale: ${sale ? 'created/present' : 'not created'}`);
-    console.log('Sample credentials:');
-    console.log(' - superadmin: owner / Owner123! / PIN 123456 / owner@example.com');
-    console.log(' - admin: admin1 / Admin123! / PIN 123456 / admin1@example.com');
-    console.log(' - cashier: cashier1 / Cashier123! / PIN 123456 / cashier1@example.com');
+    console.log('Seeded credentials are set for superadmin only.');
   } catch (error) {
     console.error('Seeding failed:', error.message);
     process.exitCode = 1;

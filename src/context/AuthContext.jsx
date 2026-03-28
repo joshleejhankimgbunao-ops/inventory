@@ -128,6 +128,20 @@ export const AuthProvider = ({ children }) => {
         }
     });
 
+    const resolveNonCashierName = (fallbackStoredName) => {
+        const storedName = typeof fallbackStoredName === 'string' ? fallbackStoredName : sessionStorage.getItem('userName');
+        const authUsername = (sessionStorage.getItem('authUsername') || '').trim().toLowerCase();
+        const configuredAdminUser = (appSettings.adminUser || '').trim().toLowerCase();
+        const preferredDisplayName = (appSettings.adminDisplayName || '').trim();
+
+        const isPrimaryAdminAccount = authUsername && configuredAdminUser && authUsername === configuredAdminUser;
+        if (isPrimaryAdminAccount && preferredDisplayName) {
+            return preferredDisplayName;
+        }
+
+        return storedName || preferredDisplayName || 'Admin User';
+    };
+
     // 3. Current User Name Logic
     // store as state so updates propagate even when role remains constant
     const [currentUserName, setCurrentUserName] = useState(() => {
@@ -140,8 +154,7 @@ export const AuthProvider = ({ children }) => {
             }
             return 'Cashier';
         }
-        const stored = sessionStorage.getItem('userName');
-        return stored || appSettings.adminDisplayName || 'Admin User';
+        return resolveNonCashierName();
     });
 
     // keep the name in sync whenever the underlying role or settings change
@@ -157,7 +170,7 @@ export const AuthProvider = ({ children }) => {
             }
         } else {
             const stored = sessionStorage.getItem('userName');
-            setCurrentUserName(stored || appSettings.adminDisplayName || 'Admin User');
+            setCurrentUserName(resolveNonCashierName(stored));
         }
     }, [userRole, appSettings]);
 

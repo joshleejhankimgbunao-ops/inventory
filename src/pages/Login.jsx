@@ -154,10 +154,28 @@ const Login = ({ onLogin }) => {
         }
 
         const backendRole = response.user.role || ROLES.CASHIER;
-        const backendName = response.user.name || response.user.username || 'User';
+        const backendFullName = response.user.name || response.user.username || 'User';
+        const backendUsername = (response.user.username || '').trim().toLowerCase();
+        let preferredDisplayName = '';
+        let configuredAdminUser = '';
+
+        try {
+          const settings = JSON.parse(localStorage.getItem('appSettings') || '{}');
+          preferredDisplayName = (settings.adminDisplayName || '').trim();
+          configuredAdminUser = (settings.adminUser || '').trim().toLowerCase();
+        } catch {
+          preferredDisplayName = '';
+          configuredAdminUser = '';
+        }
+
+        const isPrimaryAdminAccount = backendUsername && configuredAdminUser && backendUsername === configuredAdminUser;
+        const backendName = isPrimaryAdminAccount && preferredDisplayName
+          ? preferredDisplayName
+          : backendFullName;
 
         setAuthToken(response.token);
         sessionStorage.setItem('isLoggedIn', 'true');
+        sessionStorage.setItem('authUsername', response.user.username || '');
 
         applyAuthenticatedSession({
           role: backendRole,

@@ -24,6 +24,7 @@ const sanitizeUser = (user) => ({
   email: user.email,
   role: user.role,
   isActive: user.isActive,
+  lastLogin: user.lastLogin,
 });
 
 const normalizeValue = (value) => {
@@ -115,6 +116,141 @@ const updateMyEmail = async (req, res, next) => {
       message: 'Account email updated.',
       user: sanitizeUser(req.user),
     });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+const updateMyProfile = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.user._id).select('+password +pinHash');
+
+    if (!user || !user.isActive) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+
+    const nextName = typeof req.body?.name === 'string' && req.body.name.trim()
+      ? req.body.name.trim()
+      : user.name;
+    const nextUsername = req.body?.username ? normalizeValue(req.body.username) : user.username;
+    const nextEmail = req.body?.email ? normalizeValue(req.body.email) : user.email;
+
+    if (!nextUsername) {
+      return res.status(400).json({ message: 'username is required.' });
+    }
+
+    if (!nextEmail || !isValidEmail(nextEmail)) {
+      return res.status(400).json({ message: 'A valid email is required.' });
+    }
+
+    const duplicate = await User.findOne({
+      _id: { $ne: user._id },
+      $or: [{ username: nextUsername }, { email: nextEmail }],
+    });
+
+    if (duplicate) {
+      return res.status(409).json({ message: 'Username or email already in use.' });
+    }
+
+    const hasNewPassword = typeof req.body?.newPassword === 'string' && req.body.newPassword.length > 0;
+    if (hasNewPassword) {
+      if (!isValidPassword(req.body.newPassword)) {
+        return res.status(400).json({
+          message: `newPassword must be at least ${PASSWORD_MIN_LENGTH} characters and include letters and numbers.`,
+        });
+      }
+
+      if (typeof req.body?.currentPassword !== 'string' || !req.body.currentPassword) {
+        return res.status(400).json({ message: 'currentPassword is required to set a new password.' });
+      }
+
+      const passwordMatched = await bcrypt.compare(req.body.currentPassword, user.password);
+      if (!passwordMatched) {
+        return res.status(401).json({ message: 'Current password is incorrect.' });
+      }
+
+      user.password = await bcrypt.hash(req.body.newPassword, 10);
+      user.authRevokedAt = new Date();
+    }
+
+    const hasNewPin = req.body?.newPin !== undefined && req.body?.newPin !== null && String(req.body.newPin) !== '';
+    if (hasNewPin) {
+      const nextPin = String(req.body.newPin);
+      if (!isValidPin(nextPin)) {
+        return res.status(400).json({ message: `newPin must be exactly ${PIN_LENGTH} digits.` });
+      }
+
+      if (req.body?.currentPin === undefined || req.body?.currentPin === null || String(req.body.currentPin) === '') {
+        return res.status(400).json({ message: 'currentPin is required to set a new PIN.' });
+      }
+
+      if (!user.pinHash) {
+        return res.status(400).json({ message: 'Current PIN is not set for this account.' });
+      }
+
+      const pinMatched = await bcrypt.compare(String(req.body.currentPin), user.pinHash);
+      if (!pinMatched) {
+        return res.status(401).json({ message: 'Current PIN is incorrect.' });
+      }
+
+      user.pinHash = await bcrypt.hash(nextPin, 10);
+      user.authRevokedAt = new Date();
+    }
+
+    user.name = nextName;
+    user.username = nextUsername;
+    user.email = nextEmail;
+
+    await user.save({ validateBeforeSave: false });
+
+    return res.json({
+      message: 'Profile updated.',
+      user: sanitizeUser(user),
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+const verifyMyCurrentPassword = async (req, res, next) => {
+  try {
+    const currentPassword = req.body?.currentPassword;
+
+    if (typeof currentPassword !== 'string' || !currentPassword) {
+      return res.status(400).json({ message: 'currentPassword is required.' });
+    }
+
+    const user = await User.findById(req.user._id).select('+password');
+    if (!user || !user.isActive) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+
+    const valid = await bcrypt.compare(currentPassword, user.password);
+    return res.json({ valid });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+const verifyMyCurrentPin = async (req, res, next) => {
+  try {
+    const currentPin = req.body?.currentPin;
+
+    if (currentPin === undefined || currentPin === null || String(currentPin) === '') {
+      return res.status(400).json({ message: 'currentPin is required.' });
+    }
+
+    const user = await User.findById(req.user._id).select('+pinHash');
+    if (!user || !user.isActive) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+
+    if (!user.pinHash) {
+      return res.json({ valid: false });
+    }
+
+    const valid = await bcrypt.compare(String(currentPin), user.pinHash);
+    return res.json({ valid });
   } catch (error) {
     return next(error);
   }
@@ -297,6 +433,14 @@ const register = async (req, res, next) => {
       return res.status(409).json({ message: 'Username or email already exists.' });
     }
 
+    const requestedRole = normalizeValue(role);
+    const isSuperadminCreator = req.user?.role === 'superadmin';
+    let assignedRole = 'cashier';
+
+    if (isSuperadminCreator && ['admin', 'cashier'].includes(requestedRole)) {
+      assignedRole = requestedRole;
+    }
+
     const hashed = await bcrypt.hash(password, 10);
     const user = await User.create({
       name,
@@ -304,7 +448,7 @@ const register = async (req, res, next) => {
       email: normalizedEmail,
       password: hashed,
       pinHash: pin ? await bcrypt.hash(pin, 10) : undefined,
-      role,
+      role: assignedRole,
     });
 
     const token = signToken(user._id);
@@ -456,6 +600,9 @@ module.exports = {
   register,
   login,
   me,
+  verifyMyCurrentPassword,
+  verifyMyCurrentPin,
+  updateMyProfile,
   updateMyEmail,
   updateUserByUsername,
   requestPasswordReset,
