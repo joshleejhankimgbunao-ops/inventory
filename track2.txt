@@ -1,0 +1,119 @@
+257: 0 | iframe.contentDocument.write('<html><head>' + printStyle + '</head><body><div style="max-width: 80mm; margin: 0 auto;">' + printContent + '</div></body></html>');
+278: 1 | <div className="h-[calc(100vh-80px)] flex flex-col overflow-auto md:overflow-hidden p-2 gap-2 bg-slate-200 dark:bg-gray-900">
+279: 2 | <div className="bg-white rounded-xl shadow-sm border border-gray-100 md:flex-1 flex flex-col border-t-8 border-t-[#111827] md:overflow-hidden">
+281: 3 | <div className="p-5 flex flex-col gap-5 md:shrink-0">
+282: 4 | <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+283: 5 | <div className="flex items-center gap-2">
+284: 6 | <div>
+288: 5 | </div>
+289: 6 | <div>
+290: 7 | <div className="flex items-center gap-2">
+292: 6 | </div>
+294: 5 | </div>
+295: 4 | </div>
+298: 5 | <div className="flex p-1 bg-gray-100 rounded-lg border border-gray-200">
+329: 4 | </div>
+330: 3 | </div>
+332: 4 | <div className="flex items-center gap-2 mb-1">
+334: 5 | <div className="relative flex-1 md:flex-none md:w-64 group">
+342: 6 | <div className="absolute left-3 top-1/2 -translate-y-1/2 p-1 bg-white rounded-lg shadow-sm border border-gray-100 group-focus-within:border-gray-900 group-focus-within:bg-gray-900 transition-all duration-300">
+346: 5 | </div>
+347: 4 | </div>
+350: 5 | <div className="relative z-30">
+366: 6 | <div className="absolute top-full mt-2 w-80 bg-white rounded-xl shadow-2xl border border-gray-100 py-2 z-50 right-0 md:left-0 animate-in fade-in slide-in-from-top-2 duration-200 max-h-[75vh] overflow-y-auto">
+369: 7 | <div className="px-3 pt-2 pb-1">
+370: 7 | <div className="text-[10px] font-black text-gray-400 uppercase tracking-wider">Date Range</div>
+371: 6 | </div>
+372: 7 | <div className="px-2 pb-2 flex flex-wrap gap-1">
+382: 6 | </div>
+384: 7 | <div className="px-3 pb-2">
+387: 6 | </div>
+390: 7 | <div className="px-3 pb-2 flex gap-2">
+395: 6 | </div>
+398: 6 | <div className="border-t border-gray-100 mx-3"></div>
+401: 7 | <div className="px-3 pt-2 pb-1">
+402: 7 | <div className="text-[10px] font-black text-gray-400 uppercase tracking-wider">Sort By</div>
+403: 6 | </div>
+404: 7 | <div className="px-2 pb-2 flex gap-1">
+414: 6 | </div>
+419: 6 | <div className="border-t border-gray-100 mx-3"></div>
+420: 7 | <div className="px-3 pt-2 pb-1">
+421: 7 | <div className="text-[10px] font-black text-gray-400 uppercase tracking-wider">Processed By</div>
+422: 6 | </div>
+423: 7 | <div className="px-2 pb-2 flex flex-wrap gap-1">
+433: 6 | </div>
+440: 6 | <div className="border-t border-gray-100 mx-3"></div>
+441: 7 | <div className="px-3 pt-2 pb-1">
+442: 7 | <div className="text-[10px] font-black text-gray-400 uppercase tracking-wider">Action Type</div>
+443: 6 | </div>
+444: 7 | <div className="px-2 pb-2 flex flex-wrap gap-1">
+454: 6 | </div>
+461: 6 | <div className="border-t border-gray-100 mx-3"></div>
+462: 7 | <div className="px-2 pt-2 pb-1">
+475: 6 | </div>
+478: 5 | </div>
+480: 4 | </div>
+484: 5 | <div className="fixed inset-0 z-20 bg-transparent" onClick={() => setIsFilterPanelOpen(false)} />
+486: 4 | </div>
+488: 5 | <div className="flex-1 overflow-auto w-full px-4 pt-0">
+505: 6 | <div className="flex flex-col items-center justify-center text-gray-500 border-2 border-dashed border-gray-300 rounded-3xl p-8 bg-gray-50/50">
+506: 7 | <div className="bg-white p-4 rounded-full mb-4 shadow-sm ring-1 ring-gray-200">
+510: 6 | </div>
+520: 5 | </div>
+531: 6 | <div className="flex flex-col items-center">
+539: 5 | </div>
+544: 6 | <div className="flex items-center justify-center gap-1">
+577: 5 | </div>
+599: 6 | <div className="flex flex-col items-center justify-center text-gray-500 border-2 border-dashed border-gray-300 rounded-3xl p-8 bg-gray-50/50">
+600: 7 | <div className="bg-white p-4 rounded-full mb-4 shadow-sm ring-1 ring-gray-200">
+604: 6 | </div>
+614: 5 | </div>
+642: 4 | </div>
+644: 5 | <div className="shrink-0 flex justify-between items-center px-5 py-3 border-t border-gray-100 dark:border-gray-700 bg-white">
+645: 6 | <div className="text-xs text-gray-500 dark:text-gray-400 font-medium">
+647: 5 | </div>
+648: 6 | <div className="flex items-center gap-1">
+686: 5 | </div>
+687: 4 | </div>
+688: 3 | </div>
+691: 4 | <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+692: 5 | <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md md:max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
+693: 6 | <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-gray-50">
+698: 5 | </div>
+700: 6 | <div className="flex-1 overflow-y-auto p-6 bg-white" id="history-receipt-content">
+701: 7 | <div className="text-center mb-6">
+703: 8 | <div className="text-xs text-gray-400 mt-2 space-y-1">
+707: 7 | </div>
+708: 6 | </div>
+710: 7 | <div className="border-t-2 border-dashed border-gray-200 py-4 mb-4 text-sm">
+711: 8 | <div className="flex justify-between mb-1">
+714: 7 | </div>
+715: 8 | <div className="flex justify-between mb-1">
+718: 7 | </div>
+719: 8 | <div className="flex justify-between">
+722: 7 | </div>
+723: 6 | </div>
+737: 6 | <div className="font-bold text-gray-800">{item.brand ? `${item.brand} ` : ''}{item.name}{item.color ? ` — ${item.color}` : ''}</div>
+738: 6 | <div className="text-xs">{item.code}</div>
+747: 7 | <div className="space-y-2 text-right text-sm border-t border-gray-200 pt-4">
+748: 8 | <div className="flex justify-between text-xl font-black text-gray-900 pt-2 border-t-2 border-gray-900 mt-2">
+751: 7 | </div>
+752: 6 | </div>
+754: 7 | <div className="mt-8 text-center text-xs text-gray-400">
+758: 6 | </div>
+759: 5 | </div>
+761: 6 | <div className="p-6 bg-gray-50 border-t border-gray-100 grid grid-cols-2 gap-4">
+776: 5 | </div>
+777: 4 | </div>
+778: 3 | </div>
+783: 4 | <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+784: 5 | <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-sm md:max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+785: 6 | <div className="p-6 text-center">
+786: 7 | <div className={`mx-auto flex items-center justify-center mb-4 ${transactionToArchive.isArchived ? 'text-emerald-600' : 'text-red-600'}`}>
+792: 6 | </div>
+799: 7 | <div className="flex gap-3">
+813: 6 | </div>
+814: 5 | </div>
+815: 4 | </div>
+816: 3 | </div>
+818: 2 | </div>

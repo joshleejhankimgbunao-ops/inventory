@@ -1,0 +1,104 @@
+/* #root styles removed to allow full screen layouts */
+
+.logo {
+  height: 6em;
+  padding: 1.5em;
+  will-change: filter;
+  transition: filter 300ms;
+}
+.logo:hover {
+  filter: drop-shadow(0 0 2em #646cffaa);
+}
+.logo.react:hover {
+  filter: drop-shadow(0 0 2em #61dafbaa);
+}
+
+@keyframes logo-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  a:nth-of-type(2) .logo {
+    animation: logo-spin infinite 20s linear;
+  }
+}
+
+.card {
+  padding: 2em;
+}
+
+.read-the-docs {
+  color: #888;
+}
+
+@keyframes toast-progress {
+  from { width: 100%; }
+  to { width: 0%; }
+}
+
+@keyframes enter-animation {
+  0% { transform: scale(0.9); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes leave-animation {
+  0% { transform: scale(1); opacity: 1; }
+  100% { transform: scale(0.9); opacity: 0; }
+}
+
+.animate-enter {
+  animation: enter-animation 0.2s cubic-bezier(0.21, 1.02, 0.73, 1) forwards;
+}
+
+.animate-leave {
+  animation: leave-animation 0.2s linear forwards;
+}
+
+@media print {
+  header, aside {
+    display: none !important;
+  }
+  main {
+    margin-left: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+  }
+  body {
+    background: white !important;
+  }
+}
+
+
+/* Make interactive elements show pointer cursor for clarity */
+button, a, [role="button"], select, .clickable {
+  cursor: pointer;
+}
+
+/* Hide scrollbar visuals but keep content scrollable */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+/* Compact field sizing for Profile right-side form card */
+.profile-form-card input,
+.profile-form-card select {
+  min-height: 36px;
+  font-size: 12px;
+}
+
+.profile-form-card button {
+  font-size: 11px;
+}
+

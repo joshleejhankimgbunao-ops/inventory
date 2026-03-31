@@ -1,0 +1,39 @@
+{
+  "name": "server",
+  "version": "1.0.0",
+  "description": "Inventory backend API",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "nodemon src/server.js",
+    "dev:local": "node scripts/runWithEnv.js local dev",
+    "dev:atlas": "node scripts/runWithEnv.js atlas dev",
+    "start": "node src/server.js",
+    "start:local": "node scripts/runWithEnv.js local start",
+    "start:atlas": "node scripts/runWithEnv.js atlas start",
+    "sync:users:local-to-atlas": "node scripts/syncUsersLocalToAtlas.js",
+    "seed": "node src/scripts/seed.js",
+    "seed:reset": "node src/scripts/seed.js --reset",
+  "migrate:products:phase6": "node scripts/migrateProductsPhase6.js",
+    "smoke": "node scripts/smokeTest.js",
+    "db:backup": "powershell -ExecutionPolicy Bypass -File .\\scripts\\powershell\\backup-db.ps1",
+    "db:restore": "powershell -ExecutionPolicy Bypass -File .\\scripts\\powershell\\restore-db.ps1",
+    "test": "npm run smoke"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "express-rate-limit": "^7.5.1",
+    "jsonwebtoken": "^9.0.3",
+    "mongoose": "^9.2.3",
+    "morgan": "^1.10.1",
+    "nodemailer": "^7.0.10"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}

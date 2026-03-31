@@ -1,0 +1,617 @@
+
+gray-50 border border-gray-900 dark:border-gray-700 rounded-xl text-sm text-gray-900 focus:ring-2 focus:ring-gray-900 focus:border-transparent outline-none transition-all"                                                                                                          />
+                                 </div>
+                                 <p className="text-[10px] text-gray-500 mt-1">N
+ame shown in the app and on receipts.</p>                                       @@ -685,7 +685,7 @@ const Profile = () => {
+                                         type="text"
+                                         value={profileData.email}
+                                         onChange={(e) => setProfileData({...pro
+fileData, email: e.target.value})}                                              -                                        className="w-full pl-10 pr-4 py-2.5 bg-
+gray-50 border border-gray-200 rounded-xl text-sm text-gray-900 focus:ring-2 focus:ring-gray-900 focus:border-transparent outline-none transition-all"          +                                        className="w-full pl-10 pr-4 py-2.5 bg-
+gray-50 border border-gray-900 dark:border-gray-700 rounded-xl text-sm text-gray-900 focus:ring-2 focus:ring-gray-900 focus:border-transparent outline-none transition-all"                                                                                                          />
+                                 </div>
+                                 <p className="text-[10px] text-gray-500 mt-1">P
+rimary contact email for account notifications.</p>                             @@ -701,7 +701,7 @@ const Profile = () => {
+                             </h3>
+                         </div>
+
+-                        <div className="flex items-center justify-between bg-gr
+ay-50 p-4 rounded-xl border border-gray-200">                                   +                        <div className="flex items-center justify-between bg-gr
+ay-50 p-4 rounded-xl border border-gray-900 dark:border-gray-700">                                            <div>
+                                  <h4 className="text-sm font-bold text-gray-900
+">Automatic Printing</h4>                                                                                         <p className="text-xs text-gray-500 font-mediu
+m">Automatically print receipt after transaction completes</p>                  @@ -733,7 +733,7 @@ const Profile = () => {
+                                         type="text"
+                                         value={profileData.adminUser}
+                                         onChange={(e) => setProfileData({...pro
+fileData, adminUser: e.target.value})}                                          -                                        className="w-full pl-10 pr-4 py-2.5 bg-
+gray-50 border border-gray-200 rounded-xl text-sm text-gray-900 focus:ring-2 focus:ring-gray-900 focus:border-transparent outline-none transition-all"          +                                        className="w-full pl-10 pr-4 py-2.5 bg-
+gray-50 border border-gray-900 dark:border-gray-700 rounded-xl text-sm text-gray-900 focus:ring-2 focus:ring-gray-900 focus:border-transparent outline-none transition-all"                                                                                                          />
+                                 </div>
+                                 <p className="text-[10px] text-gray-500 mt-1">T
+his is your login username and cannot be changed later.</p>                     @@ -809,7 +809,7 @@ const Profile = () => {
+                                 <p className="text-[10px] text-gray-500 mt-1">C
+hoose a strong password; you will need to re-enter it below.</p>                
+                                 {profileData.adminPassword && (
+-                                    <div className="mt-2 rounded-lg border bord
+er-gray-200 bg-gray-50 p-2">                                                    +                                    <div className="mt-2 rounded-lg border bord
+er-gray-900 dark:border-gray-700 bg-gray-50 p-2">                                                                        <p className="text-[10px] font-bold upp
+ercase tracking-wide text-gray-600 mb-1.5">Password Requirements</p>                                                     <div className="grid grid-cols-1 sm:gri
+d-cols-2 gap-1">                                                                                                             <div className={`text-[10px] flex i
+tems-center gap-1.5 ${passwordChecks.length ? 'text-green-700' : 'text-gray-500'}`}>                                                                            @@ -921,7 +921,7 @@ const Profile = () => {
+                                     onChange={e => setNewPin(e.target.value.rep
+lace(/[^0-9]/g, ''))}                                                                                                placeholder="Enter new PIN"
+                                     maxLength={6}
+-                                    className="w-full pl-10 pr-10 py-2.5 bg-gra
+y-50 border border-gray-200 rounded-xl text-sm font-bold text-gray-900 focus:ring-2 focus:ring-gray-900 outline-none"                                           +                                    className="w-full pl-10 pr-10 py-2.5 bg-gra
+y-50 border border-gray-900 dark:border-gray-700 rounded-xl text-sm font-bold text-gray-900 focus:ring-2 focus:ring-gray-900 outline-none"                                                       />
+                                 <button
+                                     type="button"
+diff --git a/src/pages/Recommendation.jsx b/src/pages/Recommendation.jsx        
+index 8c7cf62..946d6e9 100644
+--- a/src/pages/Recommendation.jsx
++++ b/src/pages/Recommendation.jsx
+@@ -57,9 +57,9 @@ const Recommendation = () => {
+     }, [inventory, searchTerm, selectedCategory]);
+ 
+     return (
+-        <div className="h-full flex flex-col w-full overflow-hidden">
++        <div className="h-full flex flex-col w-full overflow-hidden p-4 gap-2 m
+b-1 bg-slate-200/50 rounded-2xl shadow-inner border border-slate-300">                       {/* Fixed Header Section */}
+-            <div className="p-2 pb-1 shrink-0 space-y-2 bg-gray-50 z-10">      
++            <div className="shrink-0 space-y-2 z-10">
+                 <div className="flex flex-col lg:flex-row lg:items-center lg:ju
+stify-between gap-2">                                                                                <div className="flex items-center gap-2">
+                         <div>
+@@ -123,7 +123,7 @@ const Recommendation = () => {
+                         const alternatives = getAlternatives(item, inventory); 
+
+                         return (
+-                            <div key={item.code} className="bg-white rounded-xl
+ shadow-sm border border-gray-200 overflow-hidden relative">                    +                            <div key={item.code} className="bg-white rounded-xl
+ shadow-sm border border-gray-900 dark:border-gray-700 overflow-hidden relative">                                                                                                                {/* Status Accent Border */}
+                                 <div className={`absolute left-0 top-0 bottom-0
+ w-1.5 ${item.stock === 0 ? 'bg-red-500' : 'bg-yellow-500'}`}></div>            
+@@ -160,7 +160,7 @@ const Recommendation = () => {
+                                     {alternatives.length > 0 ? (
+                                         <div className="grid grid-cols-1 md:gri
+d-cols-2 lg:grid-cols-3 gap-2">                                                                                              {alternatives.map(alt => (
+-                                                <div key={alt.code} className="
+group p-3 rounded-lg border border-gray-200 bg-white hover:border-gray-300 hover:shadow-lg transition-all relative">                                            +                                                <div key={alt.code} className="
+group p-3 rounded-lg border border-gray-900 dark:border-gray-700 bg-white hover:border-gray-300 hover:shadow-lg transition-all relative">                       
+                                                     <div className="mb-2">     
+                                                         <div className="flex ju
+stify-between items-start">                                                     @@ -249,7 +249,7 @@ const Recommendation = () => {
+                                             ))}
+                                         </div>
+                                     ) : (
+-                                        <div className="p-6 bg-white rounded-xl
+ border border-gray-200 border-dashed text-center text-gray-400 text-base italic">                                                                              +                                        <div className="p-6 bg-white rounded-xl
+ border border-gray-900 dark:border-gray-700 border-dashed text-center text-gray-400 text-base italic">                                                                                                      No direct alternatives found in sto
+ck.                                                                                                                      </div>
+                                     )}
+@@ -339,7 +339,7 @@ const Recommendation = () => {
+                                             stock: ''
+                                         });
+                                     }}
+-                                    className="w-full p-2 border border-gray-20
+0 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 outline-none mb-2"                                                                            +                                    className="w-full p-2 border border-gray-90
+0 dark:border-gray-700 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 outline-none mb-2"                                                                                        >
+                                     <option value="">-- Choose category --</opt
+ion>                                                                                                                 {(categories || []).filter(c => c !== 'All'
+).map(c => (                                                                    @@ -367,7 +367,7 @@ const Recommendation = () => {
+                                             stock: sel.stock !== undefined && s
+el.stock !== null ? String(Math.min(sel.stock, maxStockLimit)) : '0'                                                     });
+                                     }}
+-                                    className="w-full p-2 border border-gray-20
+0 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 outline-none" +                                    className="w-full p-2 border border-gray-90
+0 dark:border-gray-700 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 outline-none"                                                                                             >
+                                     <option value="">-- Choose product --</opti
+on>                                                                                                                  {(rawInventory || []).filter(i => (modalDat
+a.category ? i.category === modalData.category : true)).map(i => (              @@ -381,7 +381,7 @@ const Recommendation = () => {
+                                     <input
+                                         value={modalData.price !== undefined &&
+ modalData.price !== '' ? Number(modalData.price).toFixed(2) : ''}                                                       readOnly
+-                                        className="w-full p-2 border border-gra
+y-200 rounded-lg text-xs font-medium bg-gray-50 cursor-not-allowed"             +                                        className="w-full p-2 border border-gra
+y-900 dark:border-gray-700 rounded-lg text-xs font-medium bg-gray-50 cursor-not-allowed"                                                                                                             />
+                                 </div>
+                                 <div className="w-36">
+@@ -389,7 +389,7 @@ const Recommendation = () => {
+                                     <input
+                                         value={modalData.stock || ''}
+                                         readOnly
+-                                        className="w-full p-2 border border-gra
+y-200 rounded-lg text-xs font-medium bg-gray-50 cursor-not-allowed"             +                                        className="w-full p-2 border border-gra
+y-900 dark:border-gray-700 rounded-lg text-xs font-medium bg-gray-50 cursor-not-allowed"                                                                                                             />
+                                 </div>
+                             </div>
+diff --git a/src/pages/Reports.jsx b/src/pages/Reports.jsx
+index 5710ee5..f05aa3c 100644
+--- a/src/pages/Reports.jsx
++++ b/src/pages/Reports.jsx
+@@ -329,7 +329,8 @@ const Reports = () => {
+   };
+
+   return (
+-    <div id="report-container" className="relative h-[calc(100%-0.25rem)] max-h
+-[calc(100%-0.25rem)] bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mx-1 mt-1 mb-0 border-t-8 border-t-[#111827] p-4">                  +        <div className="h-[calc(100vh-80px)] flex flex-col p-4 gap-2 mb-1 overf
+low-auto md:overflow-hidden">                                                   +    <div id="report-container" className="relative h-full flex flex-col bg-slat
+e-200/50 rounded-2xl shadow-sm border border-gray-100 overflow-hidden border-t-8 border-t-[#111827] p-4">                                                              <div className="h-full flex flex-col gap-3 overflow-hidden">
+         <div className="flex flex-col md:flex-row md:items-center md:justify-be
+tween gap-3 shrink-0">                                                                     <div className="flex items-center gap-2">
+@@ -430,12 +431,12 @@ const Reports = () => {
+               </div>
+
+               {showExportMenu && (
+-                <div className="absolute right-0 top-full mt-2 z-30 w-44 rounde
+d-lg border border-gray-200 bg-white shadow-xl p-2 space-y-2">                  +                <div className="absolute right-0 top-full mt-2 z-30 w-44 rounde
+d-lg border border-gray-900 dark:border-gray-700 bg-white shadow-xl p-2 space-y-2">                                                                                                {!isAdminInventoryOnly && (
+                     <select
+                       value={exportType}
+                       onChange={(e) => setExportType(e.target.value)}
+-                      className="w-full px-2 py-1.5 rounded-md text-xs font-sem
+ibold border border-gray-200 bg-white text-gray-700"                            +                      className="w-full px-2 py-1.5 rounded-md text-xs font-sem
+ibold border border-gray-900 dark:border-gray-700 bg-white text-gray-700"                            >
+                       <option value="sales">Sales</option>
+                       <option value="inventory">Inventory</option>
+@@ -690,6 +691,7 @@ const Reports = () => {
+         )}
+       </div>
+     </div>
++    </div>
+   );
+ };
+
+diff --git a/src/pages/Settings.jsx b/src/pages/Settings.jsx
+index a909915..65d0383 100644
+--- a/src/pages/Settings.jsx
++++ b/src/pages/Settings.jsx
+@@ -157,10 +157,10 @@ const Settings = () => {
+     };
+
+     return (
+-        <div className="h-[calc(100vh-80px)] flex flex-col gap-2 p-2 md:overflo
+w-hidden overflow-y-auto">                                                      +        <div className="h-[calc(100vh-80px)] flex flex-col p-4 gap-2 mb-1 md:ov
+erflow-hidden overflow-y-auto">                                                 
+             {/* Header */}
+-            <div className="bg-white dark:bg-gray-800 p-4 sm:p-5 rounded-xl sha
+dow-sm border border-gray-100 dark:border-gray-700 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shrink-0">                       +            <div className="bg-slate-200/50 dark:bg-gray-800 p-4 sm:p-5 rounded
+-xl shadow-sm border border-gray-100 dark:border-gray-700 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shrink-0 border-t-8 border-t-[#111827]">                                                                                   <div className="flex items-center gap-2 min-w-0">
+                     <div className="text-gray-900 dark:text-white shrink-0">   
+                         <svg className="w-7 h-7 sm:w-8 sm:h-8" fill="none" stro
+ke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>   @@ -216,7 +216,7 @@ const Settings = () => {
+                 </div>
+
+                 {/* Main View */}
+-                <div className="flex-1 bg-white dark:bg-gray-800 rounded-xl sha
+dow-sm border border-gray-100 dark:border-gray-700 p-6 overflow-y-auto">        +                <div className="flex-1 bg-slate-200/50 dark:bg-gray-800 rounded
+-xl shadow-sm border border-gray-100 dark:border-gray-700 p-6 overflow-y-auto">                      {/* Content will go here based on activeTab */}
+                     {activeTab === 'general' && (
+                         <div className="space-y-6 max-w-2xl animate-in fade-in 
+slide-in-from-right-4 duration-300">                                            @@ -231,7 +231,7 @@ const Settings = () => {
+                                             type="text"
+                                             value={settings.storeName}
+                                             onChange={(e) => setSettings({...se
+ttings, storeName: e.target.value})}                                            -                                            className="w-full p-2.5 bg-gray-50 
+dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm font-normal text-gray-900 dark:text-white focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all"                                      +                                            className="w-full p-2.5 bg-gray-50 
+dark:bg-gray-700 border border-gray-900 dark:border-gray-700 dark:border-gray-600 rounded-lg text-sm font-normal text-gray-900 dark:text-white focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all"                                                          />
+                                     </div>
+                                     <div>
+@@ -240,7 +240,7 @@ const Settings = () => {
+                                             type="text"
+                                             value={settings.storeAddress}      
+                                             onChange={(e) => setSettings({...se
+ttings, storeAddress: e.target.value})}                                         -                                            className="w-full p-2.5 bg-gray-50 
+dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm font-normal text-gray-900 dark:text-white focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all"                                      +                                            className="w-full p-2.5 bg-gray-50 
+dark:bg-gray-700 border border-gray-900 dark:border-gray-700 dark:border-gray-600 rounded-lg text-sm font-normal text-gray-900 dark:text-white focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all"                                                          />
+                                     </div>
+                                     <div>
+@@ -250,7 +250,7 @@ const Settings = () => {
+                                             value={settings.storeMapLink || ''}
+                                             onChange={(e) => setSettings({...se
+ttings, storeMapLink: e.target.value})}                                                                                      placeholder="https://maps.app.goo.g
+l/..."                                                                          -                                            className="w-full p-2.5 bg-gray-50 
+dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm font-normal text-gray-900 dark:text-white focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all"                                      +                                            className="w-full p-2.5 bg-gray-50 
+dark:bg-gray-700 border border-gray-900 dark:border-gray-700 dark:border-gray-600 rounded-lg text-sm font-normal text-gray-900 dark:text-white focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all"                                                          />
+                                     </div>
+                                     <div className="grid grid-cols-1 sm:grid-co
+ls-2 gap-4">                                                                    @@ -260,7 +260,7 @@ const Settings = () => {
+                                                 type="text"
+                                                 value={settings.storePrimaryEma
+il || ''}                                                                                                                        onChange={(e) => setSettings({.
+..settings, storePrimaryEmail: e.target.value})}                                -                                                className="w-full p-2.5 bg-gray
+-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm font-normal text-gray-900 dark:text-white focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all"                                  +                                                className="w-full p-2.5 bg-gray
+-50 dark:bg-gray-700 border border-gray-900 dark:border-gray-700 dark:border-gray-600 rounded-lg text-sm font-normal text-gray-900 dark:text-white focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all"                                                          />
+                                         </div>
+                                         <div>
+@@ -269,7 +269,7 @@ const Settings = () => {
+                                                 type="text"
+                                                 value={settings.storeSecondaryE
+mail || ''}                                                                                                                      onChange={(e) => setSettings({.
+..settings, storeSecondaryEmail: e.target.value})}                              -                                                className="w-full p-2.5 bg-gray
+-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm font-normal text-gray-900 dark:text-white focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all"                                  +                                                className="w-full p-2.5 bg-gray
+-50 dark:bg-gray-700 border border-gray-900 dark:border-gray-700 dark:border-gray-600 rounded-lg text-sm font-normal text-gray-900 dark:text-white focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all"                                                          />
+                                         </div>
+                                     </div>
+@@ -283,7 +283,7 @@ const Settings = () => {
+                                                     const digits = e.target.val
+ue.replace(/\D/g, '');                                                                                                               if (digits.length <= 11) se
+tSettings({...settings, contactPhone: digits});                                                                                  }}
+-                                                className="w-full p-2.5 bg-gray
+-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm font-normal text-gray-900 dark:text-white focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all"                                  +                                                className="w-full p-2.5 bg-gray
+-50 dark:bg-gray-700 border border-gray-900 dark:border-gray-700 dark:border-gray-600 rounded-lg text-sm font-normal text-gray-900 dark:text-white focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all"                                                          />
+                                             {settings.contactPhone && settings.
+contactPhone.length !== 11 && (                                                                                                  <p className="text-rose-500 tex
+t-[11px] mt-1">Phone number must be exactly 11 digits.</p>                      @@ -298,7 +298,7 @@ const Settings = () => {
+                                                     const digits = e.target.val
+ue.replace(/\D/g, '');                                                                                                               if (digits.length <= 11) se
+tSettings({...settings, contactPhoneSecondary: digits});                                                                         }}
+-                                                className="w-full p-2.5 bg-gray
+-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm font-normal text-gray-900 dark:text-white focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all"                                  +                                                className="w-full p-2.5 bg-gray
+-50 dark:bg-gray-700 border border-gray-900 dark:border-gray-700 dark:border-gray-600 rounded-lg text-sm font-normal text-gray-900 dark:text-white focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all"                                                          />
+                                         </div>
+                                     </div>
+@@ -307,7 +307,7 @@ const Settings = () => {
+                                         <select
+                                             value={settings.currency}
+                                             onChange={(e) => setSettings({...se
+ttings, currency: e.target.value})}                                             -                                            className="w-full p-2.5 bg-gray-50 
+dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm font-normal text-gray-900 dark:text-white focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all"                                      +                                            className="w-full p-2.5 bg-gray-50 
+dark:bg-gray-700 border border-gray-900 dark:border-gray-700 dark:border-gray-600 rounded-lg text-sm font-normal text-gray-900 dark:text-white focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all"                                                          >
+                                             <option value="PHP">Philippine Peso
+ (PHP)</option>                                                                                                              <option value="USD">US Dollar (USD)
+</option>                                                                       @@ -362,7 +362,7 @@ const Settings = () => {
+                                                         });
+                                                         showToast('Test Sent', 
+'Desktop notification dispatched.', 'info', 'test-notif');                                                                           }}
+-                                                    className="mt-2 text-[10px]
+ bg-gray-100 hover:bg-gray-200 px-2 py-1 rounded border border-gray-300 font-bold transition-colors"                                                            +                                                    className="mt-2 text-[10px]
+ bg-gray-100 hover:bg-gray-200 px-2 py-1 rounded border border-gray-900 dark:border-gray-700 font-bold transition-colors"                                                                                        >
+                                                     Test Alert
+                                                 </button>
+@@ -403,7 +403,7 @@ const Settings = () => {
+
+                                 <div className="space-y-6">
+                                     {/* Default Rule */}
+-                                    <div className="bg-white dark:bg-gray-800 p
+-5 rounded-xl border border-gray-200 dark:border-gray-700 flex items-center justify-between">                                                                   +                                    <div className="bg-white dark:bg-gray-800 p
+-5 rounded-xl border border-gray-900 dark:border-gray-700 dark:border-gray-700 flex items-center justify-between">                                                                                       <div>
+                                             <h4 className="text-sm font-bold te
+xt-gray-900 dark:text-white uppercase tracking-wide">Global Default</h4>                                                     <p className="text-[10px] text-gray
+-500">Fallback target if no other rule matches.</p>                             @@ -411,7 +411,7 @@ const Settings = () => {
+                                         <div className="flex items-center gap-2
+">                                                                                                                           <input
+                                                 type="number"
+-                                                className="w-20 p-2 text-center
+ bg-gray-50 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-sm font-bold"                                                          +                                                className="w-20 p-2 text-center
+ bg-gray-50 dark:bg-gray-700 rounded-lg border border-gray-900 dark:border-gray-700 dark:border-gray-600 text-sm font-bold"                                                                                      value={settings.maxStockLimit |
+| 100}                                                                                                                           onChange={(e) => applyAutoSaveS
+ettings((prev) => ({ ...prev, maxStockLimit: Number(e.target.value) }))}                                                     />
+@@ -420,7 +420,7 @@ const Settings = () => {
+                                     </div>
+
+                                     {/* Minimum Stock Level */}
+-                                    <div className="bg-white dark:bg-gray-800 p
+-5 rounded-xl border border-gray-200 dark:border-gray-700 flex items-center justify-between">                                                                   +                                    <div className="bg-white dark:bg-gray-800 p
+-5 rounded-xl border border-gray-900 dark:border-gray-700 dark:border-gray-700 flex items-center justify-between">                                                                                       <div>
+                                             <h4 className="text-sm font-bold te
+xt-gray-900 dark:text-white uppercase tracking-wide">Restock Trigger Point</h4>                                              <p className="text-[10px] text-gray
+-500">Suggest restock when stock hits this % of Max Limit.</p>                  @@ -428,7 +428,7 @@ const Settings = () => {
+                                         <div className="flex items-center gap-2
+">                                                                                                                           <input
+                                                 type="number"
+-                                                className="w-20 p-2 text-center
+ bg-gray-50 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-sm font-bold"                                                          +                                                className="w-20 p-2 text-center
+ bg-gray-50 dark:bg-gray-700 rounded-lg border border-gray-900 dark:border-gray-700 dark:border-gray-600 text-sm font-bold"                                                                                      value={settings.lowStockAlert} 
+                                                 onChange={(e) => applyAutoSaveS
+ettings((prev) => ({ ...prev, lowStockAlert: e.target.value }))}                                                             />
+@@ -437,11 +437,11 @@ const Settings = () => {
+                                     </div>
+
+                                     {/* Category Rules */}
+-                                    <div className="bg-gray-50 dark:bg-gray-800
+ p-5 rounded-xl border border-gray-200 dark:border-gray-700">                   +                                    <div className="bg-gray-50 dark:bg-gray-800
+ p-5 rounded-xl border border-gray-900 dark:border-gray-700 dark:border-gray-700">                                                                                                                       <h4 className="text-sm font-bold text-g
+ray-900 dark:text-white mb-3 uppercase tracking-wide">Category Overrides</h4>                                            <div className="flex gap-2 mb-4">      
+                                             <select
+-                                                className="flex-1 p-2 bg-white 
+dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm font-medium"                                                                    +                                                className="flex-1 p-2 bg-white 
+dark:bg-gray-700 border border-gray-900 dark:border-gray-700 dark:border-gray-600 rounded-lg text-sm font-medium"                                                                                                value={newCategoryRule.name}   
+                                                 onChange={e => setNewCategoryRu
+le({...newCategoryRule, name: e.target.value})}                                                                              >
+@@ -451,7 +451,7 @@ const Settings = () => {
+                                             <input
+                                                 type="number"
+                                                 placeholder="Max Limit"        
+-                                                className="w-24 p-2 bg-white da
+rk:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm font-bold text-center"                                                            +                                                className="w-24 p-2 bg-white da
+rk:bg-gray-700 border border-gray-900 dark:border-gray-700 dark:border-gray-600 rounded-lg text-sm font-bold text-center"                                                                                        value={newCategoryRule.limit}  
+                                                 onChange={e => setNewCategoryRu
+le({...newCategoryRule, limit: e.target.value})}                                                                             />
+@@ -482,12 +482,12 @@ const Settings = () => {
+                                     </div>
+
+                                     {/* Product Rules */}
+-                                    <div className="bg-gray-50 dark:bg-gray-800
+ p-5 rounded-xl border border-gray-200 dark:border-gray-700">                   +                                    <div className="bg-gray-50 dark:bg-gray-800
+ p-5 rounded-xl border border-gray-900 dark:border-gray-700 dark:border-gray-700">                                                                                                                       <h4 className="text-sm font-bold text-g
+ray-900 dark:text-white mb-3 uppercase tracking-wide">Product Specific Overrides</h4>                                                                                                                    <div className="flex gap-2 mb-4">      
+                                              <input
+                                                 list="product-list"
+-                                                className="flex-1 p-2 bg-white 
+dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm font-medium"                                                                    +                                                className="flex-1 p-2 bg-white 
+dark:bg-gray-700 border border-gray-900 dark:border-gray-700 dark:border-gray-600 rounded-lg text-sm font-medium"                                                                                                placeholder="Search Product Cod
+e/Name..."                                                                                                                       value={newProductRule.code}    
+                                                 onChange={e => setNewProductRul
+e({...newProductRule, code: e.target.value})}                                   @@ -500,7 +500,7 @@ const Settings = () => {
+                                             <input
+                                                 type="number"
+                                                 placeholder="Max Limit"        
+-                                                className="w-24 p-2 bg-white da
+rk:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm font-bold text-center"                                                            +                                                className="w-24 p-2 bg-white da
+rk:bg-gray-700 border border-gray-900 dark:border-gray-700 dark:border-gray-600 rounded-lg text-sm font-bold text-center"                                                                                        value={newProductRule.limit}   
+                                                 onChange={e => setNewProductRul
+e({...newProductRule, limit: e.target.value})}                                                                               />
+@@ -547,7 +547,7 @@ const Settings = () => {
+                                 <p className="text-sm text-gray-500 mb-4">Backu
+p or restore system data.</p>                                                   
+                                 <div className="grid grid-cols-1 md:grid-cols-2
+ gap-4">                                                                        -                                    <div className="p-5 border border-gray-200 
+dark:border-gray-700 rounded-xl hover:border-gray-300 transition-colors">       +                                    <div className="p-5 border border-gray-900 
+dark:border-gray-700 dark:border-gray-700 rounded-xl hover:border-gray-300 transition-colors">                                                                                                           <div className="w-10 h-10 bg-blue-50 da
+rk:bg-blue-900/20 rounded-lg flex items-center justify-center mb-3">                                                         <svg className="w-6 h-6 text-blue-6
+00 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>                                                         </div>
+diff --git a/src/pages/UserList.jsx b/src/pages/UserList.jsx
+index bbd0271..aacc2ba 100644
+--- a/src/pages/UserList.jsx
++++ b/src/pages/UserList.jsx
+@@ -215,31 +215,33 @@ const UserList = () => {
+     };
+
+     return (
+-        <div className="h-[calc(100vh-80px)] flex flex-col gap-2 p-2 overflow-a
+uto md:overflow-hidden">                                                        +        <div className="h-[calc(100vh-80px)] flex flex-col p-4 gap-2 mb-1 overf
+low-auto md:overflow-hidden">                                                   
+-            {/* Header Area */}
+-            <div className="bg-white dark:bg-gray-800 p-5 rounded-xl shadow-sm 
+border border-gray-100 dark:border-gray-700 flex items-center justify-between md:shrink-0">                                                                     -                <div className="flex items-center gap-2">
+-                    <div className="text-gray-900 dark:text-white">
+-                        <svg className="w-8 h-8" fill="none" stroke="currentCol
+or" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>                      +            {/* Unified User List Container */}
++            <div className="flex-1 flex flex-col bg-slate-200/50 dark:bg-gray-8
+00 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 border-t-8 border-t-[#111827] overflow-hidden">                                             +
++                {/* Header Area */}
++                <div className="p-4 sm:p-5 flex items-center justify-between md
+:shrink-0">                                                                     +                    <div className="flex items-center gap-2">
++                        <div className="text-gray-900 dark:text-white">        
++                            <svg className="w-8 h-8" fill="none" stroke="curren
+tColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>                  +                        </div>
++                        <div>
++                            <h1 className="text-xl font-black text-gray-900 dar
+k:text-white leading-tight">User Management</h1>                                +                            <p className="text-gray-500 dark:text-gray-400 text
+-xs font-medium mt-0.5">Manage system access and roles</p>                      +                        </div>
+                     </div>
+-                    <div>
+-                        <h1 className="text-[8px] font-black text-gray-900 dark
+:text-white leading-tight">User Management</h1>                                 -                        <p className="text-gray-500 dark:text-gray-400 text-xs 
+font-medium mt-0.5">Manage system access and roles</p>                          +                    <div className="hidden md:block">
++                         <span className="px-3 py-1 bg-white dark:bg-gray-700 s
+hadow-sm border border-gray-900 dark:border-gray-700 rounded-full text-xs font-bold text-gray-600 dark:text-gray-300">                                          +                            Total Users: {users.length}
++                         </span>
+                     </div>
+                 </div>
+-                <div className="hidden md:block">
+-                     <span className="px-3 py-1 bg-gray-100 dark:bg-gray-700 ro
+unded-full text-xs font-bold text-gray-600 dark:text-gray-300">                 -                        Total Users: {users.length}
+-                     </span>
+-                </div>
+-            </div>
+
+-            {/* Main Content */}
+-            <div className="md:flex-1 bg-white dark:bg-gray-800 rounded-xl shad
+ow-md border border-gray-100 dark:border-gray-700 flex flex-col md:overflow-hidden transition-colors">                                                          -
+-                {/* Toolbar */}
+-                <div className="p-4 border-b border-gray-100 dark:border-gray-7
+00 flex flex-col sm:flex-row justify-between items-center gap-4 bg-gray-50/50 dark:bg-gray-800/50">                                                             +                {/* Main Content Area */}
++                <div className="flex-1 flex flex-col md:overflow-hidden transit
+ion-colors bg-transparent pt-3">                                                +                    {/* Toolbar */}
++                    <div className="px-5 pb-4 flex flex-col sm:flex-row justify
+-between items-center gap-4 bg-transparent">                                                         <div className="relative w-full sm:w-64 group">
+                         <input
+                             type="text"
+@@ -265,16 +267,16 @@ const UserList = () => {
+
+                 {/* Table */}
+                 <div className="flex-1 md:overflow-auto px-5 pb-5">
+-                     <table className="w-full text-left border-separate border-
+spacing-0 min-w-[800px]">                                                       +                     <table className="w-full text-left border-collapse min-w-[
+800px]">                                                                                                 <thead className="sticky top-0 z-10 shadow-sm">        
+                             <tr className="bg-gray-900 dark:bg-gray-700 text-wh
+ite uppercase tracking-wider">                                                  -                                <th className="px-6 py-3 text-xs font-bold text
+-center border border-gray-700 pl-6">ID</th>                                    -                                <th className="px-6 py-3 text-xs font-bold text
+-left border border-gray-700">Name</th>                                         -                                <th className="px-6 py-3 text-xs font-bold text
+-left border border-gray-700">Contact Info</th>                                 -                                <th className="px-6 py-3 text-xs font-bold text
+-center border border-gray-700">Role</th>                                       -                                <th className="px-6 py-3 text-xs font-bold text
+-center border border-gray-700">Status</th>                                     -                                <th className="px-6 py-3 text-xs font-bold text
+-center border border-gray-700">Last Login</th>                                 -                                <th className="px-6 py-3 text-xs font-bold text
+-center border border-gray-700">Actions</th>                                    +                                <th className="px-6 py-3 text-xs font-bold text
+-center border border-gray-900 dark:border-gray-700 pl-6">ID</th>               +                                <th className="px-6 py-3 text-xs font-bold text
+-left border border-gray-900 dark:border-gray-700">Name</th>                    +                                <th className="px-6 py-3 text-xs font-bold text
+-left border border-gray-900 dark:border-gray-700">Contact Info</th>            +                                <th className="px-6 py-3 text-xs font-bold text
+-center border border-gray-900 dark:border-gray-700">Role</th>                  +                                <th className="px-6 py-3 text-xs font-bold text
+-center border border-gray-900 dark:border-gray-700">Status</th>                +                                <th className="px-6 py-3 text-xs font-bold text
+-center border border-gray-900 dark:border-gray-700">Last Login</th>            +                                <th className="px-6 py-3 text-xs font-bold text
+-center border border-gray-900 dark:border-gray-700">Actions</th>                                            </tr>
+                         </thead>
+                         <tbody className="divide-y divide-gray-50 dark:divide-g
+ray-700">                                                                       @@ -291,10 +293,10 @@ const UserList = () => {
+                                         ? 'bg-gray-50/50 dark:bg-gray-800' // R
+emoved grayscale/opacity filter to fix tooltip clipping                                                                  : ''
+                                     }`}>
+-                                        <td className={`px-6 py-3 text-center f
+ont-mono text-xs border border-gray-200 dark:border-gray-700 ${user.isArchived ? 'text-gray-300 dark:text-gray-600' : 'text-gray-400'}`}>                       +                                        <td className={`px-6 py-3 text-center f
+ont-mono text-xs border border-gray-900 dark:border-gray-700 ${user.isArchived ? 'text-gray-300 dark:text-gray-600' : 'text-gray-400'}`}>                                                                    #{String(user.id).padStart(3, '0')}
+                                         </td>
+-                                        <td className="px-6 py-3 border border-
+gray-200 dark:border-gray-700">                                                 +                                        <td className="px-6 py-3 border border-
+gray-900 dark:border-gray-700">                                                                                              <div className="flex items-center g
+ap-3">                                                                                                                           <div className={`h-8 w-8 rounde
+d-full flex items-center justify-center font-bold text-xs uppercase ${                                                               user.isArchived
+@@ -308,7 +310,7 @@ const UserList = () => {
+                                                 </div>
+                                             </div>
+                                         </td>
+-                                        <td className="px-6 py-3 border border-
+gray-200 dark:border-gray-700">                                                 +                                        <td className="px-6 py-3 border border-
+gray-900 dark:border-gray-700">                                                                                              <div className="flex flex-col">    
+                                                 <div className={`text-xs font-m
+edium ${user.isArchived ? 'text-gray-300 dark:text-gray-600' : 'text-gray-700 dark:text-gray-300'}`}>                                                                                                                {user.email}
+@@ -320,7 +322,7 @@ const UserList = () => {
+                                                 )}
+                                             </div>
+                                         </td>
+-                                        <td className="px-6 py-3 text-center bo
+rder border-gray-200 dark:border-gray-700">                                     +                                        <td className="px-6 py-3 text-center bo
+rder border-gray-900 dark:border-gray-700">                                                                                  <span className={`px-2 py-1 rounded
+-md text-xs font-semibold ${                                                                                                     user.role === ROLES.SUPER_ADMIN
+
+                                                 ? 'bg-purple-100 text-purple-70
+0 dark:bg-purple-900/30 dark:text-purple-300'                                   @@ -329,7 +331,7 @@ const UserList = () => {
+                                                 {roleNames[user.role] || user.r
+ole}                                                                                                                         </span>
+                                         </td>
+-                                        <td className="px-6 py-3 text-center bo
+rder border-gray-200 dark:border-gray-700">                                     +                                        <td className="px-6 py-3 text-center bo
+rder border-gray-900 dark:border-gray-700">                                                                                  <div className="flex items-center j
+ustify-center gap-1.5">                                                                                                          <div className={`w-1.5 h-1.5 ro
+unded-full ${user.status === 'Active' ? 'bg-green-500' : 'bg-gray-400'}`}></div>                                                 <span className={`text-xs font-
+bold ${user.status === 'Active' ? 'text-green-600' : 'text-gray-500'}`}>        @@ -337,10 +339,10 @@ const UserList = () => {
+                                                 </span>
+                                             </div>
+                                         </td>
+-                                        <td className="px-6 py-3 text-center te
+xt-xs text-gray-500 border border-gray-200 dark:border-gray-700">               +                                        <td className="px-6 py-3 text-center te
+xt-xs text-gray-500 border border-gray-900 dark:border-gray-700">                                                            {user.lastLogin}
+                                         </td>
+-                                        <td className="px-6 py-3 text-center bo
+rder border-gray-200 dark:border-gray-700">                                     +                                        <td className="px-6 py-3 text-center bo
+rder border-gray-900 dark:border-gray-700">                                                                                  <div className="flex items-center j
+ustify-center gap-2">                                                                                                            {user.role !== ROLES.SUPER_ADMI
+N && (                                                                                                                               <>
+@@ -386,7 +388,7 @@ const UserList = () => {
+                 </div>
+
+                 {/* Pagination Controls */}
+-                <div className="shrink-0 flex justify-between items-center px-5
+ py-3 border-t border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50">                                                                         +                <div className="shrink-0 flex justify-between items-center px-5
+ py-3 border-t border-slate-300 dark:border-gray-700 bg-transparent">                                    <div className="text-xs text-gray-500 dark:text-gray-40
+0 font-medium">                                                                                              Showing <span className="font-bold text-gray-900 da
+rk:text-white">{filteredUsers.length === 0 ? 0 : indexOfFirstItem + 1}</span> to <span className="font-bold text-gray-900 dark:text-white">{Math.min(indexOfLastItem, filteredUsers.length)}</span> of <span className="font-bold text-gray-900 dark:text-white">{filteredUsers.length}</span> results                                                   </div>
+@@ -394,7 +396,7 @@ const UserList = () => {
+                             <button
+                                 onClick={() => setCurrentPage(prev => Math.max(
+prev - 1, 1))}                                                                                                   disabled={currentPage === 1}
+-                                className={`p-1.5 rounded-lg border border-gray
+-200 dark:border-gray-600 transition-all ${currentPage === 1 ? 'text-gray-300 dark:text-gray-600 cursor-not-allowed' : 'text-gray-600 dark:text-gray-300 hover:bg-white dark:hover:bg-gray-700'}`}                                              +                                className={`p-1.5 rounded-lg border border-gray
+-900 dark:border-gray-700 dark:border-gray-600 transition-all ${currentPage === 1 ? 'text-gray-300 dark:text-gray-600 cursor-not-allowed' : 'text-gray-600 dark:text-gray-300 hover:bg-white dark:hover:bg-gray-700'}`}                                                      >
+                                 <svg className="w-4 h-4" fill="none" stroke="cu
+rrentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7"></path></svg>                                                         </button>
+@@ -424,13 +426,14 @@ const UserList = () => {
+                             <button
+                                 onClick={() => setCurrentPage(prev => Math.min(
+prev + 1, totalPages))}                                                                                          disabled={currentPage === totalPages}
+-                                className={`p-1.5 rounded-lg border border-gray
+-200 dark:border-gray-600 transition-all ${currentPage === totalPages ? 'text-gray-300 dark:text-gray-600 cursor-not-allowed' : 'text-gray-600 dark:text-gray-300 hover:bg-white dark:hover:bg-gray-700'}`}                                     +                                className={`p-1.5 rounded-lg border border-gray
+-900 dark:border-gray-700 dark:border-gray-600 transition-all ${currentPage === totalPages ? 'text-gray-300 dark:text-gray-600 cursor-not-allowed' : 'text-gray-600 dark:text-gray-300 hover:bg-white dark:hover:bg-gray-700'}`}                                             >
+                                 <svg className="w-4 h-4" fill="none" stroke="cu
+rrentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7"></path></svg>                                                            </button>
+                         </div>
+                 </div>
+             </div>
++            </div>
+
+             {/* Modal */}
+             {isModalOpen && (
+@@ -463,7 +466,7 @@ const UserList = () => {
+                                         type="text"
+                                         disabled
+                                         value={modalMode === 'add' ? `#${String
+(newItemId).padStart(3, '0')}` : `#${String(selectedUser?.id).padStart(3, '0')}`}                                                                               -                                        className="w-full p-2 bg-gray-100 dark:
+bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-black text-gray-500 text-center cursor-not-allowed"                             +                                        className="w-full p-2 bg-gray-100 dark:
+bg-gray-800 border border-gray-900 dark:border-gray-700 dark:border-gray-600 rounded-lg text-xs font-black text-gray-500 text-center cursor-not-allowed"                                             />
+                                 </div>
+                                 <div className="col-span-3">
+@@ -478,7 +481,7 @@ const UserList = () => {
+                                                 setFormData({...formData, name:
+ val});                                                                                                                      }
+                                         }}
+-                                        className="w-full p-2 bg-white dark:bg-
+gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"                                                       +                                        className="w-full p-2 bg-white dark:bg-
+gray-700 border border-gray-900 dark:border-gray-700 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"                                                                           placeholder="John Doe"
+                                     />
+                                     <p className="text-[10px] text-gray-400 mt-
+1">Use letters, spaces, periods, or hyphens.</p>                                @@ -492,7 +495,7 @@ const UserList = () => {
+                                     <select
+                                         value={formData.role}
+                                         onChange={e => setFormData({...formData
+, role: e.target.value})}                                                       -                                        className="w-full p-2 bg-white dark:bg-
+gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"                                                       +                                        className="w-full p-2 bg-white dark:bg-
+gray-700 border border-gray-900 dark:border-gray-700 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"                                                                       >
+                                         {/* only allow Admin or Cashier; Super 
+Admin is managed separately */}                                                                                          <option value={ROLES.ADMIN}>{roleNames[
+ROLES.ADMIN]}</option>                                                          @@ -505,7 +508,7 @@ const UserList = () => {
+                                     <select
+                                         value={formData.status}
+                                         onChange={e => setFormData({...formData
+, status: e.target.value})}                                                     -                                        className="w-full p-2 bg-white dark:bg-
+gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"                                                       +                                        className="w-full p-2 bg-white dark:bg-
+gray-700 border border-gray-900 dark:border-gray-700 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"                                                                       >
+                                         <option>Active</option>
+                                         <option>Inactive</option>
+@@ -523,7 +526,7 @@ const UserList = () => {
+                                         required
+                                         value={formData.email}
+                                         onChange={e => setFormData({...formData
+, email: e.target.value})}                                                      -                                        className="w-full p-2 bg-white dark:bg-
+gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"                                                       +                                        className="w-full p-2 bg-white dark:bg-
+gray-700 border border-gray-900 dark:border-gray-700 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"                                                                           placeholder="user@system.com"
+                                     />
+                                     <p className="text-[10px] text-gray-400 mt-
+1">Used for login and notifications; must be valid.</p>                         @@ -538,7 +541,7 @@ const UserList = () => {
+                                             const digits = e.target.value.repla
+ce(/\D/g, '');                                                                                                               if (digits.length <= 11) setFormDat
+a({...formData, phone: digits});                                                                                         }}
+-                                        className="w-full p-2 bg-white dark:bg-
+gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white" required                                              +                                        className="w-full p-2 bg-white dark:bg-
+gray-700 border border-gray-900 dark:border-gray-700 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white" required                                                                  placeholder="09171234567"
+                                     />
+                                     <p className="text-[10px] text-gray-400 mt-
+1">Optional; enter 11 digits (e.g. 09171234567).</p>                            @@ -560,7 +563,7 @@ const UserList = () => {
+                                             const val = e.target.value.toLowerC
+ase().replace(/[^a-z0-9_.]/g, '');                                                                                           setFormData({...formData, username:
+ val});                                                                                                                  }}
+-                                        className={`w-full p-2 border border-gr
+ay-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white ${modalMode === 'add' ? 'bg-gray-100 dark:bg-gray-800 text-gray-500 cursor-not-allowed' : 'bg-white dark:bg-gray-700'}`}                                        +                                        className={`w-full p-2 border border-gr
+ay-900 dark:border-gray-700 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white ${modalMode === 'add' ? 'bg-gray-100 dark:bg-gray-800 text-gray-500 cursor-not-allowed' : 'bg-white dark:bg-gray-700'}`}                                                            placeholder="username123"
+                                     />
+                                     {modalMode === 'add' && <p className="text-
+[10px] text-gray-400 mt-1">Auto-generated based on ID</p>}                      @@ -602,7 +605,7 @@ const UserList = () => {
+                                     {modalMode === 'add' && <p className="text-
+[10px] text-gray-400 mt-1">Auto-generated secure password</p>}                                                       {modalMode === 'edit' && <p className="text
+-[10px] text-gray-400 mt-1">Leave blank to keep existing password.</p>}                                              {modalMode === 'edit' && formData.password 
+&& (                                                                            -                                        <div className="mt-2 rounded-lg border 
+border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-800 p-2">          +                                        <div className="mt-2 rounded-lg border 
+border-gray-900 dark:border-gray-700 dark:border-gray-600 bg-gray-50 dark:bg-gray-800 p-2">                                                                                                                  <p className="text-[10px] font-bold
+ uppercase tracking-wide text-gray-600 dark:text-gray-300 mb-1.5">Password Requirements</p>                                                                                                                  <div className="grid grid-cols-1 ga
+p-1">                                                                                                                            <div className={`text-[10px] fl
+ex items-center gap-1.5 ${passwordChecks.length ? 'text-green-700 dark:text-green-400' : 'text-gray-500'}`}>                                                    @@ -646,7 +649,7 @@ const UserList = () => {
+                                             const digits = e.target.value.repla
+ce(/\D/g, '');                                                                                                               if (digits.length <= 6) setFormData
+({...formData, pin: digits});                                                                                            }}
+-                                        className="w-full p-2 bg-white dark:bg-
+gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"                                                       +                                        className="w-full p-2 bg-white dark:bg-
+gray-700 border border-gray-900 dark:border-gray-700 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"                                                                       />
+                                     {modalMode === 'add' && <p className="text-
+[10px] text-gray-400 mt-1">Auto-generated 6‑digit PIN</p>}                                                           {modalMode === 'edit' && <p className="text
+-[10px] text-gray-400 mt-1">Leave blank to retain current PIN or enter a new 6‑digit code.</p>}                                                                 

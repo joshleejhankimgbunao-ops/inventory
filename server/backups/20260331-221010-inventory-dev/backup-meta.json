@@ -1,0 +1,6 @@
+﻿{
+    "mongoUri":  "mongodb://127.0.0.1:27017",
+    "timestamp":  "2026-03-31T22:10:10.3587882+08:00",
+    "backupDir":  "C:\\Users\\Admin\\Downloads\\TLC Main\\inventory-main\\server\\backups\\20260331-221010-inventory-dev",
+    "dbName":  "inventory-dev"
+}
