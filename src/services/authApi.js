@@ -53,6 +53,10 @@ export const updateUserByUsernameApi = async (username, payload) => {
   });
 };
 
+export const listUsersApi = async () => {
+  return apiRequest('/api/auth/users');
+};
+
 export const requestPasswordResetApi = async (identifier) => {
   return apiRequest('/api/auth/forgot-password', {
     method: 'POST',

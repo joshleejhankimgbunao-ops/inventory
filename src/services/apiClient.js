@@ -2,16 +2,32 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 const TOKEN_KEY = 'authToken';
 
-export const getAuthToken = () => sessionStorage.getItem(TOKEN_KEY);
+export const getAuthToken = () => {
+  const sessionToken = sessionStorage.getItem(TOKEN_KEY);
+  if (sessionToken) {
+    return sessionToken;
+  }
+
+  const persistentToken = localStorage.getItem(TOKEN_KEY);
+  if (persistentToken) {
+    // keep session in sync once app is reopened
+    sessionStorage.setItem(TOKEN_KEY, persistentToken);
+    return persistentToken;
+  }
+
+  return null;
+};
 
 export const setAuthToken = (token) => {
   if (token) {
     sessionStorage.setItem(TOKEN_KEY, token);
+    localStorage.setItem(TOKEN_KEY, token);
   }
 };
 
 export const clearAuthToken = () => {
   sessionStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(TOKEN_KEY);
 };
 
 export const apiRequest = async (path, options = {}) => {

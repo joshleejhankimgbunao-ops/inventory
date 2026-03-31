@@ -4,10 +4,23 @@ import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
 import { ROLES, roleNames } from '../constants/roles';
-import { registerApi, updateUserByUsernameApi } from '../services/authApi';
+import { listUsersApi, registerApi, updateUserByUsernameApi } from '../services/authApi';
 
 const PASSWORD_RULE = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{8,}$/;
 const EMAIL_RULE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const mapUserToUi = (user, index) => ({
+    id: index + 1,
+    backendId: user.id,
+    name: user.name || '',
+    username: user.username || '',
+    email: user.email || '',
+    phone: user.phone || '',
+    role: user.role || ROLES.CASHIER,
+    status: user.isActive ? 'Active' : 'Inactive',
+    isArchived: !user.isActive,
+    lastLogin: user.lastLogin ? new Date(user.lastLogin).toLocaleString() : 'Never',
+});
 
 const getFieldErrorsFromMessage = (message = '') => {
     const lowerMessage = String(message).toLowerCase();
@@ -44,23 +57,21 @@ const UserList = () => {
     const { currentUserName } = useAuth();
     const { logActivity, renameUserReferences } = useInventory();
 
-    // Mock Data (with LocalStorage Persistence)
-    const [users, setUsers] = useState(() => {
-        const saved = localStorage.getItem('users');
-        return saved ? JSON.parse(saved) : [
-            // built-in super admin account (read-only in UI)
-            { id: 1, name: 'Admin User', username: 'admin', email: 'admin@system.com', phone: '0917-123-4567', role: ROLES.SUPER_ADMIN, status: 'Active', lastLogin: '2023-10-25 08:30 AM' },
-            // example cashier
-            { id: 2, name: 'Juan Cashier', username: 'juan', email: 'juan@system.com', phone: '0918-234-5678', role: ROLES.CASHIER, status: 'Active', lastLogin: '2023-10-24 05:45 PM' },
-            // temporary admin account for testing
-            { id: 3, name: 'Temp Admin', username: 'tempadmin', email: 'temp@system.com', phone: '0917-000-0000', role: ROLES.ADMIN, status: 'Active', lastLogin: 'Never' },
-        ];
-    });
+    const [users, setUsers] = useState([]);
 
-    // Persistence Effect
+    const loadUsers = async () => {
+        try {
+            const response = await listUsersApi();
+            const list = Array.isArray(response) ? response : [];
+            setUsers(list.map(mapUserToUi));
+        } catch {
+            setUsers([]);
+        }
+    };
+
     React.useEffect(() => {
-        localStorage.setItem('users', JSON.stringify(users));
-    }, [users]);
+        loadUsers();
+    }, []);
 
     const [searchTerm, setSearchTerm] = useState('');
     const [isModalOpen, setIsModalOpen] = useState(false);
@@ -225,21 +236,22 @@ const UserList = () => {
                     name: formData.name,
                     username: formData.username,
                     email: normalizedEmail,
+                    phone: formData.phone,
                     password: formData.password,
                     pin: formData.pin,
                     role: formData.role,
                 });
 
-                const newUser = {
-                    id: newItemId,
-                    ...formData,
-                    email: normalizedEmail,
-                    backendId: response?.user?.id,
-                    status: 'Active',
-                    lastLogin: 'Never',
-                };
+                const createdUser = response?.user;
+                if (createdUser?.username) {
+                    await updateUserByUsernameApi(createdUser.username, {
+                        role: formData.role,
+                        isActive: formData.status === 'Active',
+                        phone: formData.phone,
+                    });
+                }
 
-                setUsers([...users, newUser]);
+                await loadUsers();
                 logActivity(currentUserName, 'Created User', `Added new user: ${formData.name}`);
                 showToast('User Created', `${formData.name} added to the system.`, 'success', 'user-action');
             } catch (error) {
@@ -255,6 +267,7 @@ const UserList = () => {
                     name: formData.name,
                     username: formData.username,
                     email: normalizedEmail,
+                    phone: formData.phone,
                     role: formData.role,
                     isActive: formData.status === 'Active',
                     ...(formData.password ? { password: formData.password } : {}),
@@ -270,7 +283,7 @@ const UserList = () => {
                 renameUserReferences(selectedUser.name, formData.name);
             }
 
-            setUsers(users.map(u => u.id === selectedUser.id ? { ...u, ...formData, email: normalizedEmail } : u));
+            await loadUsers();
             logActivity(currentUserName, 'Updated User', `Updated user: ${formData.name}`);
             showToast('User Updated', `${formData.name}'s profile has been updated.`, 'success', 'user-action');
         }
@@ -283,14 +296,20 @@ const UserList = () => {
         setIsArchiveModalOpen(true);
     };
 
-    const confirmArchive = () => {
+    const confirmArchive = async () => {
         if (!userToArchive) return;
         
         const isRestoring = userToArchive.isArchived;
 
-        setUsers(prevUsers => prevUsers.map(u => 
-            u.id === userToArchive.id ? { ...u, isArchived: !u.isArchived } : u
-        ));
+        try {
+            await updateUserByUsernameApi(userToArchive.username, {
+                isActive: isRestoring,
+            });
+            await loadUsers();
+        } catch (error) {
+            showToast('Update Failed', error.message || 'Unable to update user status.', 'error', 'user-archive-action');
+            return;
+        }
 
         logActivity(currentUserName, isRestoring ? 'Restored User' : 'Archived User', `${isRestoring ? 'Restored' : 'Archived'} user: ${userToArchive.name}`);
         showToast(

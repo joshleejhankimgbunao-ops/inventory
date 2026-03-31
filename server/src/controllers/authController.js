@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { sendResetEmail } = require('../services/emailService');
+const { writeActivityLog } = require('../services/logService');
 
 const RESET_RESPONSE_MESSAGE = 'If the account exists, a reset link has been sent.';
 
@@ -22,6 +23,14 @@ const sanitizeUser = (user) => ({
   name: user.name,
   username: user.username,
   email: user.email,
+  phone: user.phone || '',
+  avatarUrl: user.avatarUrl || '',
+  preferences: {
+    darkMode: Boolean(user.preferences?.darkMode),
+    desktopNotifications: user.preferences?.desktopNotifications !== false,
+    hasViewedLogs: Boolean(user.preferences?.hasViewedLogs),
+    readLogCount: Number(user.preferences?.readLogCount || 0),
+  },
   role: user.role,
   isActive: user.isActive,
   lastLogin: user.lastLogin,
@@ -88,6 +97,41 @@ const isValidEmail = (email) => {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 };
 
+const isValidPhone = (phone) => {
+  if (typeof phone !== 'string') {
+    return false;
+  }
+
+  const digits = phone.replace(/\D/g, '');
+  return digits.length === 11;
+};
+
+const sanitizePreferencesPayload = (raw = {}) => {
+  const output = {};
+
+  if (raw.darkMode !== undefined) {
+    output.darkMode = Boolean(raw.darkMode);
+  }
+
+  if (raw.desktopNotifications !== undefined) {
+    output.desktopNotifications = Boolean(raw.desktopNotifications);
+  }
+
+  if (raw.hasViewedLogs !== undefined) {
+    output.hasViewedLogs = Boolean(raw.hasViewedLogs);
+  }
+
+  if (raw.readLogCount !== undefined) {
+    const count = Number(raw.readLogCount);
+    if (!Number.isFinite(count) || count < 0) {
+      return { error: 'preferences.readLogCount must be a non-negative number.' };
+    }
+    output.readLogCount = Math.floor(count);
+  }
+
+  return { value: output };
+};
+
 const updateMyEmail = async (req, res, next) => {
   try {
     const normalizedEmail = normalizeValue(req.body?.email);
@@ -134,6 +178,8 @@ const updateMyProfile = async (req, res, next) => {
       : user.name;
     const nextUsername = req.body?.username ? normalizeValue(req.body.username) : user.username;
     const nextEmail = req.body?.email ? normalizeValue(req.body.email) : user.email;
+    const nextPhone = req.body?.phone !== undefined ? String(req.body.phone).trim() : user.phone;
+    const nextAvatarUrl = req.body?.avatarUrl !== undefined ? String(req.body.avatarUrl).trim() : user.avatarUrl;
 
     if (!nextUsername) {
       return res.status(400).json({ message: 'username is required.' });
@@ -141,6 +187,10 @@ const updateMyProfile = async (req, res, next) => {
 
     if (!nextEmail || !isValidEmail(nextEmail)) {
       return res.status(400).json({ message: 'A valid email is required.' });
+    }
+
+    if (nextPhone && !isValidPhone(nextPhone)) {
+      return res.status(400).json({ message: 'phone number must be exactly 11 digits.' });
     }
 
     const duplicate = await User.findOne({
@@ -200,6 +250,8 @@ const updateMyProfile = async (req, res, next) => {
     user.name = nextName;
     user.username = nextUsername;
     user.email = nextEmail;
+  user.phone = nextPhone;
+  user.avatarUrl = nextAvatarUrl;
 
     await user.save({ validateBeforeSave: false });
 
@@ -293,6 +345,30 @@ const updateUserByUsername = async (req, res, next) => {
     user.username = nextUsername;
     user.email = nextEmail;
 
+    if (req.body?.phone !== undefined) {
+      const normalizedPhone = String(req.body.phone).trim();
+      if (normalizedPhone && !isValidPhone(normalizedPhone)) {
+        return res.status(400).json({ message: 'phone number must be exactly 11 digits.' });
+      }
+      user.phone = normalizedPhone;
+    }
+
+    if (req.body?.avatarUrl !== undefined) {
+      user.avatarUrl = String(req.body.avatarUrl).trim();
+    }
+
+    if (req.body?.preferences !== undefined && req.body?.preferences !== null) {
+      const { value, error } = sanitizePreferencesPayload(req.body.preferences);
+      if (error) {
+        return res.status(400).json({ message: error });
+      }
+
+      user.preferences = {
+        ...(user.preferences || {}),
+        ...value,
+      };
+    }
+
     if (req.body?.role) {
       user.role = req.body.role;
     }
@@ -324,6 +400,15 @@ const updateUserByUsername = async (req, res, next) => {
       message: 'User updated.',
       user: sanitizeUser(user),
     });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+const listUsers = async (req, res, next) => {
+  try {
+    const users = await User.find({}).sort({ createdAt: -1 });
+    return res.json(users.map(sanitizeUser));
   } catch (error) {
     return next(error);
   }
@@ -401,7 +486,17 @@ const requestReset = async ({ req, res, next, purpose }) => {
 
 const register = async (req, res, next) => {
   try {
-    const { name, username, email, password, pin, role } = req.body;
+    const {
+      name,
+      username,
+      email,
+      password,
+      pin,
+      role,
+      phone,
+      avatarUrl,
+      preferences,
+    } = req.body;
 
     if (!name || !username || !email || !password) {
       return res.status(400).json({ message: 'name, username, email, and password are required.' });
@@ -415,6 +510,11 @@ const register = async (req, res, next) => {
 
     if (pin && !isValidPin(pin)) {
       return res.status(400).json({ message: `pin must be exactly ${PIN_LENGTH} digits.` });
+    }
+
+    const normalizedPhone = phone !== undefined && phone !== null ? String(phone).trim() : '';
+    if (normalizedPhone && !isValidPhone(normalizedPhone)) {
+      return res.status(400).json({ message: 'phone number must be exactly 11 digits.' });
     }
 
     const normalizedUsername = normalizeValue(username);
@@ -442,13 +542,21 @@ const register = async (req, res, next) => {
     }
 
     const hashed = await bcrypt.hash(password, 10);
+    const normalizedPreferencesResult = sanitizePreferencesPayload(preferences || {});
+    if (normalizedPreferencesResult.error) {
+      return res.status(400).json({ message: normalizedPreferencesResult.error });
+    }
+
     const user = await User.create({
       name,
       username: normalizedUsername,
       email: normalizedEmail,
+      phone: normalizedPhone,
+      avatarUrl: avatarUrl ? String(avatarUrl).trim() : '',
       password: hashed,
       pinHash: pin ? await bcrypt.hash(pin, 10) : undefined,
       role: assignedRole,
+      preferences: normalizedPreferencesResult.value,
     });
 
     const token = signToken(user._id);
@@ -498,6 +606,14 @@ const login = async (req, res, next) => {
     user.lastLogin = Date.now();
     await user.save({ validateBeforeSave: false });
 
+    await writeActivityLog({
+      user,
+      action: 'Logged In',
+      details: 'Successful username/password login.',
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent') || '',
+    });
+
     const token = signToken(user._id);
     return res.json({
       token,
@@ -510,6 +626,39 @@ const login = async (req, res, next) => {
 
 const me = async (req, res) => {
   return res.json({ user: sanitizeUser(req.user) });
+};
+
+const updateMyPreferences = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.user._id);
+
+    if (!user || !user.isActive) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+
+    const { value, error } = sanitizePreferencesPayload(req.body || {});
+    if (error) {
+      return res.status(400).json({ message: error });
+    }
+
+    if (Object.keys(value).length === 0) {
+      return res.status(400).json({ message: 'No valid preferences fields provided.' });
+    }
+
+    user.preferences = {
+      ...(user.preferences || {}),
+      ...value,
+    };
+
+    await user.save({ validateBeforeSave: false });
+
+    return res.json({
+      message: 'Preferences updated.',
+      user: sanitizeUser(user),
+    });
+  } catch (error) {
+    return next(error);
+  }
 };
 
 const requestPasswordReset = async (req, res, next) => {
@@ -600,10 +749,12 @@ module.exports = {
   register,
   login,
   me,
+  updateMyPreferences,
   verifyMyCurrentPassword,
   verifyMyCurrentPin,
   updateMyProfile,
   updateMyEmail,
+  listUsers,
   updateUserByUsername,
   requestPasswordReset,
   resetPassword,

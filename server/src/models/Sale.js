@@ -11,6 +11,12 @@ const saleItemSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    code: {
+      type: String,
+      default: '',
+      trim: true,
+      uppercase: true,
+    },
     quantity: {
       type: Number,
       required: true,
@@ -55,6 +61,20 @@ const saleSchema = new mongoose.Schema(
       type: String,
       default: '',
       trim: true,
+    },
+    isArchived: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    archivedAt: {
+      type: Date,
+      default: null,
+    },
+    archivedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
     },
   },
   {

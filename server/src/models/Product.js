@@ -2,9 +2,24 @@ const mongoose = require('mongoose');
 
 const productSchema = new mongoose.Schema(
   {
+    brand: {
+      type: String,
+      default: '',
+      trim: true,
+    },
     name: {
       type: String,
       required: true,
+      trim: true,
+    },
+    color: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    size: {
+      type: String,
+      default: '',
       trim: true,
     },
     sku: {
@@ -13,6 +28,11 @@ const productSchema = new mongoose.Schema(
       unique: true,
       trim: true,
       uppercase: true,
+    },
+    supplierName: {
+      type: String,
+      default: '',
+      trim: true,
     },
     category: {
       type: String,

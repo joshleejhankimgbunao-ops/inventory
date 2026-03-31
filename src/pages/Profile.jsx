@@ -69,59 +69,18 @@ const Profile = () => {
 
     // Local state for form fields, initialized from global settings
     const [profileData, setProfileData] = useState(() => {
-        if (userRole === ROLES.CASHIER) {
-            const savedCashier = localStorage.getItem('cashierProfile');
-            if (savedCashier) {
-                const data = JSON.parse(savedCashier);
-                data.adminPassword = '';
-                data.fullName = data.fullName || data.adminDisplayName || '';
-                data.contactNumber = data.contactNumber || settings.adminContactNumber || '';
-                data.lastLogin = data.lastLogin || null;
-                return data;
-            }
-            return {
-                adminUser: 'cashier',
-                fullName: 'Cashier Account',
-                adminDisplayName: 'Cashier Account',
-                adminPassword: '',
-                role: 'Cashier',
-                email: 'cashier@tableria.com',
-                contactNumber: settings.adminContactNumber || '',
-                lastLogin: null,
-                bio: 'Authorized staff member for point of sale and inventory management.',
-                avatar: null
-            };
-        }
-        if (userRole === ROLES.ADMIN) {
-            // look up current user from stored users list
-            const users = JSON.parse(localStorage.getItem('users') || '[]');
-            const username = sessionStorage.getItem('userName');
-            const me = users.find(u => u.name === username || u.username === username) || {};
-            return {
-                adminUser: me.username || '',
-                fullName: me.fullName || me.name || '',
-                adminDisplayName: settings.adminDisplayName || me.name || '',
-                adminPassword: '',
-                role: roleNames[userRole] || 'Admin',
-                email: me.email || '',
-                contactNumber: settings.adminContactNumber || me.phone || '',
-                lastLogin: me.lastLogin || null,
-                bio: me.bio || '',
-                avatar: me.avatar || null,
-                pin: me.pin || ''
-            };
-        }
-        // super admin default from settings
         return {
-            adminUser: settings.adminUser || 'Admin User',
-            fullName: settings.adminFullName || settings.adminDisplayName || settings.adminUser || 'Admin User',
-            adminDisplayName: settings.adminDisplayName || settings.adminUser || 'Admin User',
+            adminUser: sessionStorage.getItem('authUsername') || settings.adminUser || '',
+            fullName: settings.adminFullName || settings.adminDisplayName || settings.adminUser || 'User',
+            adminDisplayName: settings.adminDisplayName || settings.adminUser || 'User',
             adminPassword: '',
-            role: roleNames[userRole] || 'Super Admin',
+            role: roleNames[userRole] || 'User',
             email: settings.storePrimaryEmail || 'admin@example.com',
             contactNumber: settings.adminContactNumber || '',
             lastLogin: null,
-            bio: 'Managing the store inventory and sales.',
+            bio: userRole === ROLES.CASHIER
+                ? 'Authorized staff member for point of sale and inventory management.'
+                : 'Managing the store inventory and sales.',
             avatar: settings.avatar || null
         };
     });
@@ -145,7 +104,6 @@ const Profile = () => {
     const [showCurrentPassword, setShowCurrentPassword] = useState(false);
     const [showOldPin, setShowOldPin] = useState(false);
     const [showNewPin, setShowNewPin] = useState(false);
-    const [backendUsername, setBackendUsername] = useState(() => sessionStorage.getItem('authUsername') || null);
     const [passwordVerifyState, setPasswordVerifyState] = useState('idle');
     const [pinVerifyState, setPinVerifyState] = useState('idle');
     const passwordVerifyTimerRef = useRef(null);
@@ -162,10 +120,6 @@ const Profile = () => {
         let isMounted = true;
 
         const hydrateProfileFromBackend = async () => {
-            if (userRole === ROLES.CASHIER) {
-                return;
-            }
-
             try {
                 const response = await meApi();
                 const user = response?.user;
@@ -174,7 +128,6 @@ const Profile = () => {
                     return;
                 }
 
-                setBackendUsername(user.username || null);
                 if (user.username) {
                     sessionStorage.setItem('authUsername', user.username);
                 }
@@ -187,8 +140,9 @@ const Profile = () => {
                         adminDisplayName: prev.adminDisplayName || settings.adminDisplayName || user.name || prev.fullName,
                         email: user.email || prev.email,
                         role: roleNames[user.role] || prev.role,
-                        contactNumber: prev.contactNumber || settings.adminContactNumber || '',
+                        contactNumber: user.phone || prev.contactNumber || settings.adminContactNumber || '',
                         lastLogin: user.lastLogin || prev.lastLogin || null,
+                        avatar: user.avatarUrl || prev.avatar,
                     };
 
                     setBaselineProfile(normalizeProfileSnapshot(hydratedProfile));
@@ -400,7 +354,6 @@ const Profile = () => {
         const normalizedEmail = (profileData.email || '').trim().toLowerCase();
         const nextDisplayName = (profileData.adminDisplayName || '').trim();
         const previousDisplayName = avatarName;
-        const previousUsername = backendUsername || sessionStorage.getItem('authUsername') || profileData.adminUser;
         const normalizedContactNumber = normalizePhoneDigits(profileData.contactNumber);
 
         if (!(profileData.fullName || '').trim()) {
@@ -478,6 +431,8 @@ const Profile = () => {
                 name: profileData.fullName.trim(),
                 username: profileData.adminUser,
                 email: normalizedEmail,
+                phone: normalizedContactNumber,
+                avatarUrl: profileData.avatar || '',
                 ...(profileData.adminPassword ? { currentPassword, newPassword: profileData.adminPassword } : {}),
                 ...(newPin ? { currentPin: oldPin, newPin } : {}),
             });
@@ -494,33 +449,9 @@ const Profile = () => {
 
         sessionStorage.setItem('userName', nextDisplayName);
         sessionStorage.setItem('authUsername', updatedUser.username);
-        setBackendUsername(updatedUser.username);
 
         if (previousDisplayName !== nextDisplayName) {
             renameUserReferences(previousDisplayName, nextDisplayName);
-        }
-
-        // Keep legacy local list aligned until UserList is fully backend-driven.
-        try {
-            const users = JSON.parse(localStorage.getItem('users') || '[]');
-            if (Array.isArray(users) && users.length > 0) {
-                const synced = users.map((u) => {
-                    if (u.username === previousUsername || u.name === previousDisplayName) {
-                        return {
-                            ...u,
-                            username: updatedUser.username,
-                            name: nextDisplayName,
-                            email: updatedUser.email,
-                            phone: normalizedContactNumber || u.phone || '',
-                            avatar: profileData.avatar,
-                        };
-                    }
-                    return u;
-                });
-                localStorage.setItem('users', JSON.stringify(synced));
-            }
-        } catch {
-            // Ignore local storage sync issues.
         }
 
         handleSaveInternal({
@@ -542,6 +473,7 @@ const Profile = () => {
             email: updatedUser.email,
             contactNumber: normalizedContactNumber,
             lastLogin: updatedUser.lastLogin || profileData.lastLogin || null,
+            avatar: updatedUser.avatarUrl || profileData.avatar,
             adminPassword: '',
         };
 

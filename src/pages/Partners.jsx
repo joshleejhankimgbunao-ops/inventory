@@ -1,10 +1,17 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import toast from 'react-hot-toast';
 import { showToast } from '../utils/toastHelper';
 import { getSupplierRestockRecommendations } from '../utils/recommendationLogic';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
 import { ROLES } from '../constants/roles';
+import {
+    listPartnersApi,
+    createPartnerApi,
+    updatePartnerApi,
+    archivePartnerApi,
+    restorePartnerApi,
+} from '../services/inventoryApi';
 
 const EMAIL_RULE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -31,33 +38,34 @@ const Partners = ({ viewOnly = false }) => {
     const [selectedSupplierRecs, setSelectedSupplierRecs] = useState({ supplier: null, items: [] });
 
 
-    // Mock Data (with LocalStorage persistence)
-    const [suppliers, setSuppliers] = useState(() => {
-        const saved = localStorage.getItem('suppliers');
-        return saved ? JSON.parse(saved) : [
-            { id: 1, name: 'Cebu Home Builders', contact: '0917-123-4567', email: 'sales@cebuhome.com', address: 'Mandaue City', products: 'Tiles, Paints' },
-            { id: 2, name: 'Atlantic Hardware', contact: '0918-987-6543', email: 'info@atlantic.ph', address: 'Cebu City', products: 'Steel, Cement' },
-            { id: 3, name: 'Citi Hardware', contact: '0922-555-4444', email: 'support@citihardware.com', address: 'Talisay City', products: 'General Hardware' },
-        ];
-    });
+    const [suppliers, setSuppliers] = useState([]);
+    const [customers, setCustomers] = useState([]);
 
-    const [customers, setCustomers] = useState(() => {
-        const saved = localStorage.getItem('customers');
-        return saved ? JSON.parse(saved) : [
-            { id: 1, name: 'Engr. Michael Tan', contact: '0917-888-9999', email: 'mike.tan@construct.com', address: 'Banilad, Cebu City', type: 'Contractor' },
-            { id: 2, name: 'ABC Construction', contact: '0919-777-6666', email: 'purchasing@abcconst.com', address: 'Lapu-Lapu City', type: 'Construction Firm' },
-            { id: 3, name: 'Juan Dela Cruz', contact: '0920-111-2222', email: 'juan.dc@gmail.com', address: 'Minglanilla', type: 'Loyal Customer' },
-        ];
-    });
+    const loadPartners = async () => {
+        try {
+            const [remoteSuppliers, remoteCustomers] = await Promise.all([
+                listPartnersApi({ type: 'supplier', includeArchived: true }),
+                listPartnersApi({ type: 'customer', includeArchived: true }),
+            ]);
+            const nextSuppliers = Array.isArray(remoteSuppliers) ? remoteSuppliers : [];
+            const nextCustomers = Array.isArray(remoteCustomers) ? remoteCustomers : [];
+            setSuppliers(nextSuppliers);
+            setCustomers(nextCustomers);
+            return { suppliers: nextSuppliers, customers: nextCustomers };
+        } catch {
+            setSuppliers([]);
+            setCustomers([]);
+            return { suppliers: [], customers: [] };
+        }
+    };
 
-    // Persistence Effects
-    React.useEffect(() => {
-        localStorage.setItem('suppliers', JSON.stringify(suppliers));
-    }, [suppliers]);
+    useEffect(() => {
+        const timer = window.setTimeout(() => {
+            loadPartners();
+        }, 0);
 
-    React.useEffect(() => {
-        localStorage.setItem('customers', JSON.stringify(customers));
-    }, [customers]);
+        return () => window.clearTimeout(timer);
+    }, []);
 
     const [newPartner, setNewPartner] = useState({ name: '', contact: '', email: '', address: '', note: '' });
 
@@ -71,25 +79,24 @@ const Partners = ({ viewOnly = false }) => {
 
     const archivedCount = (activeTab === 'suppliers' ? suppliers : customers).filter(i => i.isArchived).length;
 
-    const handleRestore = (id) => {
+    const handleRestore = async (id) => {
         if (isViewOnly) return;
-        const restoreItem = (list) => list.map(item => item.id === id ? { ...item, isArchived: false } : item);
-        if (activeTab === 'suppliers') {
-            const item = suppliers.find(i => i.id === id);
-            setSuppliers(restoreItem(suppliers));
-            logActivity(currentUserName, 'Restored Partner', `Restored supplier: ${item?.name || 'Unknown'}`);
-        } else {
-            const item = customers.find(i => i.id === id);
-            setCustomers(restoreItem(customers));
-            logActivity(currentUserName, 'Restored Partner', `Restored customer: ${item?.name || 'Unknown'}`);
+        const item = (activeTab === 'suppliers' ? suppliers : customers).find(i => i.id === id);
+        try {
+            await restorePartnerApi(id);
+            const refreshed = await loadPartners();
+            logActivity(currentUserName, 'Restored Partner', `Restored ${activeTab === 'suppliers' ? 'supplier' : 'customer'}: ${item?.name || 'Unknown'}`);
+            showToast('Partner Restored', `${activeTab === 'suppliers' ? 'Supplier' : 'Customer'} has been restored.`, 'success', 'partner-restore');
+            setOpenMenuId(null);
+            const refreshedList = activeTab === 'suppliers' ? refreshed.suppliers : refreshed.customers;
+            const remaining = refreshedList.filter(i => i.id !== id && i.isArchived).length;
+            if (remaining === 0) setShowArchived(false);
+        } catch {
+            showToast('Restore Failed', 'Unable to restore partner right now.', 'error', 'partner-restore-failed');
         }
-        showToast('Partner Restored', `${activeTab === 'suppliers' ? 'Supplier' : 'Customer'} has been restored.`, 'success', 'partner-restore');
-        setOpenMenuId(null);
-        const remaining = (activeTab === 'suppliers' ? suppliers : customers).filter(i => i.id !== id && i.isArchived).length;
-        if (remaining === 0) setShowArchived(false);
     };
 
-    const handleAddPartner = (e) => {
+    const handleAddPartner = async (e) => {
         if (isViewOnly) return;
         e.preventDefault();
         const normalizedEmail = (newPartner.email || '').trim().toLowerCase();
@@ -106,36 +113,29 @@ const Partners = ({ viewOnly = false }) => {
             return;
         }
         
-        if (isEditMode) {
-             const updatedItem = {
-                ...newPartner,
-                     email: normalizedEmail,
-                [activeTab === 'suppliers' ? 'products' : 'type']: newPartner.note || (activeTab === 'suppliers' ? 'General' : 'Regular')
-            };
+        const payload = {
+            type: activeTab === 'suppliers' ? 'supplier' : 'customer',
+            name: newPartner.name,
+            contact: newPartner.contact,
+            email: normalizedEmail,
+            address: newPartner.address,
+            note: newPartner.note || (activeTab === 'suppliers' ? 'General' : 'Regular'),
+        };
 
-            if (activeTab === 'suppliers') {
-                setSuppliers(suppliers.map(item => item.id === editingId ? { ...item, ...updatedItem } : item));
+        try {
+            if (isEditMode) {
+                await updatePartnerApi(editingId, payload);
+                logActivity(currentUserName, 'Updated Partner', `Updated ${activeTab === 'suppliers' ? 'supplier' : 'customer'}: ${newPartner.name}`);
+                showToast('Partner Updated', `${activeTab === 'suppliers' ? 'Supplier' : 'Customer'} details updated successfully.`, 'success', 'partner-save');
             } else {
-                setCustomers(customers.map(item => item.id === editingId ? { ...item, ...updatedItem } : item));
+                await createPartnerApi(payload);
+                logActivity(currentUserName, 'Added Partner', `Added new ${activeTab === 'suppliers' ? 'supplier' : 'customer'}: ${newPartner.name}`);
+                showToast('New Partner Added', `${activeTab === 'suppliers' ? 'Supplier' : 'Customer'} has been added to the directory.`, 'success', 'partner-save');
             }
-            logActivity(currentUserName, 'Updated Partner', `Updated ${activeTab === 'suppliers' ? 'supplier' : 'customer'}: ${newPartner.name}`);
-            showToast('Partner Updated', `${activeTab === 'suppliers' ? 'Supplier' : 'Customer'} details updated successfully.`, 'success', 'partner-save');
-        } else {
-            const newItem = {
-                id: Date.now(),
-                ...newPartner,
-                email: normalizedEmail,
-                isArchived: false,
-                [activeTab === 'suppliers' ? 'products' : 'type']: newPartner.note || (activeTab === 'suppliers' ? 'General' : 'Regular')
-            };
-
-            if (activeTab === 'suppliers') {
-                setSuppliers([...suppliers, newItem]);
-            } else {
-                setCustomers([...customers, newItem]);
-            }
-            logActivity(currentUserName, 'Added Partner', `Added new ${activeTab === 'suppliers' ? 'supplier' : 'customer'}: ${newPartner.name}`);
-            showToast('New Partner Added', `${activeTab === 'suppliers' ? 'Supplier' : 'Customer'} has been added to the directory.`, 'success', 'partner-save');
+            await loadPartners();
+        } catch {
+            showToast('Save Failed', 'Unable to save partner right now.', 'error', 'partner-save-failed');
+            return;
         }
         
         setIsAddModalOpen(false);
@@ -167,20 +167,19 @@ const Partners = ({ viewOnly = false }) => {
         setOpenMenuId(null);
     };
 
-    const confirmArchive = () => {
+    const confirmArchive = async () => {
         if (isViewOnly) return;
         if (!partnerToArchive) return;
-        const archiveItem = (list) => list.map(item => item.id === partnerToArchive.id ? { ...item, isArchived: true } : item);
-
-        if (activeTab === 'suppliers') {
-            setSuppliers(archiveItem(suppliers));
-        } else {
-            setCustomers(archiveItem(customers));
+        try {
+            await archivePartnerApi(partnerToArchive.id);
+            await loadPartners();
+            logActivity(currentUserName, 'Archived Partner', `Archived ${activeTab === 'suppliers' ? 'supplier' : 'customer'}: ${partnerToArchive.name}`);
+            showToast('Partner Archived', `${activeTab === 'suppliers' ? 'Supplier' : 'Customer'} has been archived.`, 'success', 'partner-archive');
+            setIsArchiveModalOpen(false);
+            setPartnerToArchive(null);
+        } catch {
+            showToast('Archive Failed', 'Unable to archive partner right now.', 'error', 'partner-archive-failed');
         }
-        logActivity(currentUserName, 'Archived Partner', `Archived ${activeTab === 'suppliers' ? 'supplier' : 'customer'}: ${partnerToArchive.name}`);
-        showToast('Partner Archived', `${activeTab === 'suppliers' ? 'Supplier' : 'Customer'} has been archived.`, 'success', 'partner-archive');
-        setIsArchiveModalOpen(false);
-        setPartnerToArchive(null);
     };
 
     const handleOpenRecommendations = (supplier) => {
