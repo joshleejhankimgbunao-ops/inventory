@@ -2,10 +2,11 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { showToast } from '../utils/toastHelper';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
+import { createProductApi, updateProductApi } from '../services/inventoryApi';
 
 const ProductList = () => {
     const { userRole, appSettings: settings, currentUserName, ROLES, isAdminOrAbove } = useAuth();
-    const { inventory, setInventory, logAction, logActivity } = useInventory();
+    const { inventory, setInventory, logAction, logActivity, refreshBackendData } = useInventory();
 
     const [searchTerm, setSearchTerm] = useState('');
     const [statusFilter, setStatusFilter] = useState('All');
@@ -26,7 +27,7 @@ const ProductList = () => {
     // Derived Suppliers List for Dropdown
     const suggestedSuppliers = useMemo(() => {
         const fromInventory = inventory
-            .map(p => p.supplier)
+            .map(p => p.supplierName)
             .filter(Boolean); // Get all non-empty suppliers from current items
             
         // Default popular/partner suppliers (Fallback/Suggestions)
@@ -210,12 +211,12 @@ const ProductList = () => {
             sizeUnit: parsed.unit,
             price: product.price,
             stock: product.stock,
-            supplier: 'Local Supplier' // Mock data
+            supplier: product.supplierName || 'Local Supplier'
         });
         setIsModalOpen(true);
     };
 
-    const handleSave = (e) => {
+    const handleSave = async (e) => {
         e.preventDefault();
         
         // Basic Validation
@@ -264,11 +265,29 @@ const ProductList = () => {
                 size: combinedSize,
                 price: parseFloat(formData.price),
                 stock: stockVal,
-                status: stockVal > 20 ? 'In Stock' : (stockVal > 0 ? 'Low Stock' : 'Out of Stock')
+                status: stockVal > 20 ? 'In Stock' : (stockVal > 0 ? 'Low Stock' : 'Out of Stock'),
+                supplierName: formData.supplier?.trim() || 'Local Supplier'
             };
             delete newProduct.sizeUnit;
-            
-            setInventory(prev => [...prev, newProduct]);
+
+            try {
+                await createProductApi({
+                    name: newProduct.name,
+                    sku: newProduct.code,
+                    category: newProduct.category,
+                    brand: newProduct.brand,
+                    color: newProduct.color,
+                    size: newProduct.size,
+                    price: newProduct.price,
+                    stock: newProduct.stock,
+                    supplierName: newProduct.supplierName,
+                });
+                await refreshBackendData();
+            } catch (error) {
+                showToast('Save Failed', error.message || 'Unable to save product to server.', 'error', 'product-save-failed');
+                return;
+            }
+
             log('CREATE', newProduct.code, `Created new product: ${newProduct.name}`);
             logActivity(currentUserName, 'Created Product', `${newProduct.code} - ${newProduct.name}`);
             showToast("Product Created", `${newProduct.name} has been added.`, "success", "product-action");
@@ -298,21 +317,24 @@ const ProductList = () => {
                 showToast('Stock Limit', `Stock capped to max (${maxStockLimit}).`, 'warning', 'stock-cap');
                 updatedStockVal = maxStockLimit;
             }
-            const { sizeUnit: _su, ...saveData } = formData;
-            setInventory(prev => prev.map(item => 
-                item.code === editingProduct.code 
-                ? { 
-                    ...item, 
-                    ...saveData, 
+            try {
+                await updateProductApi(editingProduct.id, {
+                    name: formData.name,
+                    sku: formData.code,
+                    category: formData.category,
                     brand: formData.brand?.trim() || '',
                     color: formData.color?.trim() || '',
                     size: combinedSize,
-                    price: parseFloat(formData.price), 
+                    price: parseFloat(formData.price),
                     stock: updatedStockVal,
-                    status: stockVal > 20 ? 'In Stock' : (stockVal > 0 ? 'Low Stock' : 'Out of Stock')
-                  }
-                : item
-            ));
+                    supplierName: formData.supplier?.trim() || 'Local Supplier',
+                });
+                await refreshBackendData();
+            } catch (error) {
+                showToast('Update Failed', error.message || 'Unable to update product on server.', 'error', 'product-update-failed');
+                return;
+            }
+
             log('UPDATE', editingProduct.code, `Updated product details`);
             logActivity(currentUserName, 'Updated Product', `${editingProduct.code} - ${editingProduct.name}`);
             showToast("Product Updated", "Product details have been saved.", "success", "product-action");

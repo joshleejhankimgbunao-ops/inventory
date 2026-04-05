@@ -8,18 +8,19 @@ const History = () => {
     const { userRole, currentUserName, appSettings, isAdminOrAbove, ROLES } = useAuth();
     const { 
         transactions, 
-        setTransactions, 
+        toggleTransactionArchive,
         inventoryLogs, 
         handleResetHistory 
     } = useInventory();
 
     const currentUser = currentUserName;
     const adminName = appSettings.adminDisplayName;
-    const onResetHistory = handleResetHistory;
 
     // Internal handler for archiving
-    const onArchiveTransaction = (id) => {
-        setTransactions(prev => prev.map(t => t.id === id ? { ...t, isArchived: !t.isArchived } : t));
+    const onArchiveTransaction = async (id) => {
+        if (typeof toggleTransactionArchive === 'function') {
+            await toggleTransactionArchive(id);
+        }
     };
 
     const [activeTab, setActiveTab] = useState('sales');
@@ -210,11 +211,11 @@ const History = () => {
         setIsArchiveModalOpen(true);
     };
 
-    const confirmArchive = () => {
+    const confirmArchive = async () => {
         if (!transactionToArchive) return;
         
         if (onArchiveTransaction) {
-            onArchiveTransaction(transactionToArchive.id);
+            await onArchiveTransaction(transactionToArchive.id);
             if (transactionToArchive.isArchived) {
                 showToast('Restored', `Transaction ${transactionToArchive.id} restored successfully.`, 'save', 'archive-restore');
             } else {

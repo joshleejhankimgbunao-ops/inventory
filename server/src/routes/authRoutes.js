@@ -3,10 +3,12 @@ const {
 	login,
 	register,
 	me,
+	updateMyPreferences,
 	verifyMyCurrentPassword,
 	verifyMyCurrentPin,
 	updateMyProfile,
 	updateMyEmail,
+	listUsers,
 	updateUserByUsername,
 	requestPasswordReset,
 	resetPassword,
@@ -37,10 +39,12 @@ router.post('/reset-password', resetPasswordLimiter, resetPassword);
 router.post('/forgot-pin', forgotPinLimiter, requestPinReset);
 router.post('/reset-pin', resetPinLimiter, resetPin);
 router.get('/me', requireAuth, me);
+router.patch('/me/preferences', requireAuth, updateMyPreferences);
 router.post('/me/verify-password', requireAuth, verifyMyCurrentPassword);
 router.post('/me/verify-pin', requireAuth, verifyMyCurrentPin);
 router.patch('/me/profile', requireAuth, updateMyProfile);
 router.patch('/me/email', requireAuth, updateMyEmail);
+router.get('/users', requireAuth, authorizeRoles('superadmin', 'admin'), listUsers);
 router.patch('/users/:username', requireAuth, authorizeRoles('superadmin', 'admin'), updateUserByUsername);
 
 module.exports = router;

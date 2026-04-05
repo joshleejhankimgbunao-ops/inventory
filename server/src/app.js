@@ -6,6 +6,9 @@ const healthRoutes = require('./routes/healthRoutes');
 const authRoutes = require('./routes/authRoutes');
 const productRoutes = require('./routes/productRoutes');
 const saleRoutes = require('./routes/saleRoutes');
+const settingRoutes = require('./routes/settingRoutes');
+const partnerRoutes = require('./routes/partnerRoutes');
+const logRoutes = require('./routes/logRoutes');
 const { notFound, errorHandler } = require('./middleware/errorMiddleware');
 
 const app = express();
@@ -43,6 +46,9 @@ app.use('/api/health', healthRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/sales', saleRoutes);
+app.use('/api/settings', settingRoutes);
+app.use('/api/partners', partnerRoutes);
+app.use('/api/logs', logRoutes);
 
 app.use(notFound);
 app.use(errorHandler);

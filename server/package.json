@@ -13,7 +13,11 @@
     "sync:users:local-to-atlas": "node scripts/syncUsersLocalToAtlas.js",
     "seed": "node src/scripts/seed.js",
     "seed:reset": "node src/scripts/seed.js --reset",
-    "test": "echo \"No tests yet\""
+  "migrate:products:phase6": "node scripts/migrateProductsPhase6.js",
+    "smoke": "node scripts/smokeTest.js",
+    "db:backup": "powershell -ExecutionPolicy Bypass -File .\\scripts\\powershell\\backup-db.ps1",
+    "db:restore": "powershell -ExecutionPolicy Bypass -File .\\scripts\\powershell\\restore-db.ps1",
+    "test": "npm run smoke"
   },
   "keywords": [],
   "author": "",

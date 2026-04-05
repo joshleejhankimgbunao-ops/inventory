@@ -5,10 +5,10 @@ import { getAlternatives } from '../utils/recommendationLogic';
 import { useInventory } from '../context/InventoryContext';
 import { useAuth } from '../context/AuthContext';
 import { getAuthToken } from '../services/apiClient';
-import { createSaleApi, listProductsApi } from '../services/inventoryApi';
+import { createSaleApi } from '../services/inventoryApi';
 
 const PointOfSale = () => {
-    const { processedInventory: inventory, setInventory, transactions, setTransactions, logAction, logActivity, addToSyncQueue, syncQueue, isOnline } = useInventory();
+    const { processedInventory: inventory, setInventory, logAction, logActivity, addToSyncQueue, refreshBackendData } = useInventory();
     const { appSettings: settings, currentUserName } = useAuth();
 
     const showErrorDetails = (message) => {
@@ -172,12 +172,7 @@ const PointOfSale = () => {
                 }));
 
                 const savedSale = await createSaleApi(apiItems, 'cash');
-                
-                // If we get here, sync was successful
-                const remoteProducts = await listProductsApi();
-                if (Array.isArray(remoteProducts) && remoteProducts.length > 0) {
-                    setInventory(remoteProducts);
-                }
+                await refreshBackendData();
 
                 const remoteTransaction = {
                     id: savedSale?._id ? `TRX-${savedSale._id.slice(-6).toUpperCase()}` : transactionData.id,
@@ -189,11 +184,6 @@ const PointOfSale = () => {
                     paymentMethod: 'Cash',
                     cashier: currentUserName,
                 };
-
-                setTransactions(prev => [remoteTransaction, ...prev]);
-                cart.forEach(item => {
-                    logAction('DEDUCT', item.code, `Sold ${item.qty} Qty (TRX: ${remoteTransaction.id})`, currentUserName);
-                });
 
                 setCart([]);
                 setCashAmount('');
@@ -233,8 +223,7 @@ const PointOfSale = () => {
 
         setInventory(newInventory);
         
-        // Log Transaction & Deduction
-        setTransactions(prev => [transactionData, ...prev]);
+       // Log Transaction & Deduction
         cart.forEach(item => {
              logAction('DEDUCT', item.code, `Sold ${item.qty} Qty (TRX: ${transactionData.id})`, currentUserName);
         });

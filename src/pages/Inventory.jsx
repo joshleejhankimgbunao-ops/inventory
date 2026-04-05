@@ -151,8 +151,6 @@ const Inventory = () => {
             return item;
         });
 
-        setInventory(updatedInventory);
-
         const selectedUpdatedItem = updatedInventory.find(item => item.code === selectedItem.code);
         const token = getAuthToken();
         if (token && selectedItem.id && selectedUpdatedItem) {
@@ -160,8 +158,14 @@ const Inventory = () => {
                 await updateProductStockApi(selectedItem.id, selectedUpdatedItem.stock);
             } catch (error) {
                 showToast('Sync Failed', error.message || 'Stock change was not synced to server.', 'error', 'stock-sync');
+                return;
             }
+        } else {
+            showToast('Session Required', 'Please log in again so stock updates can be saved to the database.', 'error', 'stock-auth-required');
+            return;
         }
+
+        setInventory(updatedInventory);
         
         // Detailed Logging
         const logAction = modalAction === 'IN' ? 'STOCK_IN' : 'STOCK_OUT';

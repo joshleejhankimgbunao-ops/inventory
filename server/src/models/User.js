@@ -1,5 +1,28 @@
 const mongoose = require('mongoose');
 
+const preferencesSchema = new mongoose.Schema(
+  {
+    darkMode: {
+      type: Boolean,
+      default: false,
+    },
+    desktopNotifications: {
+      type: Boolean,
+      default: true,
+    },
+    hasViewedLogs: {
+      type: Boolean,
+      default: false,
+    },
+    readLogCount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+  },
+  { _id: false }
+);
+
 const userSchema = new mongoose.Schema(
   {
     name: {
@@ -20,6 +43,16 @@ const userSchema = new mongoose.Schema(
       sparse: true,
       trim: true,
       lowercase: true,
+    },
+    phone: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    avatarUrl: {
+      type: String,
+      trim: true,
+      default: '',
     },
     password: {
       type: String,
@@ -65,6 +98,15 @@ const userSchema = new mongoose.Schema(
     },
     authRevokedAt: {
       type: Date,
+    },
+    preferences: {
+      type: preferencesSchema,
+      default: () => ({
+        darkMode: false,
+        desktopNotifications: true,
+        hasViewedLogs: false,
+        readLogCount: 0,
+      }),
     },
   },
   {
