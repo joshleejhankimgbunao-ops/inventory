@@ -360,7 +360,7 @@ const Login = ({ onLogin }) => {
               {[...Array(6)].map((_, i) => (
                 <input
                   key={i}
-                  type="tel"
+                  type="password"
                   inputMode="numeric"
                   pattern="[0-9]*"
                   maxLength={1}
