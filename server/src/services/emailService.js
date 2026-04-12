@@ -56,6 +56,36 @@ const buildResetBody = ({ purpose, resetUrl, expiresMinutes, recipientName }) =>
   ].join('\n');
 };
 
+const buildAccountCredentialsSubject = () => {
+  return 'Your account credentials';
+};
+
+const buildAccountCredentialsBody = ({ recipientName, username, password, pin, createdByName }) => {
+  const greeting = recipientName ? `Hi ${recipientName},` : 'Hi,';
+  const creatorLine = createdByName
+    ? `Your account was created by ${createdByName}.`
+    : 'Your account has been created.';
+
+  const bodyLines = [
+    greeting,
+    '',
+    creatorLine,
+    '',
+    'Use the credentials below to sign in:',
+    `Username: ${username}`,
+    `Password: ${password}`,
+  ];
+
+  if (pin) {
+    bodyLines.push(`PIN: ${pin}`);
+  }
+
+  bodyLines.push('');
+  bodyLines.push('Please change your password after your first login.');
+
+  return bodyLines.join('\n');
+};
+
 const sendResetEmail = async ({ to, purpose, resetUrl, expiresMinutes, recipientName }) => {
   const transporter = getTransporter();
 
@@ -83,6 +113,42 @@ const sendResetEmail = async ({ to, purpose, resetUrl, expiresMinutes, recipient
   return { simulated: false };
 };
 
+const sendAccountCredentialsEmail = async ({
+  to,
+  recipientName,
+  username,
+  password,
+  pin,
+  createdByName,
+}) => {
+  const transporter = getTransporter();
+
+  if (!transporter) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('Mail service is not configured in production.');
+    }
+
+    console.warn('[MAIL DEV MODE] SMTP is not configured. Account credential email was not sent.');
+    return { simulated: true };
+  }
+
+  await transporter.sendMail({
+    from: getMailFrom(),
+    to,
+    subject: buildAccountCredentialsSubject(),
+    text: buildAccountCredentialsBody({
+      recipientName,
+      username,
+      password,
+      pin,
+      createdByName,
+    }),
+  });
+
+  return { simulated: false };
+};
+
 module.exports = {
   sendResetEmail,
+  sendAccountCredentialsEmail,
 };

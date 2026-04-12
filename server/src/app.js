@@ -9,6 +9,7 @@ const saleRoutes = require('./routes/saleRoutes');
 const settingRoutes = require('./routes/settingRoutes');
 const partnerRoutes = require('./routes/partnerRoutes');
 const logRoutes = require('./routes/logRoutes');
+const categoryRoutes = require('./routes/categoryRoutes');
 const { notFound, errorHandler } = require('./middleware/errorMiddleware');
 
 const app = express();
@@ -23,7 +24,7 @@ const parseAllowedOrigins = () => {
 };
 
 const allowedOrigins = parseAllowedOrigins();
-const localhostDevOriginPattern = /^http:\/\/localhost:(517\d|3000)$/;
+const localhostDevOriginPattern = /^http:\/\/(localhost|127\.0\.0\.1):(517\d|3000)$/;
 
 app.use(cors({
   origin: (origin, callback) => {
@@ -49,6 +50,7 @@ app.use('/api/sales', saleRoutes);
 app.use('/api/settings', settingRoutes);
 app.use('/api/partners', partnerRoutes);
 app.use('/api/logs', logRoutes);
+app.use('/api/categories', categoryRoutes);
 
 app.use(notFound);
 app.use(errorHandler);

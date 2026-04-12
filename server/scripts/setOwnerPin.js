@@ -4,7 +4,7 @@ const connectDB = require('../src/config/db');
 const User = require('../src/models/User');
 const bcrypt = require('bcryptjs');
 
-const username = 'owner';
+const username = 'joshlee';
 const pin = '111111'; // default PIN to set; change if you prefer
 
 (async () => {

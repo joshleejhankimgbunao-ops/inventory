@@ -49,6 +49,19 @@ const productSchema = new mongoose.Schema(
       required: true,
       min: 0,
     },
+    budgetTier: {
+      type: String,
+      enum: ['low', 'moderate', 'high'],
+      default: 'moderate',
+      trim: true,
+      lowercase: true,
+    },
+    alternativeGroupKey: {
+      type: String,
+      default: '',
+      trim: true,
+      lowercase: true,
+    },
     isActive: {
       type: Boolean,
       default: true,

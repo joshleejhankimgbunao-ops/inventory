@@ -52,6 +52,13 @@ const saleSchema = new mongoose.Schema(
       default: 'cash',
       enum: ['cash', 'gcash', 'card', 'other'],
     },
+    clientRequestId: {
+      type: String,
+      trim: true,
+      unique: true,
+      sparse: true,
+      index: true,
+    },
     cashier: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',

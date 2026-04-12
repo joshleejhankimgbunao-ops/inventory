@@ -2,7 +2,7 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
-const { sendResetEmail } = require('../services/emailService');
+const { sendResetEmail, sendAccountCredentialsEmail } = require('../services/emailService');
 const { writeActivityLog } = require('../services/logService');
 
 const RESET_RESPONSE_MESSAGE = 'If the account exists, a reset link has been sent.';
@@ -21,6 +21,7 @@ const signToken = (userId) => {
 const sanitizeUser = (user) => ({
   id: user._id,
   name: user.name,
+  displayName: user.displayName || user.name,
   username: user.username,
   email: user.email,
   phone: user.phone || '',
@@ -34,6 +35,7 @@ const sanitizeUser = (user) => ({
   role: user.role,
   isActive: user.isActive,
   lastLogin: user.lastLogin,
+  mustChangeCredentials: Boolean(user.mustChangeCredentials),
 });
 
 const normalizeValue = (value) => {
@@ -42,6 +44,14 @@ const normalizeValue = (value) => {
   }
 
   return value.trim().toLowerCase();
+};
+
+const normalizeTrimmed = (value) => {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  return value.trim();
 };
 
 const hashToken = (rawToken) => {
@@ -176,6 +186,9 @@ const updateMyProfile = async (req, res, next) => {
     const nextName = typeof req.body?.name === 'string' && req.body.name.trim()
       ? req.body.name.trim()
       : user.name;
+    const nextDisplayName = req.body?.displayName !== undefined
+      ? normalizeTrimmed(req.body.displayName)
+      : user.displayName;
     const nextUsername = req.body?.username ? normalizeValue(req.body.username) : user.username;
     const nextEmail = req.body?.email ? normalizeValue(req.body.email) : user.email;
     const nextPhone = req.body?.phone !== undefined ? String(req.body.phone).trim() : user.phone;
@@ -221,6 +234,7 @@ const updateMyProfile = async (req, res, next) => {
 
       user.password = await bcrypt.hash(req.body.newPassword, 10);
       user.authRevokedAt = new Date();
+      user.mustChangeCredentials = false;
     }
 
     const hasNewPin = req.body?.newPin !== undefined && req.body?.newPin !== null && String(req.body.newPin) !== '';
@@ -245,9 +259,11 @@ const updateMyProfile = async (req, res, next) => {
 
       user.pinHash = await bcrypt.hash(nextPin, 10);
       user.authRevokedAt = new Date();
+      user.mustChangeCredentials = false;
     }
 
     user.name = nextName;
+    user.displayName = nextDisplayName || nextName;
     user.username = nextUsername;
     user.email = nextEmail;
   user.phone = nextPhone;
@@ -321,6 +337,10 @@ const updateUserByUsername = async (req, res, next) => {
       return res.status(404).json({ message: 'User not found.' });
     }
 
+    if (user.role === 'superadmin') {
+      return res.status(403).json({ message: 'Superadmin accounts cannot be modified from this endpoint.' });
+    }
+
     const nextUsername = req.body?.username ? normalizeValue(req.body.username) : user.username;
     const nextEmail = req.body?.email ? normalizeValue(req.body.email) : user.email;
 
@@ -341,7 +361,15 @@ const updateUserByUsername = async (req, res, next) => {
       return res.status(409).json({ message: 'Username or email already in use.' });
     }
 
-    user.name = req.body?.name || user.name;
+    const nextName = typeof req.body?.name === 'string' && req.body.name.trim()
+      ? req.body.name.trim()
+      : user.name;
+    const nextDisplayName = req.body?.displayName !== undefined
+      ? normalizeTrimmed(req.body.displayName)
+      : user.displayName;
+
+    user.name = nextName;
+    user.displayName = nextDisplayName || nextName;
     user.username = nextUsername;
     user.email = nextEmail;
 
@@ -369,8 +397,18 @@ const updateUserByUsername = async (req, res, next) => {
       };
     }
 
-    if (req.body?.role) {
-      user.role = req.body.role;
+    if (req.body?.role !== undefined) {
+      const requestedRole = normalizeValue(req.body.role);
+      if (!['admin', 'cashier'].includes(requestedRole)) {
+        return res.status(400).json({ message: 'role must be admin or cashier.' });
+      }
+
+      const actorRole = normalizeValue(req.user?.role || '');
+      if (actorRole !== 'superadmin' && requestedRole === 'admin') {
+        return res.status(403).json({ message: 'Only superadmin can assign admin role.' });
+      }
+
+      user.role = requestedRole;
     }
 
     if (typeof req.body?.isActive === 'boolean') {
@@ -384,6 +422,7 @@ const updateUserByUsername = async (req, res, next) => {
         });
       }
       user.password = await bcrypt.hash(req.body.password, 10);
+      user.mustChangeCredentials = true;
     }
 
     if (req.body?.pin !== undefined && req.body?.pin !== null && req.body?.pin !== '') {
@@ -392,6 +431,7 @@ const updateUserByUsername = async (req, res, next) => {
         return res.status(400).json({ message: `pin must be exactly ${PIN_LENGTH} digits.` });
       }
       user.pinHash = await bcrypt.hash(pinValue, 10);
+      user.mustChangeCredentials = true;
     }
 
     await user.save({ validateBeforeSave: false });
@@ -409,6 +449,43 @@ const listUsers = async (req, res, next) => {
   try {
     const users = await User.find({}).sort({ createdAt: -1 });
     return res.json(users.map(sanitizeUser));
+  } catch (error) {
+    return next(error);
+  }
+};
+
+const deleteUserByUsername = async (req, res, next) => {
+  try {
+    const targetUsername = normalizeValue(req.params?.username);
+
+    if (!targetUsername) {
+      return res.status(400).json({ message: 'username parameter is required.' });
+    }
+
+    const user = await User.findOne({ username: targetUsername });
+    if (!user) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+
+    if (user.role === 'superadmin') {
+      return res.status(403).json({ message: 'Superadmin accounts cannot be deleted.' });
+    }
+
+    if (String(user._id) === String(req.user?._id)) {
+      return res.status(400).json({ message: 'You cannot delete your own account.' });
+    }
+
+    await User.deleteOne({ _id: user._id });
+
+    await writeActivityLog({
+      user: req.user,
+      action: 'Deleted User',
+      details: `Deleted user ${user.name} (${user.username}).`,
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent') || '',
+    });
+
+    return res.json({ message: 'User deleted.' });
   } catch (error) {
     return next(error);
   }
@@ -488,6 +565,7 @@ const register = async (req, res, next) => {
   try {
     const {
       name,
+      displayName,
       username,
       email,
       password,
@@ -548,7 +626,8 @@ const register = async (req, res, next) => {
     }
 
     const user = await User.create({
-      name,
+      name: String(name).trim(),
+      displayName: normalizeTrimmed(displayName) || String(name).trim(),
       username: normalizedUsername,
       email: normalizedEmail,
       phone: normalizedPhone,
@@ -556,13 +635,42 @@ const register = async (req, res, next) => {
       password: hashed,
       pinHash: pin ? await bcrypt.hash(pin, 10) : undefined,
       role: assignedRole,
+      mustChangeCredentials: true,
       preferences: normalizedPreferencesResult.value,
     });
+
+    let emailDelivery = {
+      attempted: false,
+      status: 'not-applicable',
+    };
+
+    if (isSuperadminCreator) {
+      emailDelivery = {
+        attempted: true,
+        status: 'failed',
+      };
+
+      try {
+        const mailResult = await sendAccountCredentialsEmail({
+          to: user.email,
+          recipientName: user.name,
+          username: user.username,
+          password,
+          pin,
+          createdByName: req.user?.name || '',
+        });
+
+        emailDelivery.status = mailResult?.simulated ? 'simulated' : 'sent';
+      } catch (mailError) {
+        console.warn(`[REGISTER EMAIL ERROR] Unable to deliver account credentials to ${user.email}: ${mailError.message}`);
+      }
+    }
 
     const token = signToken(user._id);
     return res.status(201).json({
       token,
       user: sanitizeUser(user),
+      emailDelivery,
     });
   } catch (error) {
     return next(error);
@@ -700,6 +808,7 @@ const resetPassword = async (req, res, next) => {
     user.passwordResetExpiresAt = undefined;
     user.passwordResetRequestedAt = undefined;
     user.authRevokedAt = now;
+    user.mustChangeCredentials = false;
     await user.save();
 
     return res.json({ message: 'Password reset successful.' });
@@ -737,6 +846,7 @@ const resetPin = async (req, res, next) => {
     user.pinResetExpiresAt = undefined;
     user.pinResetRequestedAt = undefined;
     user.authRevokedAt = now;
+    user.mustChangeCredentials = false;
     await user.save({ validateBeforeSave: false });
 
     return res.json({ message: 'PIN reset successful.' });
@@ -756,6 +866,7 @@ module.exports = {
   updateMyEmail,
   listUsers,
   updateUserByUsername,
+  deleteUserByUsername,
   requestPasswordReset,
   resetPassword,
   requestPinReset,

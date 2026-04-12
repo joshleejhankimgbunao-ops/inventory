@@ -12,20 +12,22 @@ const writeActivityLog = async ({
   details = '',
   ipAddress = '',
   userAgent = '',
+  session = null,
 }) => {
   if (!action) {
     return null;
   }
 
   try {
-    return await ActivityLog.create({
+    const [created] = await ActivityLog.create([{
       userRef: user?._id || null,
       user: normalizeUserName(user),
       action,
       details,
       ipAddress,
       userAgent,
-    });
+    }], session ? { session } : undefined);
+    return created || null;
   } catch (error) {
     console.warn('[LOGGING] Failed to write activity log:', error.message);
     return null;
@@ -41,13 +43,14 @@ const writeInventoryLog = async ({
   quantity = null,
   stockBefore = null,
   stockAfter = null,
+  session = null,
 }) => {
   if (!action || !code) {
     return null;
   }
 
   try {
-    return await InventoryLog.create({
+    const [created] = await InventoryLog.create([{
       action,
       code,
       productRef,
@@ -57,7 +60,8 @@ const writeInventoryLog = async ({
       quantity,
       stockBefore,
       stockAfter,
-    });
+    }], session ? { session } : undefined);
+    return created || null;
   } catch (error) {
     console.warn('[LOGGING] Failed to write inventory log:', error.message);
     return null;

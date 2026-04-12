@@ -4,8 +4,8 @@ const connectDB = require('../src/config/db');
 const User = require('../src/models/User');
 const bcrypt = require('bcryptjs');
 
-const username = 'owner';
-const plainPassword = 'owner123';
+const username = 'joshlee';
+const plainPassword = 'Bunao123.';
 
 (async () => {
   try {
@@ -26,9 +26,9 @@ const plainPassword = 'owner123';
     }
 
     user = await User.create({
-      name: 'Owner',
+      name: 'JJ Bunao',
       username,
-      email: 'owner@example.local',
+      email: 'jjbunao1@gmail.com',
       password: hashedPassword,
       role: 'superadmin',
       isActive: true,

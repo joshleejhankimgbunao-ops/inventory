@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Product = require('../models/Product');
 const Sale = require('../models/Sale');
 const { writeActivityLog, writeInventoryLog } = require('../services/logService');
@@ -10,6 +11,11 @@ const parseBool = (value, fallback = false) => {
     if (value.toLowerCase() === 'false') return false;
   }
   return fallback;
+};
+
+const normalizeClientRequestId = (value) => {
+  if (value === undefined || value === null) return '';
+  return String(value).trim();
 };
 
 const mapSaleToTransactionContract = (sale) => {
@@ -66,90 +72,161 @@ const listSalesHistoryView = async (req, res, next) => {
   }
 };
 
-const createSale = async (req, res, next) => {
-  try {
-    const { items = [], paymentMethod = 'cash', notes = '' } = req.body;
+const executeSaleCreation = async ({ req, session = null, clientRequestId = '' }) => {
+  const { items = [], paymentMethod = 'cash', notes = '' } = req.body;
 
-    if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ message: 'items are required.' });
+  if (!Array.isArray(items) || items.length === 0) {
+    const validationError = new Error('items are required.');
+    validationError.status = 400;
+    throw validationError;
+  }
+
+  const preparedItems = [];
+  const inventoryAdjustments = [];
+  let totalAmount = 0;
+
+  for (const item of items) {
+    const product = await Product.findById(item.productId, null, session ? { session } : undefined);
+    if (!product || !product.isActive) {
+      const productError = new Error(`Invalid product: ${item.productId}`);
+      productError.status = 400;
+      throw productError;
     }
 
-    const preparedItems = [];
-    const inventoryAdjustments = [];
-    let totalAmount = 0;
-
-    for (const item of items) {
-      const product = await Product.findById(item.productId);
-      if (!product || !product.isActive) {
-        return res.status(400).json({ message: `Invalid product: ${item.productId}` });
-      }
-
-      const quantity = Number(item.quantity || 0);
-      if (!Number.isFinite(quantity) || quantity <= 0) {
-        return res.status(400).json({ message: `Invalid quantity for ${product.name}` });
-      }
-
-      if (product.stock < quantity) {
-        return res.status(400).json({ message: `Insufficient stock for ${product.name}` });
-      }
-
-      const subtotal = quantity * product.price;
-      preparedItems.push({
-        product: product._id,
-        name: product.name,
-        code: product.sku,
-        quantity,
-        unitPrice: product.price,
-        subtotal,
-      });
-
-      totalAmount += subtotal;
-      const stockBefore = Number(product.stock || 0);
-      product.stock -= quantity;
-      await product.save();
-
-      inventoryAdjustments.push({
-        code: product.sku,
-        productRef: product._id,
-        name: product.name,
-        quantity,
-        stockBefore,
-        stockAfter: Number(product.stock || 0),
-      });
+    const quantity = Number(item.quantity || 0);
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      const quantityError = new Error(`Invalid quantity for ${product.name}`);
+      quantityError.status = 400;
+      throw quantityError;
     }
 
-    const sale = await Sale.create({
-      items: preparedItems,
-      totalAmount,
-      paymentMethod,
-      notes,
-      cashier: req.user._id,
+    if (product.stock < quantity) {
+      const stockError = new Error(`Insufficient stock for ${product.name}`);
+      stockError.status = 400;
+      throw stockError;
+    }
+
+    const subtotal = quantity * product.price;
+    preparedItems.push({
+      product: product._id,
+      name: product.name,
+      code: product.sku,
+      quantity,
+      unitPrice: product.price,
+      subtotal,
     });
 
-    for (const adjustment of inventoryAdjustments) {
-      await writeInventoryLog({
-        action: 'DEDUCT',
-        code: adjustment.code,
-        productRef: adjustment.productRef,
-        user: req.user,
-        details: `Sold ${adjustment.quantity} of ${adjustment.name}`,
-        quantity: adjustment.quantity,
-        stockBefore: adjustment.stockBefore,
-        stockAfter: adjustment.stockAfter,
-      });
-    }
+    totalAmount += subtotal;
+    const stockBefore = Number(product.stock || 0);
+    product.stock -= quantity;
+    await product.save(session ? { session } : undefined);
 
-    await writeActivityLog({
+    inventoryAdjustments.push({
+      code: product.sku,
+      productRef: product._id,
+      name: product.name,
+      quantity,
+      stockBefore,
+      stockAfter: Number(product.stock || 0),
+    });
+  }
+
+  const [sale] = await Sale.create([{
+    items: preparedItems,
+    totalAmount,
+    paymentMethod,
+    notes,
+    cashier: req.user._id,
+    ...(clientRequestId ? { clientRequestId } : {}),
+  }], session ? { session } : undefined);
+
+  for (const adjustment of inventoryAdjustments) {
+    await writeInventoryLog({
+      action: 'DEDUCT',
+      code: adjustment.code,
+      productRef: adjustment.productRef,
       user: req.user,
-      action: 'Created Sale',
-      details: `Sale ${sale._id} created with ${preparedItems.length} item(s), total ${totalAmount}.`,
-      ipAddress: req.ip,
-      userAgent: req.get('user-agent') || '',
+      details: `Sold ${adjustment.quantity} of ${adjustment.name}`,
+      quantity: adjustment.quantity,
+      stockBefore: adjustment.stockBefore,
+      stockAfter: adjustment.stockAfter,
+      session,
+    });
+  }
+
+  await writeActivityLog({
+    user: req.user,
+    action: 'Created Sale',
+    details: `Sale ${sale._id} created with ${preparedItems.length} item(s), total ${totalAmount}.`,
+    ipAddress: req.ip,
+    userAgent: req.get('user-agent') || '',
+    session,
+  });
+
+  return sale;
+};
+
+const createSale = async (req, res, next) => {
+  let session;
+  const clientRequestId = normalizeClientRequestId(req.body?.clientRequestId);
+
+  try {
+    if (clientRequestId) {
+      const existingSale = await Sale.findOne({ clientRequestId });
+      if (existingSale) {
+        return res.status(200).json(existingSale);
+      }
+    }
+
+    session = await mongoose.startSession();
+    let createdSale = null;
+
+    await session.withTransaction(async () => {
+      createdSale = await executeSaleCreation({ req, session, clientRequestId });
     });
 
-    return res.status(201).json(sale);
+    return res.status(201).json(createdSale);
   } catch (error) {
-    return next(error);
+    const duplicateRequest = error?.code === 11000 && error?.keyPattern?.clientRequestId;
+    if (duplicateRequest && clientRequestId) {
+      const existingSale = await Sale.findOne({ clientRequestId });
+      if (existingSale) {
+        return res.status(200).json(existingSale);
+      }
+    }
+
+    const message = String(error?.message || '').toLowerCase();
+    const transactionUnsupported = message.includes('transaction numbers are only allowed on a replica set member or mongos');
+
+    if (!transactionUnsupported) {
+      if (error?.status) {
+        return res.status(error.status).json({ message: error.message });
+      }
+      return next(error);
+    }
+
+    try {
+      // Fallback for standalone MongoDB deployments where transactions are unavailable.
+      const sale = await executeSaleCreation({ req, session: null, clientRequestId });
+      return res.status(201).json(sale);
+    } catch (fallbackError) {
+      const duplicateFallbackRequest = fallbackError?.code === 11000 && fallbackError?.keyPattern?.clientRequestId;
+      if (duplicateFallbackRequest && clientRequestId) {
+        const existingSale = await Sale.findOne({ clientRequestId });
+        if (existingSale) {
+          return res.status(200).json(existingSale);
+        }
+      }
+
+      if (fallbackError?.status) {
+        return res.status(fallbackError.status).json({ message: fallbackError.message });
+      }
+      return next(fallbackError);
+    }
+  } finally {
+    if (session) {
+      await session.endSession();
+    }
   }
 };
 

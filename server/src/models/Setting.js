@@ -16,6 +16,40 @@ const stockRulesSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const budgetRangeBandSchema = new mongoose.Schema(
+  {
+    min: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    max: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+  },
+  { _id: false }
+);
+
+const budgetRangesSchema = new mongoose.Schema(
+  {
+    low: {
+      type: budgetRangeBandSchema,
+      default: () => ({ min: 0, max: 500 }),
+    },
+    moderate: {
+      type: budgetRangeBandSchema,
+      default: () => ({ min: 500, max: 2000 }),
+    },
+    high: {
+      type: budgetRangeBandSchema,
+      default: () => ({ min: 2000, max: 1000000 }),
+    },
+  },
+  { _id: false }
+);
+
 const settingSchema = new mongoose.Schema(
   {
     singletonKey: {
@@ -96,6 +130,40 @@ const settingSchema = new mongoose.Schema(
     stockRules: {
       type: stockRulesSchema,
       default: () => ({ categories: {}, products: {} }),
+    },
+    budgetRanges: {
+      type: budgetRangesSchema,
+      default: () => ({
+        low: { min: 0, max: 500 },
+        moderate: { min: 500, max: 2000 },
+        high: { min: 2000, max: 1000000 },
+      }),
+    },
+    adminUser: {
+      type: String,
+      default: 'Owner',
+      trim: true,
+      lowercase: true,
+    },
+    adminDisplayName: {
+      type: String,
+      default: 'Admin User',
+      trim: true,
+    },
+    adminFullName: {
+      type: String,
+      default: 'Admin User',
+      trim: true,
+    },
+    adminContactNumber: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    avatar: {
+      type: String,
+      default: '',
+      trim: true,
     },
   },
   {

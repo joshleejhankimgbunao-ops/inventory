@@ -10,12 +10,13 @@ const {
 	updateMyEmail,
 	listUsers,
 	updateUserByUsername,
+	deleteUserByUsername,
 	requestPasswordReset,
 	resetPassword,
 	requestPinReset,
 	resetPin,
 } = require('../controllers/authController');
-const { requireAuth, authorizeRoles } = require('../middleware/authMiddleware');
+const { requireAuth, optionalAuth, authorizeRoles } = require('../middleware/authMiddleware');
 const {
 	forgotPasswordLimiter,
 	forgotPinLimiter,
@@ -29,7 +30,7 @@ const isPublicRegisterEnabled =
 	process.env.ALLOW_PUBLIC_REGISTER === 'true' || process.env.NODE_ENV !== 'production';
 
 if (isPublicRegisterEnabled) {
-	router.post('/register', register);
+	router.post('/register', optionalAuth, register);
 } else {
 	router.post('/register', requireAuth, authorizeRoles('superadmin'), register);
 }
@@ -46,5 +47,6 @@ router.patch('/me/profile', requireAuth, updateMyProfile);
 router.patch('/me/email', requireAuth, updateMyEmail);
 router.get('/users', requireAuth, authorizeRoles('superadmin', 'admin'), listUsers);
 router.patch('/users/:username', requireAuth, authorizeRoles('superadmin', 'admin'), updateUserByUsername);
+router.delete('/users/:username', requireAuth, authorizeRoles('superadmin', 'admin'), deleteUserByUsername);
 
 module.exports = router;

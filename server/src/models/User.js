@@ -30,6 +30,11 @@ const userSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    displayName: {
+      type: String,
+      trim: true,
+      default: '',
+    },
     username: {
       type: String,
       required: true,
@@ -72,6 +77,10 @@ const userSchema = new mongoose.Schema(
     isActive: {
       type: Boolean,
       default: true,
+    },
+    mustChangeCredentials: {
+      type: Boolean,
+      default: false,
     },
     lastLogin: {
       type: Date,

@@ -143,3 +143,12 @@ To backfill older product documents safely:
 ```bash
 npm run migrate:products:phase6
 ```
+
+## 8) Sync Categories From Existing Products
+
+If products already exist in MongoDB but category records are missing,
+create missing category documents from distinct product categories:
+
+```bash
+npm run sync:categories:from-products
+```

@@ -18,6 +18,12 @@ const ALLOWED_UPDATE_FIELDS = new Set([
   'desktopNotifications',
   'maxStockLimit',
   'stockRules',
+  'budgetRanges',
+  'adminUser',
+  'adminDisplayName',
+  'adminFullName',
+  'adminContactNumber',
+  'avatar',
 ]);
 
 const normalizeString = (value) => {
@@ -58,6 +64,30 @@ const sanitizeRulesMap = (source = {}) => {
   return sanitized;
 };
 
+const sanitizeBudgetBand = (band = {}, fallback = {}) => {
+  const min = toNumberOrNull(band.min);
+  const max = toNumberOrNull(band.max);
+
+  return {
+    min: min === null || min < 0 ? Number(fallback.min || 0) : min,
+    max: max === null || max < 0 ? Number(fallback.max || 0) : max,
+  };
+};
+
+const sanitizeBudgetRanges = (source = {}) => {
+  const low = sanitizeBudgetBand(source.low || {}, { min: 0, max: 500 });
+  const moderate = sanitizeBudgetBand(source.moderate || {}, { min: low.max, max: 2000 });
+  const high = sanitizeBudgetBand(source.high || {}, { min: moderate.max, max: 1000000 });
+
+  low.max = Math.max(low.min, low.max);
+  moderate.min = Math.max(low.max, moderate.min);
+  moderate.max = Math.max(moderate.min, moderate.max);
+  high.min = Math.max(moderate.max, high.min);
+  high.max = Math.max(high.min, high.max);
+
+  return { low, moderate, high };
+};
+
 const validatePayload = (payload) => {
   if ('storePrimaryEmail' in payload && payload.storePrimaryEmail && !EMAIL_RULE.test(payload.storePrimaryEmail)) {
     return 'storePrimaryEmail must be a valid email.';
@@ -78,6 +108,34 @@ const validatePayload = (payload) => {
     const value = toNumberOrNull(payload.maxStockLimit);
     if (value === null || value < 1) {
       return 'maxStockLimit must be at least 1.';
+    }
+  }
+
+  if ('adminContactNumber' in payload && payload.adminContactNumber) {
+    const digits = String(payload.adminContactNumber).replace(/\D/g, '');
+    if (digits.length !== 11) {
+      return 'adminContactNumber must be exactly 11 digits.';
+    }
+  }
+
+  if ('budgetRanges' in payload) {
+    const low = payload.budgetRanges?.low;
+    const moderate = payload.budgetRanges?.moderate;
+    const high = payload.budgetRanges?.high;
+
+    if (!low || !moderate || !high) {
+      return 'budgetRanges must include low, moderate, and high bands.';
+    }
+
+    const values = [
+      low.min, low.max,
+      moderate.min, moderate.max,
+      high.min, high.max,
+    ];
+
+    const invalidValue = values.some((value) => toNumberOrNull(value) === null || Number(value) < 0);
+    if (invalidValue) {
+      return 'budgetRanges values must be non-negative numbers.';
     }
   }
 
@@ -125,6 +183,11 @@ const updateSettings = async (req, res, next) => {
     if ('storeSecondaryEmail' in payload) payload.storeSecondaryEmail = normalizeEmail(payload.storeSecondaryEmail);
     if ('storeMapLink' in payload) payload.storeMapLink = normalizeString(payload.storeMapLink);
     if ('currency' in payload && typeof payload.currency === 'string') payload.currency = payload.currency.trim().toUpperCase();
+    if ('adminUser' in payload && typeof payload.adminUser === 'string') payload.adminUser = payload.adminUser.trim().toLowerCase();
+    if ('adminDisplayName' in payload) payload.adminDisplayName = normalizeString(payload.adminDisplayName);
+    if ('adminFullName' in payload) payload.adminFullName = normalizeString(payload.adminFullName);
+    if ('adminContactNumber' in payload && typeof payload.adminContactNumber === 'string') payload.adminContactNumber = payload.adminContactNumber.replace(/\D/g, '').slice(0, 11);
+    if ('avatar' in payload) payload.avatar = normalizeString(payload.avatar);
 
     if ('lowStockAlert' in payload) payload.lowStockAlert = toNumberOrNull(payload.lowStockAlert);
     if ('maxStockLimit' in payload) payload.maxStockLimit = toNumberOrNull(payload.maxStockLimit);
@@ -134,6 +197,10 @@ const updateSettings = async (req, res, next) => {
         categories: sanitizeRulesMap(payload.stockRules?.categories || {}),
         products: sanitizeRulesMap(payload.stockRules?.products || {}),
       };
+    }
+
+    if ('budgetRanges' in payload) {
+      payload.budgetRanges = sanitizeBudgetRanges(payload.budgetRanges || {});
     }
 
     const validationError = validatePayload(payload);

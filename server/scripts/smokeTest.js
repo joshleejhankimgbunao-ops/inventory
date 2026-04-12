@@ -1,17 +1,28 @@
 require('dotenv').config({ quiet: true });
 
 const baseUrl = process.env.SMOKE_BASE_URL || 'http://127.0.0.1:5000';
-const username = process.env.SMOKE_USERNAME || 'owner';
-const password = process.env.SMOKE_PASSWORD || 'owner123';
+const username = process.env.SMOKE_USERNAME || 'joshlee';
+const password = process.env.SMOKE_PASSWORD || 'Bunao123.';
 const pin = process.env.SMOKE_PIN || '111111';
 
 const fail = (message, details) => {
-  console.error(`❌ ${message}`);
+  console.error(`FAILED: ${message}`);
   if (details) {
     console.error(details);
   }
   process.exit(1);
 };
+
+const wait = (ms) => new Promise((resolve) => {
+  setTimeout(resolve, ms);
+});
+
+const buildCredentialHint = () => ({
+  username,
+  hasPassword: Boolean(password),
+  hasPin: Boolean(pin),
+  help: 'If credentials are invalid, run: node scripts/createOwner.js and node scripts/setOwnerPin.js',
+});
 
 const toJsonSafe = async (response) => {
   const text = await response.text();
@@ -24,27 +35,66 @@ const toJsonSafe = async (response) => {
 };
 
 const requestJson = async (path, options = {}) => {
-  const response = await fetch(`${baseUrl}${path}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options.headers || {}),
-    },
-  });
+  let response;
+  try {
+    response = await fetch(`${baseUrl}${path}`, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(options.headers || {}),
+      },
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      payload: {
+        message: 'Network request failed. Ensure backend server is running and SMOKE_BASE_URL is correct.',
+        error: error?.message || String(error),
+      },
+    };
+  }
 
   const payload = await toJsonSafe(response);
   return { ok: response.ok, status: response.status, payload };
+};
+
+const requestJsonWithRetry = async (path, options = {}, retryConfig = {}) => {
+  const {
+    retries = 5,
+    delayMs = 800,
+    retryOnStatuses = [],
+  } = retryConfig;
+
+  let lastResult = null;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const result = await requestJson(path, options);
+    lastResult = result;
+
+    const shouldRetry = result.status === 0 || retryOnStatuses.includes(result.status);
+    if (!shouldRetry || attempt === retries) {
+      return result;
+    }
+
+    await wait(delayMs);
+  }
+
+  return lastResult;
 };
 
 const run = async () => {
   console.log('--- Backend Smoke Test (Phase 8) ---');
   console.log(`Base URL: ${baseUrl}`);
 
-  const health = await requestJson('/api/health');
+  const health = await requestJsonWithRetry('/api/health', {}, {
+    retries: 8,
+    delayMs: 1000,
+    retryOnStatuses: [502, 503, 504],
+  });
   if (!health.ok || health.payload?.status !== 'ok') {
     fail('Health check failed.', health.payload);
   }
-  console.log('✅ Health check passed.');
+  console.log('PASS: Health check passed.');
 
   const firstLogin = await requestJson('/api/auth/login', {
     method: 'POST',
@@ -52,7 +102,10 @@ const run = async () => {
   });
 
   if (!firstLogin.ok) {
-    fail('Login with username/password failed.', firstLogin.payload);
+    fail('Login with username/password failed.', {
+      ...buildCredentialHint(),
+      response: firstLogin.payload,
+    });
   }
 
   let token = firstLogin.payload?.token;
@@ -63,13 +116,16 @@ const run = async () => {
     });
 
     if (!secondLogin.ok || !secondLogin.payload?.token) {
-      fail('PIN verification login failed.', secondLogin.payload);
+      fail('PIN verification login failed.', {
+        ...buildCredentialHint(),
+        response: secondLogin.payload,
+      });
     }
 
     token = secondLogin.payload.token;
-    console.log('✅ Login with PIN challenge passed.');
+    console.log('PASS: Login with PIN challenge passed.');
   } else if (token) {
-    console.log('✅ Login without PIN challenge passed.');
+    console.log('PASS: Login without PIN challenge passed.');
   } else {
     fail('Login response missing token and requiresPin.', firstLogin.payload);
   }
@@ -97,7 +153,7 @@ const run = async () => {
   if (!hasProfileShape) {
     fail('/api/auth/me profile enrichment contract failed.', me.payload);
   }
-  console.log('✅ Authenticated /me check passed.');
+  console.log('PASS: Authenticated /me check passed.');
 
   const users = await requestJson('/api/auth/users', {
     method: 'GET',
@@ -121,7 +177,7 @@ const run = async () => {
       fail('/api/auth/users contract validation failed.', sampleUser);
     }
   }
-  console.log(`✅ Users list check passed (${users.payload.length} records).`);
+  console.log(`PASS: Users list check passed (${users.payload.length} records).`);
 
   const preferencePatchPayload = {
     darkMode: Boolean(meUser.preferences?.darkMode),
@@ -137,7 +193,7 @@ const run = async () => {
   if (!preferenceUpdate.ok || !preferenceUpdate.payload?.user?.preferences) {
     fail('/api/auth/me/preferences PATCH failed.', preferenceUpdate.payload);
   }
-  console.log('✅ Preferences PATCH check passed.');
+  console.log('PASS: Preferences PATCH check passed.');
 
   const publicSettings = await requestJson('/api/settings', {
     method: 'GET',
@@ -146,7 +202,7 @@ const run = async () => {
   if (!publicSettings.ok || !publicSettings.payload?.storeName) {
     fail('/api/settings (public GET) failed.', publicSettings.payload);
   }
-  console.log('✅ Public settings GET check passed.');
+  console.log('PASS: Public settings GET check passed.');
 
   const patchPayload = {
     autoSync: Boolean(publicSettings.payload.autoSync),
@@ -161,7 +217,7 @@ const run = async () => {
   if (!patchedSettings.ok || !patchedSettings.payload?.settings) {
     fail('/api/settings (authenticated PATCH) failed.', patchedSettings.payload);
   }
-  console.log('✅ Authenticated settings PATCH check passed.');
+  console.log('PASS: Authenticated settings PATCH check passed.');
 
   const products = await requestJson('/api/products', {
     method: 'GET',
@@ -184,7 +240,7 @@ const run = async () => {
       fail('/api/products phase 6 contract check failed.', sampleProduct);
     }
   }
-  console.log(`✅ Products check passed (${products.payload.length} records).`);
+  console.log(`PASS: Products check passed (${products.payload.length} records).`);
 
   const partners = await requestJson('/api/partners?type=supplier&includeArchived=true', {
     method: 'GET',
@@ -194,7 +250,7 @@ const run = async () => {
   if (!partners.ok || !Array.isArray(partners.payload)) {
     fail('/api/partners check failed.', partners.payload);
   }
-  console.log(`✅ Partners check passed (${partners.payload.length} records).`);
+  console.log(`PASS: Partners check passed (${partners.payload.length} records).`);
 
   const activityLogs = await requestJson('/api/logs/activity?limit=20', {
     method: 'GET',
@@ -204,7 +260,7 @@ const run = async () => {
   if (!activityLogs.ok || !Array.isArray(activityLogs.payload)) {
     fail('/api/logs/activity check failed.', activityLogs.payload);
   }
-  console.log(`✅ Activity logs check passed (${activityLogs.payload.length} records).`);
+  console.log(`PASS: Activity logs check passed (${activityLogs.payload.length} records).`);
 
   const inventoryLogs = await requestJson('/api/logs/inventory?limit=20', {
     method: 'GET',
@@ -214,7 +270,7 @@ const run = async () => {
   if (!inventoryLogs.ok || !Array.isArray(inventoryLogs.payload)) {
     fail('/api/logs/inventory check failed.', inventoryLogs.payload);
   }
-  console.log(`✅ Inventory logs check passed (${inventoryLogs.payload.length} records).`);
+  console.log(`PASS: Inventory logs check passed (${inventoryLogs.payload.length} records).`);
 
   const sales = await requestJson('/api/sales', {
     method: 'GET',
@@ -224,7 +280,7 @@ const run = async () => {
   if (!sales.ok || !Array.isArray(sales.payload)) {
     fail('/api/sales check failed.', sales.payload);
   }
-  console.log(`✅ Sales check passed (${sales.payload.length} records).`);
+  console.log(`PASS: Sales check passed (${sales.payload.length} records).`);
 
   const salesHistory = await requestJson('/api/sales/history-view?includeArchived=true', {
     method: 'GET',
@@ -247,9 +303,9 @@ const run = async () => {
       fail('/api/sales/history-view contract validation failed.', sample);
     }
   }
-  console.log(`✅ Sales history-view check passed (${salesHistory.payload.length} records).`);
+  console.log(`PASS: Sales history-view check passed (${salesHistory.payload.length} records).`);
 
-  console.log('🎉 Phase 8 smoke test PASSED.');
+  console.log('PASS: Phase 8 smoke test completed.');
 };
 
 run().catch((error) => {

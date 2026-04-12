@@ -13,8 +13,10 @@
     "sync:users:local-to-atlas": "node scripts/syncUsersLocalToAtlas.js",
     "seed": "node src/scripts/seed.js",
     "seed:reset": "node src/scripts/seed.js --reset",
-  "migrate:products:phase6": "node scripts/migrateProductsPhase6.js",
+    "migrate:products:phase6": "node scripts/migrateProductsPhase6.js",
+    "sync:categories:from-products": "node scripts/syncCategoriesFromProducts.js",
     "smoke": "node scripts/smokeTest.js",
+    "test:auth-flow": "node scripts/integrationAuthFlowTest.js",
     "db:backup": "powershell -ExecutionPolicy Bypass -File .\\scripts\\powershell\\backup-db.ps1",
     "db:restore": "powershell -ExecutionPolicy Bypass -File .\\scripts\\powershell\\restore-db.ps1",
     "test": "npm run smoke"
