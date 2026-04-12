@@ -345,13 +345,13 @@ const Settings = () => {
         <div className="h-auto md:h-[calc(100vh-80px)] flex flex-col gap-2 p-2 md:overflow-hidden">
 
             {/* Header */}
-            <div className="relative z-20 bg-slate-200/50 dark:bg-gray-800 p-4 sm:p-5 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shrink-0 border-t-8 border-t-[#111827]">
+            <div className="relative z-20 bg-slate-200/50 p-4 sm:p-5 rounded-xl shadow-sm border border-gray-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shrink-0 border-t-8 border-t-[#111827]">
                 <div className="flex items-center gap-2 min-w-0">
-                    <div className="text-gray-900 dark:text-white shrink-0 hidden sm:block">
+                    <div className="text-gray-900 shrink-0 hidden sm:block">
                         <svg className="w-7 h-7 sm:w-8 sm:h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
                     </div>
                     <div className="min-w-0">
-                        <h1 className="text-sm sm:text-base font-black text-gray-900 dark:text-white leading-tight">System Configuration</h1>
+                        <h1 className="text-4xl md:text-5xl font-black text-gray-900 leading-tight">System Configuration</h1>
                         <p className="text-gray-500 dark:text-gray-400 text-[11px] sm:text-xs font-medium mt-0.5">Customize application behavior and preferences</p>
                     </div>
                 </div>
@@ -382,7 +382,7 @@ const Settings = () => {
             <div className="flex-1 flex flex-col md:flex-row gap-4 md:overflow-hidden min-h-0">
                 
                 {/* Sidebar Navigation */}
-                <div className="w-full md:w-64 bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 p-3 h-auto md:h-full md:overflow-y-auto shrink-0">
+                <div className="w-full md:w-64 bg-white rounded-xl shadow-sm border border-gray-100 p-3 h-auto md:h-full md:overflow-y-auto shrink-0">
                     <p className="px-4 py-2 text-[10px] uppercase font-bold text-gray-400 tracking-wider hidden md:block">Preferences</p>
                     <nav className="flex md:flex-col gap-1 overflow-x-auto md:overflow-visible pb-2 md:pb-0">
                         {availableTabs.map(tab => (
@@ -412,7 +412,7 @@ const Settings = () => {
                 </div>
 
                 {/* Main View */}
-                <div className="flex-1 bg-slate-200/50 dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 p-6 overflow-y-auto">
+                <div className="flex-1 bg-slate-200/50 rounded-xl shadow-sm border border-gray-100 p-6 overflow-y-auto">
                     {/* Content will go here based on activeTab */}
                     {activeTab === 'general' && (
                         <div className="space-y-6 max-w-2xl animate-in fade-in slide-in-from-right-4 duration-300">

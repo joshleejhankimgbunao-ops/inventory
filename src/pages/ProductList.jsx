@@ -607,17 +607,17 @@ const ProductList = () => {
         <div className="h-auto md:h-[calc(100vh-80px)] flex flex-col gap-2 md:overflow-hidden p-2">
 
              {/* Unified Product List Container */}
-             <div className="flex flex-col bg-slate-200/50 dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 border-t-8 border-t-[#111827] md:overflow-hidden p-4 gap-4 md:flex-1 h-auto">
+             <div className="flex flex-col bg-slate-200/50 rounded-xl shadow-sm border border-gray-100 border-t-8 border-t-[#111827] md:overflow-hidden p-4 gap-4 md:flex-1 h-auto">
                  
                  {/* Header Section */}
                  <div className="flex items-center justify-between md:shrink-0">
                     <div className="flex items-center gap-2">
-                        <div className="text-gray-900 dark:text-white hidden sm:block">
+                        <div className="text-gray-900 hidden sm:block">
                             <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
                         </div>
 
                         <div>
-                            <h1 className="text-xl font-black text-gray-900 dark:text-white leading-tight">Product Master List</h1>
+                            <h1 className="text-4xl md:text-5xl font-black text-gray-900 leading-tight">Product Master List</h1>
                             <p className="text-gray-500 dark:text-gray-400 text-xs font-medium mt-0.5">Manage catalog, prices, and stock levels</p>
                         </div>
                     </div>

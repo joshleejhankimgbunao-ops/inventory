@@ -246,18 +246,18 @@ const Inventory = () => {
 
     return (
         <div className="h-auto md:h-[calc(100vh-80px)] flex flex-col gap-2 md:overflow-hidden p-2">
-            <div className="bg-slate-200/50 dark:bg-gray-800 rounded-xl border border-gray-100 dark:border-gray-700 shadow-sm flex flex-col md:h-full md:overflow-hidden relative border-t-8 border-t-[#111827] dark:border-t-gray-600 transition-colors">
+            <div className="bg-slate-200/50 rounded-xl border border-gray-100 shadow-sm flex flex-col md:h-full md:overflow-hidden relative border-t-8 border-t-[#111827] transition-colors">
 
             {/* Header Area */}
             <div className="p-3 pb-0 md:shrink-0">
                 <div className="flex items-center gap-2 mb-4">
                     <div className="hidden sm:block">
-                        <svg className="w-6 h-6 text-gray-900 dark:text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <svg className="w-6 h-6 text-gray-900" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
                         </svg>
                     </div>
                     <div>
-                        <h1 className="text-[8px] font-black text-gray-900 dark:text-white leading-tight">Stock Operations</h1>
+                        <h1 className="text-4xl md:text-5xl font-black text-gray-900 leading-tight">Stock Operations</h1>
                         <p className="text-gray-500 dark:text-gray-400 text-xs font-medium mt-1">Manage stock in/out flow and adjustments</p>
                     </div>
                 </div>
@@ -459,7 +459,7 @@ const Inventory = () => {
             </div>
 
             {/* Pagination Controls */}
-            <div className="shrink-0 flex justify-between items-center p-4 border-t border-gray-100 dark:border-gray-700 bg-slate-200/50 dark:bg-gray-800">
+            <div className="shrink-0 flex justify-between items-center p-4 border-t border-gray-100 bg-slate-200/50">
                     <div className="text-gray-500 dark:text-gray-400 text-xs font-medium">
                         Showing <span className="font-bold text-gray-900 dark:text-white">{filteredInventory.length === 0 ? 0 : indexOfFirstItem + 1}</span> to <span className="font-bold text-gray-900 dark:text-white">{Math.min(indexOfLastItem, filteredInventory.length)}</span> of <span className="font-bold text-gray-900 dark:text-white">{filteredInventory.length}</span> results
                     </div>
