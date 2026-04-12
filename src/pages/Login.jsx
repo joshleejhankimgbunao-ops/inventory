@@ -239,6 +239,12 @@ const Login = ({ onLogin }) => {
       handleSubmit({ preventDefault: () => {} });
     }
   }, [pin, needsPin, isLoading, cooldown, appSettings.adminDisplayName, appSettings.adminUser]);
+
+  useEffect(() => {
+    if (needsPin && !isLoading) {
+      inputsRef.current?.[0]?.focus();
+    }
+  }, [needsPin, isLoading]);
    
   return (
     <div className="relative flex min-h-screen items-center justify-center bg-[#111827] p-4 overflow-hidden">
@@ -354,10 +360,29 @@ const Login = ({ onLogin }) => {
               {[...Array(6)].map((_, i) => (
                 <input
                   key={i}
-                  type="password"
+                  type="tel"
                   inputMode="numeric"
+                  pattern="[0-9]*"
                   maxLength={1}
                   value={pin[i] || ''}
+                  autoComplete="one-time-code"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Backspace' && !pin[i] && i > 0) {
+                      inputsRef.current?.[i - 1]?.focus();
+                    }
+                  }}
+                  onPaste={(e) => {
+                    const text = (e.clipboardData?.getData('text') || '').replace(/\D/g, '').slice(0, 6);
+                    if (!text) {
+                      return;
+                    }
+
+                    e.preventDefault();
+                    setPin(text);
+
+                    const nextIndex = Math.min(text.length, 5);
+                    inputsRef.current?.[nextIndex]?.focus();
+                  }}
                   onChange={(e) => {
                     const rawValue = e.target.value;
                     if (rawValue && /[^0-9]/.test(rawValue)) {
@@ -376,7 +401,7 @@ const Login = ({ onLogin }) => {
                     }
                   }}
                   ref={el => inputsRef.current[i] = el}
-                  className="w-10 h-10 text-center border border-gray-400 rounded-md focus:border-gray-900 focus:outline-none"
+                  className="w-10 h-10 text-center border border-gray-400 rounded-md text-base font-bold text-gray-900 bg-white focus:border-gray-900 focus:outline-none"
                   required
                 />
               ))}
