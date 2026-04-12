@@ -33,7 +33,7 @@ export const pageAccess = {
     Inventory:      [ROLES.SUPER_ADMIN, ROLES.ADMIN],
     ProductList:    [ROLES.SUPER_ADMIN, ROLES.ADMIN],
     Reports:        [ROLES.SUPER_ADMIN, ROLES.ADMIN],
-    Settings:       [ROLES.SUPER_ADMIN],
+    Settings:       [ROLES.SUPER_ADMIN, ROLES.ADMIN],
     UserList:       [ROLES.SUPER_ADMIN],
     Partners:       [ROLES.SUPER_ADMIN, ROLES.ADMIN],
     Profile:        [_roleOrder[2], _roleOrder[1], _roleOrder[0]]

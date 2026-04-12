@@ -1,5 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { toast } from 'react-hot-toast';
+import { useLocation } from 'react-router-dom';
 import { showToast } from '../utils/toastHelper';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
@@ -7,6 +8,7 @@ import { meApi, updateMyProfileApi, verifyCurrentPasswordApi, verifyCurrentPinAp
 
 const PASSWORD_RULE = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{8,}$/;
 const normalizePhoneDigits = (value) => (value || '').replace(/\D/g, '').slice(0, 11);
+const PROFILE_CACHE_KEY = 'profile.cache.v1';
 
 const normalizeProfileSnapshot = (data) => ({
     adminUser: (data.adminUser || '').trim(),
@@ -16,6 +18,46 @@ const normalizeProfileSnapshot = (data) => ({
     contactNumber: normalizePhoneDigits(data.contactNumber),
     avatar: data.avatar || null,
 });
+
+const readCachedProfileSnapshot = () => {
+    try {
+        const raw = sessionStorage.getItem(PROFILE_CACHE_KEY);
+        if (!raw) {
+            return null;
+        }
+
+        const parsed = JSON.parse(raw);
+        const profile = parsed?.profile || parsed;
+        if (!profile || typeof profile !== 'object') {
+            return null;
+        }
+
+        const activeAuthUsername = String(sessionStorage.getItem('authUsername') || '').trim().toLowerCase();
+        const cachedAuthUsername = String(parsed?.authUsername || profile.adminUser || '').trim().toLowerCase();
+        if (activeAuthUsername && cachedAuthUsername && activeAuthUsername !== cachedAuthUsername) {
+            return null;
+        }
+
+        return {
+            ...profile,
+            contactNumber: normalizePhoneDigits(profile.contactNumber),
+        };
+    } catch {
+        return null;
+    }
+};
+
+const writeCachedProfileSnapshot = (data) => {
+    try {
+        const snapshot = normalizeProfileSnapshot(data || {});
+        sessionStorage.setItem(PROFILE_CACHE_KEY, JSON.stringify({
+            authUsername: String(snapshot.adminUser || '').trim().toLowerCase(),
+            profile: snapshot,
+        }));
+    } catch {
+        // Ignore cache write failures (private mode/storage restrictions).
+    }
+};
 
 const EyeIcon = () => (
     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -33,23 +75,45 @@ const EyeOffIcon = () => (
     </svg>
 );
 
-const FieldLockTooltip = ({ show, message }) => {
+const FieldLockTooltip = ({ show, message, align = 'left' }) => {
     if (!show) {
         return null;
     }
 
+    const containerClass = align === 'right'
+        ? 'pointer-events-none absolute -top-11 right-0 z-30 hidden w-max max-w-[280px] group-hover:block group-focus-within:block'
+        : 'pointer-events-none absolute -top-11 left-0 z-30 hidden w-max max-w-[280px] group-hover:block group-focus-within:block';
+
+    const arrowClass = align === 'right'
+        ? 'absolute -bottom-1 right-4 h-2 w-2 rotate-45 bg-gray-900'
+        : 'absolute -bottom-1 left-4 h-2 w-2 rotate-45 bg-gray-900';
+
     return (
-        <div className="pointer-events-none absolute -top-11 left-0 z-30 hidden w-max max-w-[280px] group-hover:block group-focus-within:block">
+        <div className={containerClass}>
             <div className="rounded-lg bg-gray-900 px-3 py-2 text-[10px] font-semibold text-white shadow-xl ring-1 ring-black/10">
                 {message}
             </div>
-            <span className="absolute -bottom-1 left-4 h-2 w-2 rotate-45 bg-gray-900" />
+            <span className={arrowClass} />
         </div>
     );
 };
 
 const Profile = () => {
-    const { appSettings: settings, updateSettings, userRole, ROLES, roleNames } = useAuth();
+    const {
+        appSettings: settings,
+        updateSettings,
+        userRole,
+        ROLES,
+        roleNames,
+        currentUserName,
+        currentUserAvatar,
+        currentAuthUsername,
+        setCurrentUserName,
+        setCurrentUserAvatar,
+        mustChangeCredentials,
+        setMustChangeCredentials,
+    } = useAuth();
+    const location = useLocation();
     const { renameUserReferences } = useInventory();
 
     // Internal handler to replace onSave prop
@@ -67,22 +131,60 @@ const Profile = () => {
         handleSaveInternal({ ...settings, autoPrintReceipts: nextAutoPrint });
     };
 
+    const cachedProfileSnapshot = React.useMemo(() => readCachedProfileSnapshot(), []);
+
     // Local state for form fields, initialized from global settings
     const [profileData, setProfileData] = useState(() => {
-        return {
-            adminUser: sessionStorage.getItem('authUsername') || settings.adminUser || '',
-            fullName: settings.adminFullName || settings.adminDisplayName || settings.adminUser || 'User',
-            adminDisplayName: settings.adminDisplayName || settings.adminUser || 'User',
+        const authUsername = (currentAuthUsername || '').trim().toLowerCase();
+        const sessionName = (currentUserName || '').trim();
+        const sessionAvatar = currentUserAvatar;
+
+        if (userRole === ROLES.CASHIER) {
+            const baseProfile = {
+                adminUser: authUsername || sessionName || 'cashier',
+                fullName: sessionName || 'Cashier Account',
+                adminDisplayName: sessionName || 'Cashier Account',
+                adminPassword: '',
+                role: 'Cashier',
+                email: '',
+                contactNumber: '',
+                lastLogin: null,
+                bio: 'Authorized staff member for point of sale and inventory management.',
+                avatar: sessionAvatar || null,
+                pin: ''
+            };
+            return cachedProfileSnapshot ? { ...baseProfile, ...cachedProfileSnapshot } : baseProfile;
+        }
+        if (userRole === ROLES.ADMIN) {
+            const baseProfile = {
+                adminUser: authUsername || '',
+                fullName: sessionName || '',
+                adminDisplayName: sessionName || settings.adminDisplayName || '',
+                adminPassword: '',
+                role: roleNames[userRole] || 'Admin',
+                email: '',
+                contactNumber: '',
+                lastLogin: null,
+                bio: '',
+                avatar: sessionAvatar || null,
+                pin: ''
+            };
+            return cachedProfileSnapshot ? { ...baseProfile, ...cachedProfileSnapshot } : baseProfile;
+        }
+        // super admin default from settings
+        const baseProfile = {
+            adminUser: settings.adminUser || 'Admin User',
+            fullName: settings.adminFullName || settings.adminDisplayName || settings.adminUser || 'Admin User',
+            adminDisplayName: settings.adminDisplayName || settings.adminUser || 'Admin User',
             adminPassword: '',
-            role: roleNames[userRole] || 'User',
+            role: roleNames[userRole] || 'Super Admin',
             email: settings.storePrimaryEmail || 'admin@example.com',
             contactNumber: settings.adminContactNumber || '',
             lastLogin: null,
-            bio: userRole === ROLES.CASHIER
-                ? 'Authorized staff member for point of sale and inventory management.'
-                : 'Managing the store inventory and sales.',
-            avatar: settings.avatar || null
+            bio: 'Managing the store inventory and sales.',
+            avatar: sessionAvatar || settings.avatar || null
         };
+        return cachedProfileSnapshot ? { ...baseProfile, ...cachedProfileSnapshot } : baseProfile;
     });
     const [baselineProfile, setBaselineProfile] = useState(() => normalizeProfileSnapshot(profileData));
 
@@ -93,8 +195,6 @@ const Profile = () => {
     const [showPassword, setShowPassword] = useState(false);
     // name shown under avatar should update only after saving
     const [avatarName, setAvatarName] = useState(profileData.adminDisplayName);
-    // remember original login name so we can remove the old value after a change
-    const originalUsernameRef = useRef(profileData.adminUser);
     const [currentPassword, setCurrentPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
     const [oldPin, setOldPin] = useState('');
@@ -109,12 +209,32 @@ const Profile = () => {
     const passwordVerifyTimerRef = useRef(null);
     const pinVerifyTimerRef = useRef(null);
     const [activeSection, setActiveSection] = useState('personal');
+    const [showSecurityRequirementModal, setShowSecurityRequirementModal] = useState(false);
+    const [isProfileHydrating, setIsProfileHydrating] = useState(() => !cachedProfileSnapshot);
 
     const profileSections = [
         { id: 'personal', label: 'Personal Details' },
         { id: 'security', label: 'Security & Login' },
-        { id: 'pin', label: 'Change Security PIN' },
     ];
+
+    React.useEffect(() => {
+        const section = new URLSearchParams(location.search).get('section');
+        if (section === 'personal' || section === 'security') {
+            setActiveSection(section);
+        }
+    }, [location.search]);
+
+    React.useEffect(() => {
+        if (mustChangeCredentials) {
+            setActiveSection('security');
+        }
+    }, [mustChangeCredentials]);
+
+    React.useEffect(() => {
+        if (mustChangeCredentials) {
+            setShowSecurityRequirementModal(true);
+        }
+    }, [mustChangeCredentials]);
 
     React.useEffect(() => {
         let isMounted = true;
@@ -128,28 +248,49 @@ const Profile = () => {
                     return;
                 }
 
+                const resolvedAvatar = user.avatarUrl || user.avatar || '';
+                const normalizedAvatar = resolvedAvatar || null;
+
                 if (user.username) {
                     sessionStorage.setItem('authUsername', user.username);
                 }
 
+                if (normalizedAvatar) {
+                    sessionStorage.setItem('userAvatar', normalizedAvatar);
+                } else {
+                    sessionStorage.removeItem('userAvatar');
+                }
+                const fallbackAvatar = userRole === ROLES.SUPER_ADMIN ? (settings.avatar || null) : null;
+                setCurrentUserAvatar(normalizedAvatar || fallbackAvatar);
+
                 setProfileData((prev) => {
+                    const backendDisplayName = (user.displayName || '').trim();
+                    const preferredDisplayName = userRole === ROLES.SUPER_ADMIN
+                        ? (settings.adminDisplayName || user.name || prev.adminDisplayName)
+                        : (backendDisplayName || user.name || prev.adminDisplayName || settings.adminDisplayName);
+
                     const hydratedProfile = {
                         ...prev,
                         adminUser: user.username || prev.adminUser,
                         fullName: user.name || prev.fullName,
-                        adminDisplayName: prev.adminDisplayName || settings.adminDisplayName || user.name || prev.fullName,
+                        adminDisplayName: preferredDisplayName,
                         email: user.email || prev.email,
                         role: roleNames[user.role] || prev.role,
-                        contactNumber: user.phone || prev.contactNumber || settings.adminContactNumber || '',
+                        contactNumber: user.phone || prev.contactNumber || '',
                         lastLogin: user.lastLogin || prev.lastLogin || null,
-                        avatar: user.avatarUrl || prev.avatar,
+                        avatar: normalizedAvatar || prev.avatar || null,
                     };
 
                     setBaselineProfile(normalizeProfileSnapshot(hydratedProfile));
+                    writeCachedProfileSnapshot(hydratedProfile);
                     return hydratedProfile;
                 });
             } catch {
                 // Keep existing local fallback values when backend profile fetch fails.
+            } finally {
+                if (isMounted) {
+                    setIsProfileHydrating(false);
+                }
             }
         };
 
@@ -158,7 +299,7 @@ const Profile = () => {
         return () => {
             isMounted = false;
         };
-    }, [userRole, ROLES.CASHIER, roleNames, settings.adminContactNumber, settings.adminDisplayName]);
+    }, [userRole, roleNames, settings.adminContactNumber, settings.adminDisplayName, setCurrentUserAvatar]);
 
     const formatLastLogin = (value) => {
         if (!value) {
@@ -191,6 +332,10 @@ const Profile = () => {
     const [autoPrint, setAutoPrint] = useState(settings.autoPrintReceipts || false);
     const isDragging = useRef(false);
     const lastMousePos = useRef({ x: 0, y: 0 });
+
+    React.useEffect(() => {
+        setAutoPrint(Boolean(settings.autoPrintReceipts));
+    }, [settings.autoPrintReceipts]);
 
     const isModified = React.useMemo(() => {
         if (!profileData.adminUser || !profileData.fullName || !profileData.adminDisplayName || !profileData.email) {
@@ -352,7 +497,11 @@ const Profile = () => {
 
     const handleSave = async () => {
         const normalizedEmail = (profileData.email || '').trim().toLowerCase();
-        const nextDisplayName = (profileData.adminDisplayName || '').trim();
+        const nextDisplayName = (
+            userRole === ROLES.SUPER_ADMIN
+                ? profileData.adminDisplayName
+                : profileData.fullName
+        || '').trim();
         const previousDisplayName = avatarName;
         const normalizedContactNumber = normalizePhoneDigits(profileData.contactNumber);
 
@@ -429,6 +578,7 @@ const Profile = () => {
         try {
             response = await updateMyProfileApi({
                 name: profileData.fullName.trim(),
+                ...(userRole !== ROLES.SUPER_ADMIN ? { displayName: nextDisplayName } : {}),
                 username: profileData.adminUser,
                 email: normalizedEmail,
                 phone: normalizedContactNumber,
@@ -447,42 +597,61 @@ const Profile = () => {
             return;
         }
 
-        sessionStorage.setItem('userName', nextDisplayName);
-        sessionStorage.setItem('authUsername', updatedUser.username);
+        const updatedAvatar = updatedUser.avatarUrl || updatedUser.avatar || '';
+        const canonicalDisplayName = (userRole === ROLES.SUPER_ADMIN
+            ? nextDisplayName
+            : (updatedUser.displayName || updatedUser.name || nextDisplayName)
+        ).trim();
+        const hasCompletedCredentialsChange = Boolean(
+            (isPasswordChangeAttempt || isPinChangeAttempt)
+            && updatedUser.mustChangeCredentials === false
+        );
 
-        if (previousDisplayName !== nextDisplayName) {
-            renameUserReferences(previousDisplayName, nextDisplayName);
+        sessionStorage.setItem('userName', canonicalDisplayName);
+        sessionStorage.setItem('authUsername', updatedUser.username);
+        if (updatedAvatar) {
+            sessionStorage.setItem('userAvatar', updatedAvatar);
+        } else {
+            sessionStorage.removeItem('userAvatar');
+        }
+        setCurrentUserName(canonicalDisplayName);
+        setCurrentUserAvatar(updatedAvatar || null);
+
+        if (previousDisplayName !== canonicalDisplayName) {
+            renameUserReferences(previousDisplayName, canonicalDisplayName);
         }
 
-        handleSaveInternal({
-            ...settings,
-            adminUser: updatedUser.username,
-            adminFullName: updatedUser.name,
-            adminDisplayName: nextDisplayName,
-            adminContactNumber: normalizedContactNumber,
-            storePrimaryEmail: updatedUser.email,
-            avatar: profileData.avatar,
-            autoPrintReceipts: autoPrint,
-        });
+        if (userRole === ROLES.SUPER_ADMIN) {
+            handleSaveInternal({
+                ...settings,
+                adminUser: updatedUser.username,
+                adminFullName: updatedUser.name,
+                adminDisplayName: canonicalDisplayName,
+                adminContactNumber: normalizedContactNumber,
+                storePrimaryEmail: updatedUser.email,
+                avatar: updatedAvatar || null,
+                autoPrintReceipts: autoPrint,
+            });
+        }
 
         const savedProfile = {
             ...profileData,
             adminUser: updatedUser.username,
             fullName: updatedUser.name,
-            adminDisplayName: nextDisplayName,
+            adminDisplayName: canonicalDisplayName,
             email: updatedUser.email,
-            contactNumber: normalizedContactNumber,
+            contactNumber: updatedUser.phone || normalizedContactNumber,
             lastLogin: updatedUser.lastLogin || profileData.lastLogin || null,
-            avatar: updatedUser.avatarUrl || profileData.avatar,
+            avatar: updatedAvatar || profileData.avatar || null,
             adminPassword: '',
         };
 
         setBaselineProfile(normalizeProfileSnapshot(savedProfile));
 
         setProfileData(savedProfile);
+        writeCachedProfileSnapshot(savedProfile);
 
-        setAvatarName(nextDisplayName);
-        originalUsernameRef.current = updatedUser.username;
+    setAvatarName(canonicalDisplayName);
         setCurrentPassword('');
         setConfirmPassword('');
         setPasswordVerifyState('idle');
@@ -490,6 +659,11 @@ const Profile = () => {
         setPinVerifyState('idle');
         setNewPin('');
         setConfirmPin('');
+
+        if (hasCompletedCredentialsChange) {
+            sessionStorage.setItem('mustChangeCredentials', 'false');
+            setMustChangeCredentials(false);
+        }
 
         showToast('Success', newPin ? 'Profile and PIN updated successfully.' : 'Profile updated successfully.', 'save', 'profile-save');
     };
@@ -507,7 +681,7 @@ const Profile = () => {
         }
     };
 
-    const confirmImage = () => {
+    const confirmImage = async () => {
         // Create a canvas to crop the image
         const canvas = document.createElement('canvas');
         const size = 300; // Final avatar size
@@ -517,7 +691,7 @@ const Profile = () => {
 
         const img = new Image();
         img.src = previewImage;
-        img.onload = () => {
+        img.onload = async () => {
             // Draw logic: render the visible portion of the image onto the canvas
             // We need to map the visual scaling/panning to the canvas
             
@@ -557,7 +731,56 @@ const Profile = () => {
 
             ctx.drawImage(img, centerX + offsetX, centerY + offsetY, drawW, drawH);
 
-            setProfileData({ ...profileData, avatar: canvas.toDataURL('image/jpeg', 0.9) });
+            const nextAvatar = canvas.toDataURL('image/jpeg', 0.9);
+            const previousProfile = { ...profileData };
+            const nextProfile = { ...profileData, avatar: nextAvatar };
+
+            setProfileData(nextProfile);
+            setBaselineProfile(normalizeProfileSnapshot(nextProfile));
+            setCurrentUserAvatar(nextAvatar);
+            sessionStorage.setItem('userAvatar', nextAvatar);
+
+            let updatedAvatar = nextAvatar;
+            try {
+                const response = await updateMyProfileApi({ avatarUrl: nextAvatar });
+                if (response?.user) {
+                    updatedAvatar = response.user.avatarUrl || response.user.avatar || '';
+                }
+            } catch (error) {
+                setProfileData(previousProfile);
+                setBaselineProfile(normalizeProfileSnapshot(previousProfile));
+                setCurrentUserAvatar(previousProfile.avatar || null);
+                if (previousProfile.avatar) {
+                    sessionStorage.setItem('userAvatar', previousProfile.avatar);
+                } else {
+                    sessionStorage.removeItem('userAvatar');
+                }
+                showToast('Error', error.message || 'Unable to update profile picture.', 'error', 'profile-avatar-save');
+                setPreviewImage(null);
+                return;
+            }
+
+            if (updatedAvatar !== nextAvatar) {
+                const normalizedAvatar = updatedAvatar || null;
+                const updatedProfile = { ...nextProfile, avatar: normalizedAvatar };
+                setProfileData(updatedProfile);
+                setBaselineProfile(normalizeProfileSnapshot(updatedProfile));
+                writeCachedProfileSnapshot(updatedProfile);
+                setCurrentUserAvatar(normalizedAvatar);
+                if (normalizedAvatar) {
+                    sessionStorage.setItem('userAvatar', normalizedAvatar);
+                } else {
+                    sessionStorage.removeItem('userAvatar');
+                }
+            } else {
+                writeCachedProfileSnapshot(nextProfile);
+            }
+
+            if (userRole === ROLES.SUPER_ADMIN) {
+                handleSaveInternal({ ...settings, avatar: updatedAvatar || null });
+            }
+
+            showToast('Success', 'Profile picture updated.', 'save', 'profile-avatar-save');
             setPreviewImage(null);
         };
     };
@@ -580,9 +803,43 @@ const Profile = () => {
         isDragging.current = false;
     };
 
+    if (isProfileHydrating) {
+        return (
+            <div className="w-full min-h-screen bg-slate-200/50">
+                <div className="w-full min-h-screen max-w-[1180px] mx-auto flex items-center justify-center p-4">
+                    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm px-6 py-5 flex items-center gap-3">
+                        <span className="inline-block h-4 w-4 rounded-full border-2 border-gray-300 border-t-gray-900 animate-spin" aria-hidden="true" />
+                        <p className="text-sm font-semibold text-gray-700">Loading your latest profile...</p>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
     return (
-        <div className="h-full min-h-0 w-full bg-slate-200/50 overflow-hidden">
-            <div className="h-full min-h-0 w-full max-w-[1180px] mx-auto flex flex-col p-2 md:p-3 overflow-hidden relative text-[12px] md:text-[13px]">
+        <div className="w-full min-h-screen bg-slate-200/50">
+            <div className="w-full min-h-screen max-w-[1180px] mx-auto flex flex-col p-2 md:p-3 relative text-[12px] md:text-[13px]">
+            {mustChangeCredentials && showSecurityRequirementModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm md:max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+                        <div className="p-6 text-center">
+                            <div className="mx-auto flex items-center justify-center mb-4 text-amber-600">
+                                <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v3m0 4h.01m-7.938 4h15.876c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L2.34 17c-.77 1.333.192 3 1.732 3Z" /></svg>
+                            </div>
+                            <h3 className="text-xl font-black text-gray-900 mb-2">Security Update Required</h3>
+                            <p className="text-gray-500 text-sm mb-6">For first login safety, update your password or PIN now before continuing.</p>
+                            <button
+                                type="button"
+                                onClick={() => setShowSecurityRequirementModal(false)}
+                                style={{ backgroundColor: '#111827' }}
+                                className="w-full py-2.5 text-white rounded-xl font-bold text-sm shadow-md hover:opacity-90 transition-all transform hover:-translate-y-0.5"
+                            >
+                                Okay
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
             
             {/* Simple Image Confirmation Modal */}
             {previewImage && (
@@ -659,24 +916,38 @@ const Profile = () => {
                 {/* Left Column: Avatar Card */}
                 <div className="w-full md:w-1/3 flex flex-col gap-3">
                     <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 flex flex-col items-center text-center">
-                        <div className="relative group">
-                            <div className={`w-28 h-28 md:w-32 md:h-32 rounded-full bg-gray-100 border-4 border-white shadow-lg overflow-hidden mb-3 relative cursor-pointer`}>
-                                {profileData.avatar ? (
-                                    <img src={profileData.avatar} alt="Profile" className="w-full h-full object-cover" />
-                                ) : (
-                                    <div className="w-full h-full flex items-center justify-center bg-gray-800 text-white text-4xl font-bold">
-                                        {profileData.adminDisplayName ? profileData.adminDisplayName.charAt(0).toUpperCase() : 'U'}
+                        <div className="relative group mb-3">
+                            <div className="absolute inset-0 -z-10 rounded-full bg-gradient-to-br from-gray-900/20 via-gray-400/15 to-transparent blur-md" />
+                            <div className="rounded-full bg-gradient-to-br from-gray-900 via-gray-700 to-gray-500 p-[3px] shadow-xl transition-transform duration-300 group-hover:scale-[1.02]">
+                                <div className="rounded-full bg-white p-1">
+                                    <div className="w-28 h-28 md:w-32 md:h-32 rounded-full bg-gray-100 border border-gray-200 shadow-inner overflow-hidden relative cursor-pointer">
+                                        {profileData.avatar ? (
+                                            <img src={profileData.avatar} alt="Profile" className="w-full h-full object-cover" />
+                                        ) : (
+                                            <div className="w-full h-full flex items-center justify-center bg-gray-800 text-white text-4xl font-bold">
+                                                {profileData.adminDisplayName ? profileData.adminDisplayName.charAt(0).toUpperCase() : 'U'}
+                                            </div>
+                                        )}
+
+                                        <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer" onClick={() => fileInputRef.current.click()}>
+                                            <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                                        </div>
                                     </div>
-                                )}
-                                
-                                <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer" onClick={() => fileInputRef.current.click()}>
-                                    <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
                                 </div>
                             </div>
+
+                            <button
+                                type="button"
+                                onClick={() => fileInputRef.current.click()}
+                                className="absolute -bottom-1 -right-1 h-9 w-9 rounded-full bg-gray-900 text-white shadow-lg ring-2 ring-white transition-transform duration-200 hover:scale-105"
+                                aria-label="Change profile photo"
+                            >
+                                <svg className="mx-auto h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                            </button>
                             <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleFileChange} />
                         </div>
+                        <p className="text-[10px] font-semibold tracking-wide uppercase text-gray-500">Click photo to update</p>
                         
-                        <h2 className="text-base md:text-lg font-bold text-gray-900">{avatarName}</h2>
                         <span className="text-xs font-bold text-blue-600 bg-blue-50 px-3 py-1 rounded-full mt-2">
                             {profileData.role || (roleNames[userRole] || (userRole === ROLES.CASHIER ? 'Staff' : 'Super Admin'))}
                         </span>
@@ -692,12 +963,18 @@ const Profile = () => {
                                     <button
                                         key={section.id}
                                         type="button"
-                                        onClick={() => setActiveSection(section.id)}
+                                        onClick={() => {
+                                            if (mustChangeCredentials && section.id !== 'security') {
+                                                return;
+                                            }
+                                            setActiveSection(section.id);
+                                        }}
                                         className={`w-full text-left px-3 py-2.5 rounded-xl text-xs font-bold transition-all ${
                                             isActive
                                                 ? 'bg-gray-900 text-white shadow-md'
                                                 : 'text-gray-600 hover:bg-gray-100'
                                         }`}
+                                        disabled={mustChangeCredentials && section.id !== 'security'}
                                     >
                                         {section.label}
                                     </button>
@@ -709,7 +986,7 @@ const Profile = () => {
 
                 {/* Right Column: Edit Form */}
                 <div className="w-full md:w-2/3 h-full min-h-0">
-                    <div className="profile-form-card bg-white rounded-2xl shadow-sm border border-gray-100 p-4 md:p-5 space-y-4 overflow-hidden">
+                    <div className="profile-form-card bg-white rounded-2xl shadow-sm border border-gray-100 p-4 md:p-5 space-y-4 overflow-visible">
                         {/* Mobile Section Navigation */}
                         <div className="md:hidden pb-1">
                             <div className="flex flex-wrap gap-1.5">
@@ -719,12 +996,18 @@ const Profile = () => {
                                         <button
                                             key={section.id}
                                             type="button"
-                                            onClick={() => setActiveSection(section.id)}
+                                            onClick={() => {
+                                                if (mustChangeCredentials && section.id !== 'security') {
+                                                    return;
+                                                }
+                                                setActiveSection(section.id);
+                                            }}
                                             className={`px-2.5 py-1.5 rounded-xl text-[10px] font-bold whitespace-nowrap transition-all ${
                                                 isActive
                                                     ? 'bg-gray-900 text-white shadow-md'
                                                     : 'bg-gray-100 text-gray-600'
                                             }`}
+                                            disabled={mustChangeCredentials && section.id !== 'security'}
                                         >
                                             {section.label}
                                         </button>
@@ -769,10 +1052,15 @@ const Profile = () => {
                                                 type="text"
                                                 value={profileData.adminDisplayName || ''}
                                                 onChange={(e) => setProfileData({ ...profileData, adminDisplayName: e.target.value })}
-                                                className="w-full pr-4 py-2.5 bg-transparent rounded-xl text-sm text-gray-900 focus:ring-0 focus:outline-none border-0"
+                                                disabled={userRole !== ROLES.SUPER_ADMIN}
+                                                className={`w-full pr-4 py-2.5 bg-transparent rounded-xl text-sm text-gray-900 focus:ring-0 focus:outline-none border-0 ${userRole !== ROLES.SUPER_ADMIN ? 'cursor-not-allowed text-gray-500' : ''}`}
                                             />
                                         </div>
-                                        <p className="text-[10px] text-gray-500 mt-1">Name shown across the app and activity logs.</p>
+                                        <p className="text-[10px] text-gray-500 mt-1">
+                                            {userRole === ROLES.SUPER_ADMIN
+                                                ? 'Name shown across the app and activity logs.'
+                                                : 'Display name follows your backend full name for consistency across browsers.'}
+                                        </p>
                                     </div>
 
                                     <div>
@@ -804,7 +1092,7 @@ const Profile = () => {
                                                 value={profileData.contactNumber || ''}
                                                 onChange={(e) => setProfileData({ ...profileData, contactNumber: normalizePhoneDigits(e.target.value) })}
                                                 className="w-full pr-4 py-2.5 bg-transparent rounded-xl text-sm text-gray-900 focus:ring-0 focus:outline-none border-0"
-                                                placeholder="e.g. 09171234567"
+                                                placeholder="Enter 11-digit contact number"
                                             />
                                         </div>
                                         <p className="text-[10px] text-gray-500 mt-1">Use a professional 11-digit mobile number for account contact.</p>
@@ -857,179 +1145,178 @@ const Profile = () => {
                         )}
 
                         {activeSection === 'security' && (
-                            <>
-                                <div className="border-b border-gray-100 pb-4 mb-4">
-                                    <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wider flex items-center gap-2">
-                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
-                                        Security & Login
-                                    </h3>
-                                </div>
-
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                    <div className="md:col-span-2">
-                                        <label className="block text-xs font-bold text-gray-900 uppercase tracking-wide mb-2">Username (Login)</label>
-                                        <div className="relative">
-                                            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                                                <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
-                                            </div>
-                                            <input
-                                                type="text"
-                                                value={profileData.adminUser}
-                                                onChange={(e) => setProfileData({ ...profileData, adminUser: e.target.value })}
-                                                className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-900 focus:ring-2 focus:ring-gray-900 focus:border-transparent outline-none transition-all"
-                                            />
-                                        </div>
-                                        <p className="text-[10px] text-gray-500 mt-1">This is your login username and cannot be changed later.</p>
+                            <div className="overflow-y-auto no-scrollbar pr-1 pb-2 max-h-[calc(100vh-340px)] md:max-h-[calc(100vh-300px)] space-y-4">
+                                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                                    <div className="border-b border-gray-200 pb-3 mb-4">
+                                        <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wider flex items-center gap-2">
+                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                                            Security & Login
+                                        </h3>
                                     </div>
 
-                                    <div>
-                                        <label className="block text-xs font-bold text-gray-900 uppercase tracking-wide mb-2">Current Password</label>
-                                        <div className="relative">
-                                            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                                                <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                        <div className="md:col-span-2">
+                                            <label className="block text-xs font-bold text-gray-900 uppercase tracking-wide mb-2">Username (Login)</label>
+                                            <div className="relative">
+                                                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                                    <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
+                                                </div>
+                                                <input
+                                                    type="text"
+                                                    value={profileData.adminUser}
+                                                    onChange={(e) => setProfileData({ ...profileData, adminUser: e.target.value })}
+                                                    className="w-full pl-10 pr-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm text-gray-900 focus:ring-2 focus:ring-gray-900 focus:border-transparent outline-none transition-all"
+                                                />
                                             </div>
-                                            <input
-                                                name="currentPassword"
-                                                autoComplete="new-password"
-                                                type={showCurrentPassword ? 'text' : 'password'}
-                                                value={currentPassword}
-                                                onChange={(e) => {
-                                                    setCurrentPassword(e.target.value);
-                                                    setPasswordVerifyState('idle');
-                                                }}
-                                                onBlur={handleCurrentPasswordBlur}
-                                                placeholder="Enter current password"
-                                                className={`w-full pl-10 pr-10 py-2.5 bg-gray-50 border rounded-xl text-sm text-gray-900 focus:ring-2 outline-none ${
-                                                    passwordVerifyState === 'valid'
-                                                        ? 'border-green-300 focus:ring-green-200'
-                                                        : 'border-gray-200 focus:ring-gray-900'
-                                                }`}
-                                            />
-                                            <button
-                                                type="button"
-                                                onClick={() => setShowCurrentPassword(!showCurrentPassword)}
-                                                className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600 focus:outline-none"
-                                            >
-                                                {showCurrentPassword ? <EyeOffIcon /> : <EyeIcon />}
-                                            </button>
+                                            <p className="text-[10px] text-gray-500 mt-1">This is your login username and cannot be changed later.</p>
                                         </div>
-                                        <p className="text-[10px] text-gray-500 mt-1">Enter your current password before changing it.</p>
-                                        {isPasswordChangeAttempt && !validCurrentPassword && (
-                                            <p className="text-[10px] text-red-500 mt-1">Current password is required when changing password.</p>
-                                        )}
-                                        {passwordVerifyState === 'valid' && (
-                                            <p className="text-[10px] text-green-600 mt-1">Current password verified.</p>
-                                        )}
-                                    </div>
 
-                                    <div>
-                                        <label className="block text-xs font-bold text-gray-900 uppercase tracking-wide mb-2">New Password</label>
-                                        <div className="relative group">
-                                            <FieldLockTooltip
-                                                show={!canEnterNewPassword}
-                                                message="Verify current password first before entering a new password."
-                                            />
-                                            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                                                <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
-                                            </div>
-                                            <input
-                                                name="newPassword"
-                                                autoComplete="new-password"
-                                                type={showPassword ? 'text' : 'password'}
-                                                value={profileData.adminPassword}
-                                                onChange={(e) => setProfileData({ ...profileData, adminPassword: e.target.value })}
-                                                disabled={!canEnterNewPassword}
-                                                placeholder={canEnterNewPassword ? 'Enter new password' : 'Verify current password first'}
-                                                className={`w-full pl-10 pr-10 py-2.5 bg-gray-50 border rounded-xl text-sm text-gray-900 focus:ring-2 outline-none ${
-                                                    profileData.adminPassword
-                                                        ? allPasswordChecksMet
+                                        <div>
+                                            <label className="block text-xs font-bold text-gray-900 uppercase tracking-wide mb-2">Current Password</label>
+                                            <div className="relative">
+                                                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                                    <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                                                </div>
+                                                <input
+                                                    name="currentPassword"
+                                                    autoComplete="new-password"
+                                                    type={showCurrentPassword ? 'text' : 'password'}
+                                                    value={currentPassword}
+                                                    onChange={(e) => {
+                                                        setCurrentPassword(e.target.value);
+                                                        setPasswordVerifyState('idle');
+                                                    }}
+                                                    onBlur={handleCurrentPasswordBlur}
+                                                    placeholder="Enter current password"
+                                                    className={`w-full pl-10 pr-10 py-2.5 bg-white border rounded-xl text-sm text-gray-900 focus:ring-2 outline-none ${
+                                                        passwordVerifyState === 'valid'
                                                             ? 'border-green-300 focus:ring-green-200'
-                                                            : 'border-red-300 focus:ring-red-200'
-                                                        : 'border-gray-200 focus:ring-gray-900'
-                                                } ${!canEnterNewPassword ? 'opacity-60 cursor-not-allowed' : ''}`}
-                                            />
-                                            <button
-                                                type="button"
-                                                onClick={() => setShowPassword(!showPassword)}
-                                                className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600 focus:outline-none"
-                                            >
-                                                {showPassword ? <EyeOffIcon /> : <EyeIcon />}
-                                            </button>
+                                                            : 'border-gray-200 focus:ring-gray-900'
+                                                    }`}
+                                                />
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setShowCurrentPassword(!showCurrentPassword)}
+                                                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600 focus:outline-none"
+                                                >
+                                                    {showCurrentPassword ? <EyeOffIcon /> : <EyeIcon />}
+                                                </button>
+                                            </div>
+                                            <p className="text-[10px] text-gray-500 mt-1">Enter your current password before changing it.</p>
+                                            {isPasswordChangeAttempt && !validCurrentPassword && (
+                                                <p className="text-[10px] text-red-500 mt-1">Current password is required when changing password.</p>
+                                            )}
+                                            {passwordVerifyState === 'valid' && (
+                                                <p className="text-[10px] text-green-600 mt-1">Current password verified.</p>
+                                            )}
                                         </div>
-                                        <p className="text-[10px] text-gray-500 mt-1">Choose a strong password; you will need to re-enter it below.</p>
 
-                                        {profileData.adminPassword && (
-                                            <div className="mt-2 rounded-lg border border-gray-200 bg-gray-50 p-2">
-                                                <p className="text-[10px] font-bold uppercase tracking-wide text-gray-600 mb-1.5">Password Requirements</p>
-                                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
-                                                    <div className={`text-[10px] flex items-center gap-1.5 ${passwordChecks.length ? 'text-green-700' : 'text-gray-500'}`}>
-                                                        <span className={`inline-flex h-3.5 w-3.5 items-center justify-center rounded-full ${passwordChecks.length ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-500'}`}>{passwordChecks.length ? '✓' : '•'}</span>
-                                                        At least 8 characters
-                                                    </div>
-                                                    <div className={`text-[10px] flex items-center gap-1.5 ${passwordChecks.lowercase ? 'text-green-700' : 'text-gray-500'}`}>
-                                                        <span className={`inline-flex h-3.5 w-3.5 items-center justify-center rounded-full ${passwordChecks.lowercase ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-500'}`}>{passwordChecks.lowercase ? '✓' : '•'}</span>
-                                                        Has lowercase letter
-                                                    </div>
-                                                    <div className={`text-[10px] flex items-center gap-1.5 ${passwordChecks.uppercase ? 'text-green-700' : 'text-gray-500'}`}>
-                                                        <span className={`inline-flex h-3.5 w-3.5 items-center justify-center rounded-full ${passwordChecks.uppercase ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-500'}`}>{passwordChecks.uppercase ? '✓' : '•'}</span>
-                                                        Has uppercase letter
-                                                    </div>
-                                                    <div className={`text-[10px] flex items-center gap-1.5 ${passwordChecks.number ? 'text-green-700' : 'text-gray-500'}`}>
-                                                        <span className={`inline-flex h-3.5 w-3.5 items-center justify-center rounded-full ${passwordChecks.number ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-500'}`}>{passwordChecks.number ? '✓' : '•'}</span>
-                                                        Has number
-                                                    </div>
-                                                    <div className={`text-[10px] flex items-center gap-1.5 ${passwordChecks.special ? 'text-green-700' : 'text-gray-500'}`}>
-                                                        <span className={`inline-flex h-3.5 w-3.5 items-center justify-center rounded-full ${passwordChecks.special ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-500'}`}>{passwordChecks.special ? '✓' : '•'}</span>
-                                                        Has special character
+                                        <div>
+                                            <label className="block text-xs font-bold text-gray-900 uppercase tracking-wide mb-2">New Password</label>
+                                            <div className="relative group">
+                                                <FieldLockTooltip
+                                                    show={!canEnterNewPassword}
+                                                    message="Verify current password first before entering a new password."
+                                                />
+                                                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                                    <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                                                </div>
+                                                <input
+                                                    name="newPassword"
+                                                    autoComplete="new-password"
+                                                    type={showPassword ? 'text' : 'password'}
+                                                    value={profileData.adminPassword}
+                                                    onChange={(e) => setProfileData({ ...profileData, adminPassword: e.target.value })}
+                                                    disabled={!canEnterNewPassword}
+                                                    placeholder={canEnterNewPassword ? 'Enter new password' : 'Verify current password first'}
+                                                    className={`w-full pl-10 pr-10 py-2.5 bg-white border rounded-xl text-sm text-gray-900 focus:ring-2 outline-none ${
+                                                        profileData.adminPassword
+                                                            ? allPasswordChecksMet
+                                                                ? 'border-green-300 focus:ring-green-200'
+                                                                : 'border-red-300 focus:ring-red-200'
+                                                            : 'border-gray-200 focus:ring-gray-900'
+                                                    } ${!canEnterNewPassword ? 'opacity-60 cursor-not-allowed' : ''}`}
+                                                />
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setShowPassword(!showPassword)}
+                                                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600 focus:outline-none"
+                                                >
+                                                    {showPassword ? <EyeOffIcon /> : <EyeIcon />}
+                                                </button>
+                                            </div>
+                                            <p className="text-[10px] text-gray-500 mt-1">Choose a strong password; you will need to re-enter it below.</p>
+
+                                            {profileData.adminPassword && !allPasswordChecksMet && (
+                                                <div className="mt-2 rounded-lg border border-gray-200 bg-white p-2">
+                                                    <p className="text-[10px] font-bold uppercase tracking-wide text-gray-600 mb-1.5">Password Requirements</p>
+                                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
+                                                        <div className={`text-[10px] flex items-center gap-1.5 ${passwordChecks.length ? 'text-green-700' : 'text-gray-500'}`}>
+                                                            <span className={`inline-flex h-3.5 w-3.5 items-center justify-center rounded-full ${passwordChecks.length ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-500'}`}>{passwordChecks.length ? '✓' : '•'}</span>
+                                                            At least 8 characters
+                                                        </div>
+                                                        <div className={`text-[10px] flex items-center gap-1.5 ${passwordChecks.lowercase ? 'text-green-700' : 'text-gray-500'}`}>
+                                                            <span className={`inline-flex h-3.5 w-3.5 items-center justify-center rounded-full ${passwordChecks.lowercase ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-500'}`}>{passwordChecks.lowercase ? '✓' : '•'}</span>
+                                                            Has lowercase letter
+                                                        </div>
+                                                        <div className={`text-[10px] flex items-center gap-1.5 ${passwordChecks.uppercase ? 'text-green-700' : 'text-gray-500'}`}>
+                                                            <span className={`inline-flex h-3.5 w-3.5 items-center justify-center rounded-full ${passwordChecks.uppercase ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-500'}`}>{passwordChecks.uppercase ? '✓' : '•'}</span>
+                                                            Has uppercase letter
+                                                        </div>
+                                                        <div className={`text-[10px] flex items-center gap-1.5 ${passwordChecks.number ? 'text-green-700' : 'text-gray-500'}`}>
+                                                            <span className={`inline-flex h-3.5 w-3.5 items-center justify-center rounded-full ${passwordChecks.number ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-500'}`}>{passwordChecks.number ? '✓' : '•'}</span>
+                                                            Has number
+                                                        </div>
+                                                        <div className={`text-[10px] flex items-center gap-1.5 ${passwordChecks.special ? 'text-green-700' : 'text-gray-500'}`}>
+                                                            <span className={`inline-flex h-3.5 w-3.5 items-center justify-center rounded-full ${passwordChecks.special ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-500'}`}>{passwordChecks.special ? '✓' : '•'}</span>
+                                                            Has special character
+                                                        </div>
                                                     </div>
                                                 </div>
-                                            </div>
-                                        )}
-                                    </div>
-
-                                    <div className="md:col-start-2">
-                                        <label className="block text-xs font-bold text-gray-900 uppercase tracking-wide mb-2">Confirm Password</label>
-                                        <div className="relative group">
-                                            <FieldLockTooltip
-                                                show={!canEnterNewPassword}
-                                                message="Verify current password first before confirming a new password."
-                                            />
-                                            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                                                <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
-                                            </div>
-                                            <input
-                                                name="confirmPassword"
-                                                autoComplete="new-password"
-                                                type="password"
-                                                value={confirmPassword}
-                                                onChange={(e) => setConfirmPassword(e.target.value)}
-                                                disabled={!canEnterNewPassword}
-                                                placeholder={canEnterNewPassword ? 'Confirm new password' : 'Verify current password first'}
-                                                className={`w-full pl-10 pr-10 py-2.5 bg-gray-50 border ${
-                                                    confirmPassword
-                                                        ? profileData.adminPassword === confirmPassword
-                                                            ? 'border-green-300 focus:ring-green-200'
-                                                            : 'border-red-300 focus:ring-red-200'
-                                                        : 'border-gray-200 focus:ring-gray-900'
-                                                } rounded-xl text-sm text-gray-900 focus:ring-2 outline-none ${!canEnterNewPassword ? 'opacity-60 cursor-not-allowed' : ''}`}
-                                            />
+                                            )}
                                         </div>
-                                        <p className="text-[10px] text-gray-500 mt-1">Re-type the new password exactly as above.</p>
+
+                                        <div className="md:col-start-2">
+                                            <label className="block text-xs font-bold text-gray-900 uppercase tracking-wide mb-2">Confirm Password</label>
+                                            <div className="relative group">
+                                                <FieldLockTooltip
+                                                    show={!canEnterNewPassword}
+                                                    message="Verify current password first before confirming a new password."
+                                                />
+                                                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                                    <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                                                </div>
+                                                <input
+                                                    name="confirmPassword"
+                                                    autoComplete="new-password"
+                                                    type="password"
+                                                    value={confirmPassword}
+                                                    onChange={(e) => setConfirmPassword(e.target.value)}
+                                                    disabled={!canEnterNewPassword}
+                                                    placeholder={canEnterNewPassword ? 'Confirm new password' : 'Verify current password first'}
+                                                    className={`w-full pl-10 pr-10 py-2.5 bg-white border ${
+                                                        confirmPassword
+                                                            ? profileData.adminPassword === confirmPassword
+                                                                ? 'border-green-300 focus:ring-green-200'
+                                                                : 'border-red-300 focus:ring-red-200'
+                                                            : 'border-gray-200 focus:ring-gray-900'
+                                                    } rounded-xl text-sm text-gray-900 focus:ring-2 outline-none ${!canEnterNewPassword ? 'opacity-60 cursor-not-allowed' : ''}`}
+                                                />
+                                            </div>
+                                            <p className="text-[10px] text-gray-500 mt-1">Re-type the new password exactly as above.</p>
+                                        </div>
                                     </div>
                                 </div>
-                            </>
-                        )}
 
-                        {activeSection === 'pin' && (
-                            <>
-                                <div className="border-b border-gray-100 pb-4 mb-4">
-                                    <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wider flex items-center gap-2">
-                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>
-                                        Change Security PIN
-                                    </h3>
-                                </div>
+                                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                                    <div className="border-b border-gray-200 pb-3 mb-4">
+                                        <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wider flex items-center gap-2">
+                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>
+                                            Change Security PIN
+                                        </h3>
+                                    </div>
 
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div>
                             <label className="block text-xs font-bold text-gray-900 uppercase tracking-wide mb-2">Current PIN</label>
                             <div className="relative">
@@ -1128,29 +1415,34 @@ const Profile = () => {
                             <p className="text-[10px] text-gray-500 mt-1">Re-type the new PIN for verification.</p>
                         </div>
 
-                    </div>
-                    </>
-                    )}
-
-                        <div className="pt-1 flex justify-end">
-                            <div className="relative group">
-                                {!isModified && (
-                                    <div className="pointer-events-none absolute -top-11 right-0 z-30 hidden w-max max-w-[260px] group-hover:block">
-                                        <div className="rounded-lg bg-gray-900 px-3 py-2 text-[10px] font-semibold text-white shadow-xl ring-1 ring-black/10">
-                                            No pending updates. Make a profile change to enable saving.
-                                        </div>
-                                        <span className="absolute -bottom-1 right-6 h-2 w-2 rotate-45 bg-gray-900" />
                                     </div>
-                                )}
-                                <button 
-                                    onClick={handleSave}
-                                    disabled={!isModified}
-                                    className={`px-4 md:px-5 py-2.5 rounded-xl font-bold uppercase tracking-wider text-[10px] md:text-xs text-white shadow-lg flex items-center gap-2 transition-all transform ${isModified ? 'hover:opacity-90 hover:-translate-y-0.5 cursor-pointer' : 'opacity-50 cursor-not-allowed'}`}
-                                    style={{ backgroundColor: '#111827', border: '2px solid #111827' }}
-                                >
-                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path></svg>
-                                    Save Changes
-                                </button>
+                                </div>
+                            </div>
+                        )}
+
+                        <div className="pt-1">
+                            <div className="border-t border-gray-100 pt-4">
+                                <div className="flex justify-end">
+                                    <div className="relative group">
+                                        <FieldLockTooltip
+                                            show={!isModified}
+                                            message="No changes yet. Update any profile field to enable Save Changes."
+                                            align="right"
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={handleSave}
+                                            disabled={!isModified}
+                                            className={`px-5 py-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-all ${
+                                                isModified
+                                                    ? 'bg-gray-900 text-white hover:bg-gray-800 shadow-sm'
+                                                    : 'bg-gray-900 text-white/70 cursor-not-allowed'
+                                            }`}
+                                        >
+                                            Save Changes
+                                        </button>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>

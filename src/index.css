@@ -79,45 +79,191 @@ input[type="number"] {
   -moz-appearance: textfield;
 }
 
-/* Base Dark Mode Support */
+/* Base Dark Mode Support - Modern Professional Theme (Zinc) */
+html.dark {
+    background-color: #09090b !important; /* Zinc 950 base */
+    color: #f4f4f5 !important;
+}
+
+html.dark body,
 html.dark nav,
 html.dark aside,
 html.dark .bg-gray-50,
-html.dark body { 
-    background-color: #111827 !important;
+html.dark .bg-gray-100,
+html.dark .bg-gray-200,
+html.dark .bg-slate-50,
+html.dark .bg-slate-100,
+html.dark .bg-slate-200,
+html.dark .bg-slate-200\/50,
+html.dark .bg-slate-200\/95,
+html.dark .bg-slate-50\/50,
+html.dark .bg-gray-50\/50,
+html.dark .bg-gray-50\/60,
+html.dark .bg-gray-50\/80,
+html.dark .bg-gray-100\/50,
+html.dark .bg-gray-100\/80,
+html.dark .bg-gray-200\/70,
+html.dark .bg-gray-900,
+html.dark .dark\:bg-gray-900,
+html.dark .bg-\[\#111827\],
+html.dark .bg-\[\#1f2937\],
+html.dark .bg-\[\#f8fafc\] {
+    background-color: #09090b !important; /* Zinc 950 main backgrounds */
 }
 
-html.dark .bg-white {
-    background-color: #1f2937 !important;
-    border-color: #374151 !important;
+/* Card and Element backgrounds */
+html.dark .bg-white,
+html.dark .bg-white\/95,
+html.dark .bg-slate-300,
+html.dark .dark\:bg-gray-800 {
+    background-color: #18181b !important; /* Zinc 900 elements/cards */
+    border-color: #27272a !important; /* Zinc 800 borders */
 }
 
+/* Lighter backgrounds for hover or nested items */
+html.dark .dark\:bg-gray-700,
+html.dark .dark\:bg-gray-600,
+html.dark table tbody tr.bg-gray-50 {
+    background-color: #27272a !important; /* Zinc 800 */
+}
+
+html.dark table tbody tr {
+    background-color: transparent !important;
+}
+
+/* Hover specific overrides */
+html.dark .hover\:bg-gray-50:hover,
+html.dark .hover\:bg-gray-100:hover,
+html.dark .hover\:bg-slate-100:hover,
+html.dark .dark\:hover\:bg-gray-700:hover,
+html.dark .dark\:hover\:bg-gray-700\/50:hover {
+    background-color: #27272a !important; /* Zinc 800 hover */
+}
+
+/* Base overrides for tinted bg elements in dark mode to fix text legibility */
+html.dark .bg-yellow-50,
+html.dark .bg-orange-50,
+html.dark .bg-amber-50,
+html.dark .bg-blue-50,
+html.dark .bg-green-50,
+html.dark .bg-red-50,
+html.dark .bg-rose-50 {
+    background-color: #27272a !important; /* Muted dark instead of stark bright colors */
+    border-color: #3f3f46 !important;
+}
+
+/* Texts */
+html.dark .text-black,
 html.dark .text-gray-900,
 html.dark .text-gray-800,
-html.dark .text-gray-700 {
-    color: #f9fafb !important;
+html.dark .dark\:text-gray-900,
+html.dark .dark\:text-gray-800,
+html.dark .dark\:text-white {
+    color: #ffffff !important;
 }
 
-html.dark .text-gray-600,
+html.dark .text-gray-700,
+html.dark .text-gray-600 {
+    color: #e4e4e7 !important; /* Zinc 200 text */
+}
+
 html.dark .text-gray-500,
-html.dark .text-gray-400 {
-    color: #9ca3af !important;
+html.dark .text-gray-400,
+html.dark .dark\:text-gray-400 {
+    color: #a1a1aa !important; /* Zinc 400 text */
+}
+
+/* Colored Texts */
+html.dark .text-yellow-600,
+html.dark .text-yellow-500,
+html.dark .text-orange-600,
+html.dark .text-amber-600 {
+    color: #fcd34d !important; /* Lighter yellow/orange for dark mode */
+}
+
+/* Borders */
+/* Make thick top borders white in dark mode to pop out */
+html.dark .border-t-\[\#111827\],
+html.dark .dark\:border-t-gray-600 {
+    border-top-color: #ffffff !important;
 }
 
 html.dark .border-gray-100,
-html.dark .border-gray-200 {
-    border-color: #374151 !important;
+html.dark .border-gray-200,
+html.dark .border-gray-300,
+html.dark .border-gray-800,
+html.dark .dark\:border-gray-800,
+html.dark .dark\:border-gray-700,
+html.dark .dark\:border-gray-600 {
+    border-color: #27272a !important; /* Zinc 800 border */
 }
 
+html.dark .border-gray-400,
+html.dark .dark\:border-gray-500 {
+    border-color: #3f3f46 !important; /* Zinc 700 border */
+}
+
+html.dark .divide-gray-50 > :not([hidden]) ~ :not([hidden]),
+html.dark .dark\:divide-gray-700 > :not([hidden]) ~ :not([hidden]) {
+    border-color: #27272a !important; /* Zinc 800 divider */
+}
+
+/* Shadows */
+html.dark .shadow-sm,
 html.dark .shadow-md,
-html.dark .shadow-lg, 
+html.dark .shadow-lg,
 html.dark .shadow-xl {
-    box-shadow: none !important;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -1px rgba(0, 0, 0, 0.2) !important;
 }
 
-html.dark input, 
-html.dark select {
-    background-color: #374151 !important;
-    border-color: #4b5563 !important;
-    color: white !important;
+/* Input Fields & Textareas */
+html.dark input,
+html.dark select,
+html.dark textarea {
+    background-color: #18181b !important; /* Zinc 900 inputs */
+    border-color: #27272a !important; /* Zinc 800 */
+    color: #f4f4f5 !important;
+}
+
+html.dark input:focus,
+html.dark select:focus,
+html.dark textarea:focus {
+    border-color: #52525b !important; /* Zinc 600 focus */
+    outline: none !important;
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.1) !important;
+    background-color: #27272a !important;
+}
+
+/* Recharts Dark Mode Overrides */
+html.dark .recharts-legend-item-text {
+    color: #ffffff !important;
+}
+html.dark .recharts-bar-rectangle path[fill="#111827" i], 
+html.dark .recharts-bar-rectangle path[fill="#111827"] {
+    fill: #ffffff !important;
+}
+html.dark .recharts-bar-rectangle path[fill="#9CA3AF" i],
+html.dark .recharts-bar-rectangle path[fill="#9ca3af" i] {
+    fill: #6b7280 !important;
+}
+
+/* Recharts Dark Mode Paths */
+html.dark .recharts-surface path[fill="#111827" i] {
+    fill: #ffffff !important;
+}
+html.dark .recharts-surface path[fill="#9CA3AF" i] {
+    fill: #9ca3af !important;
+}
+
+/* Recharts YAxis/XAxis Text Dark */
+html.dark .recharts-cartesian-axis-tick-value {
+    fill: #a1a1aa !important;
+}
+html.dark .recharts-tooltip-wrapper .recharts-default-tooltip {
+    background-color: #18181b !important;
+    border-color: #27272a !important;
+    color: #ffffff !important;
+}
+html.dark .recharts-tooltip-item {
+    color: #ffffff !important;
 }

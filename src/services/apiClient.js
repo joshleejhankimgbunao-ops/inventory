@@ -1,33 +1,19 @@
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
 const TOKEN_KEY = 'authToken';
 
 export const getAuthToken = () => {
-  const sessionToken = sessionStorage.getItem(TOKEN_KEY);
-  if (sessionToken) {
-    return sessionToken;
-  }
-
-  const persistentToken = localStorage.getItem(TOKEN_KEY);
-  if (persistentToken) {
-    // keep session in sync once app is reopened
-    sessionStorage.setItem(TOKEN_KEY, persistentToken);
-    return persistentToken;
-  }
-
-  return null;
+  return sessionStorage.getItem(TOKEN_KEY);
 };
 
 export const setAuthToken = (token) => {
   if (token) {
     sessionStorage.setItem(TOKEN_KEY, token);
-    localStorage.setItem(TOKEN_KEY, token);
   }
 };
 
 export const clearAuthToken = () => {
   sessionStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(TOKEN_KEY);
 };
 
 export const apiRequest = async (path, options = {}) => {
@@ -41,20 +27,33 @@ export const apiRequest = async (path, options = {}) => {
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...options,
-    headers,
-  });
+  let response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      ...options,
+      headers,
+    });
+  } catch (networkError) {
+    const error = new Error('Cannot reach API server. Please make sure the backend is running.');
+    error.status = 0;
+    throw error;
+  }
 
   let body = null;
+  let rawText = '';
   try {
-    body = await response.json();
+    rawText = await response.text();
+    body = rawText ? JSON.parse(rawText) : null;
   } catch {
     body = null;
   }
 
   if (!response.ok) {
-    const message = body?.message || `Request failed (${response.status})`;
+    const proxyConnectionError = /ECONNREFUSED|proxy error|127\.0\.0\.1:5000/i.test(rawText || '');
+    const fallbackMessage = proxyConnectionError
+      ? 'Cannot reach API server. Please make sure the backend is running.'
+      : `Request failed (${response.status})`;
+    const message = body?.message || fallbackMessage;
     const error = new Error(message);
     error.status = response.status;
     throw error;

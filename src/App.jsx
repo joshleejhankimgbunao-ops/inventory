@@ -8,38 +8,40 @@ import { getAuthToken, clearAuthToken } from './services/apiClient';
 import './App.css';
 
 function App() {
-  // Check sessionStorage for logged in status
+  // Token in session storage is the single source of auth state on the client.
   const [isAuthenticated, setIsAuthenticated] = useState(() => {
-    return sessionStorage.getItem('isLoggedIn') === 'true' || Boolean(getAuthToken());
+    return Boolean(getAuthToken());
   });
   
   const navigate = useNavigate();
   const location = useLocation();
-  const isPublicRoute = ['/login', '/reset-password', '/reset-pin'].includes(location.pathname);
+  const isLoginRoute = location.pathname === '/login';
+  const isResetRoute = ['/reset-password', '/reset-pin'].includes(location.pathname);
+  const isPublicRoute = isLoginRoute || isResetRoute;
 
   useEffect(() => {
     // If user is not authenticated and tries to access protected route (anything not /login), redirect
     if (!isAuthenticated && !isPublicRoute) {
          navigate('/login', { replace: true });
     }
-    // If user IS authenticated and tries to go to login, redirect to dashboard home
-    if (isAuthenticated && (location.pathname === '/login' || location.pathname === '/reset-password' || location.pathname === '/reset-pin')) {
-         navigate('/', { replace: true });
+    // If user IS authenticated and tries to go to login, redirect to dashboard home.
+    // Reset routes stay accessible so email reset links work even during an active session.
+    if (isAuthenticated && isLoginRoute) {
+        navigate('/dashboard', { replace: true });
     }
-  }, [isAuthenticated, isPublicRoute, location.pathname, navigate]);
+  }, [isAuthenticated, isPublicRoute, isLoginRoute, navigate]);
 
   const handleLogin = () => {
-    sessionStorage.setItem('isLoggedIn', 'true');
     setIsAuthenticated(true);
-    navigate('/', { replace: true });
+    navigate('/dashboard', { replace: true });
   };
 
   const handleLogout = () => {
     // wipe all session-based user state so next login starts clean
-    sessionStorage.removeItem('isLoggedIn');
     sessionStorage.removeItem('userRole');
     sessionStorage.removeItem('userName');
     sessionStorage.removeItem('userAvatar');
+    sessionStorage.removeItem('authUsername');
     clearAuthToken();
     setIsAuthenticated(false);
     navigate('/login', { replace: true });
@@ -108,14 +110,10 @@ function App() {
       
       <Routes>
         <Route path="/login" element={
-          !isAuthenticated ? <Login onLogin={handleLogin} /> : <Navigate to="/" replace />
+          !isAuthenticated ? <Login onLogin={handleLogin} /> : <Navigate to="/dashboard" replace />
         } />
-        <Route path="/reset-password" element={
-          !isAuthenticated ? <ResetCredential mode="password" /> : <Navigate to="/" replace />
-        } />
-        <Route path="/reset-pin" element={
-          !isAuthenticated ? <ResetCredential mode="pin" /> : <Navigate to="/" replace />
-        } />
+        <Route path="/reset-password" element={<ResetCredential mode="password" />} />
+        <Route path="/reset-pin" element={<ResetCredential mode="pin" />} />
         <Route path="/*" element={
           isAuthenticated ? <Dashboard onLogout={handleLogout} /> : <Navigate to="/login" replace />
         } />

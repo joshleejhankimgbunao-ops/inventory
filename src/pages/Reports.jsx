@@ -6,6 +6,51 @@ import { jsPDF } from 'jspdf';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, ResponsiveContainer, Legend, PieChart, Pie, Cell } from 'recharts';
 import { useInventory } from '../context/InventoryContext';
 import { useAuth } from '../context/AuthContext';
+import StatCard from '../components/StatCard';
+
+const TOP_SELLING_CHART_COLORS = ['#0EA5E9', '#F97316', '#10B981', '#A855F7', '#F43F5E', '#EAB308', '#14B8A6', '#6366F1'];
+
+const EmptyAnalyticsState = ({ title, subtitle, icon }) => (
+  <div className="h-full w-full flex items-center justify-center p-4">
+    <div className="w-full max-w-md px-4 py-6 text-center">
+      <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full text-gray-500">
+        {icon}
+      </div>
+      <p className="text-sm font-bold text-gray-700">{title}</p>
+      <p className="mt-1 text-xs text-gray-500">{subtitle}</p>
+    </div>
+  </div>
+);
+
+const FinancialStatCard = ({ title, value, hiddenValue, showFinancials, onToggle, icon }) => (
+  <div className="relative overflow-hidden bg-white rounded-xl p-4 shadow-sm border-x border-b border-gray-100 hover:shadow-lg transition-all duration-300 transform hover:-translate-y-1 group">
+    <div className="absolute top-0 left-0 right-0 h-1.5 bg-linear-to-r from-gray-700 to-black" />
+    <div className="flex items-center justify-between">
+      <div>
+        <h3 className="text-gray-500 text-sm font-bold uppercase tracking-wider mb-1 group-hover:text-gray-900 transition-colors">{title}</h3>
+        <div className="text-lg font-black text-gray-900 tracking-tight">{showFinancials ? value : hiddenValue}</div>
+      </div>
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={onToggle}
+          className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-gray-200 text-gray-600 hover:text-gray-900 hover:border-gray-300 transition-colors"
+          aria-label={showFinancials ? 'Hide financial values' : 'Show financial values'}
+          title={showFinancials ? 'Hide financial values' : 'Show financial values'}
+        >
+          {showFinancials ? (
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" /></svg>
+          ) : (
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+          )}
+        </button>
+        <div className="p-3 rounded-xl bg-gray-900 text-white shadow-sm group-hover:scale-110 transition-transform duration-300">
+          {icon}
+        </div>
+      </div>
+    </div>
+  </div>
+);
 
 const Reports = () => {
   const { transactions = [], processedInventory: inventory = [] } = useInventory() || {};
@@ -18,9 +63,15 @@ const Reports = () => {
   const [reportType, setReportType] = useState('sales');
   const [exportType, setExportType] = useState('sales');
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [showFinancials, setShowFinancials] = useState(false);
   const [hiddenBars, setHiddenBars] = useState({ sales: false, orders: false });
   const isAdminInventoryOnly = userRole === ROLES.ADMIN;
   const showInventoryOnlyLayout = isAdminInventoryOnly || reportType === 'inventory';
+
+  const formatMoney = (amount) => {
+    if (!showFinancials) return 'P ••••••';
+    return `P${Number(amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
 
   const handleLegendClick = (entry) => {
     if (!entry || !entry.dataKey) return;
@@ -76,92 +127,29 @@ const Reports = () => {
 
   const totalRevenue = filteredTransactions.reduce((s, t) => s + (t.total || 0), 0);
   const totalOrders = filteredTransactions.length;
-  const activeSalesDays = new Set(
-    filteredTransactions.map((t) => new Date(t.date).toISOString().split('T')[0]),
-  ).size;
-  const avgDailySales = activeSalesDays > 0 ? totalRevenue / activeSalesDays : 0;
-
-  const previousPeriodRevenue = useMemo(() => {
-    const hasTransactions = Array.isArray(transactions) && transactions.length > 0;
-    if (!hasTransactions) return null;
-
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
-    const getWindow = () => {
-      if (dateRange === 'today') {
-        const start = today;
-        const end = new Date(today);
-        end.setDate(end.getDate() + 1);
-        const prevStart = new Date(start);
-        prevStart.setDate(prevStart.getDate() - 1);
-        return { prevStart, prevEnd: start };
-      }
-
-      if (dateRange === 'week') {
-        const start = new Date(today);
-        start.setDate(start.getDate() - 7);
-        const diffMs = today.getTime() - start.getTime();
-        const prevStart = new Date(start.getTime() - diffMs);
-        return { prevStart, prevEnd: start };
-      }
-
-      if (dateRange === 'month') {
-        const start = new Date(today);
-        start.setMonth(start.getMonth() - 1);
-        const diffMs = today.getTime() - start.getTime();
-        const prevStart = new Date(start.getTime() - diffMs);
-        return { prevStart, prevEnd: start };
-      }
-
-      if (dateRange === 'specific_date' && specificDate) {
-        const start = new Date(specificDate);
-        const prevStart = new Date(start);
-        prevStart.setDate(prevStart.getDate() - 1);
-        return { prevStart, prevEnd: start };
-      }
-
-      if (dateRange === 'custom' && customStartDate && customEndDate) {
-        const currentStart = new Date(customStartDate);
-        const currentEnd = new Date(customEndDate);
-        currentEnd.setHours(23, 59, 59, 999);
-        const diffMs = currentEnd.getTime() - currentStart.getTime() + 1;
-        const prevEnd = currentStart;
-        const prevStart = new Date(currentStart.getTime() - diffMs);
-        return { prevStart, prevEnd };
-      }
-
-      return null;
-    };
-
-    const window = getWindow();
-    if (!window) return null;
-
-    return transactions.reduce((sum, transaction) => {
-      const transactionDate = new Date(transaction.date);
-      if (Number.isNaN(transactionDate.getTime())) return sum;
-      if (transactionDate >= window.prevStart && transactionDate < window.prevEnd) {
-        return sum + (transaction.total || 0);
-      }
-      return sum;
-    }, 0);
-  }, [transactions, dateRange, customStartDate, customEndDate, specificDate]);
-
-  const salesGrowthPercent = previousPeriodRevenue && previousPeriodRevenue > 0
-    ? ((totalRevenue - previousPeriodRevenue) / previousPeriodRevenue) * 100
-    : null;
+  const totalItemsSold = filteredTransactions.reduce(
+    (sum, transaction) => sum + (transaction.items?.reduce((itemSum, item) => itemSum + (item.qty || 0), 0) || 0),
+    0
+  );
 
   const topProducts = useMemo(() => {
+    const inventoryNameByCode = new Map(
+      inventory
+        .filter((item) => item?.code)
+        .map((item) => [item.code, item.name])
+    );
+
     const stats = {};
     filteredTransactions.forEach((t) => {
       t.items?.forEach((it) => {
-        if (!stats[it.code]) stats[it.code] = { code: it.code, name: it.name, qty: 0, revenue: 0 };
+        const canonicalName = inventoryNameByCode.get(it.code) || it.name;
+        if (!stats[it.code]) stats[it.code] = { code: it.code, name: canonicalName, qty: 0, revenue: 0 };
         stats[it.code].qty += it.qty || 0;
         stats[it.code].revenue += (it.price || 0) * (it.qty || 0);
       });
     });
     return Object.values(stats).sort((a, b) => b.revenue - a.revenue);
-  }, [filteredTransactions]);
+  }, [filteredTransactions, inventory]);
 
   const topProductsPieData = useMemo(() => {
     return topProducts.slice(0, 10).map((product) => ({
@@ -342,7 +330,7 @@ const Reports = () => {
               <div className="shrink-0">
                 <h1 className="text-[8px] font-black text-gray-900 leading-tight">Reports</h1>
                 <p className="text-gray-500 text-xs font-medium mt-1">
-                  {isAdminInventoryOnly ? 'View inventory status' : 'View sales performance'}
+                  {isAdminInventoryOnly ? 'View inventory status' : 'View sales and Inventory performance'}
                 </p>
               </div>
             </div>
@@ -386,7 +374,7 @@ const Reports = () => {
                     </div>
                   )}
                 </div>
-                
+
                 <div className="pdf-exclude relative group shrink-0">
                   <button
                     type="button"
@@ -398,9 +386,11 @@ const Reports = () => {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 16V4m0 12l-4-4m4 4l4-4M4 20h16" />
                     </svg>
                   </button>
-                  <div className="pointer-events-none absolute right-0 top-full mt-2 z-20 rounded-md bg-gray-900/95 px-2.5 py-1.5 text-[10px] font-semibold text-white shadow-lg opacity-0 translate-y-1 transition-all duration-200 group-hover:opacity-100 group-hover:translate-y-0 group-focus-within:opacity-100 group-focus-within:translate-y-0 whitespace-nowrap">
-                    Export
-                  </div>
+                  {!showExportMenu && (
+                    <div className="pointer-events-none absolute right-0 top-full mt-2 z-20 rounded-md bg-gray-900/95 px-2.5 py-1.5 text-[10px] font-semibold text-white shadow-lg opacity-0 translate-y-1 transition-all duration-200 group-hover:opacity-100 group-hover:translate-y-0 whitespace-nowrap">
+                      Export
+                    </div>
+                  )}
     
                   {showExportMenu && (
                     <div className="absolute right-0 top-full mt-2 z-30 w-44 rounded-lg border border-gray-200 bg-white shadow-xl p-2 space-y-2">
@@ -438,71 +428,155 @@ const Reports = () => {
             </div>
           </div>
         </div>
+        <div className={`grid gap-3 ${reportType === 'inventory' ? 'grid-cols-2 lg:grid-cols-4' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'}`}>
+          {reportType === 'sales' ? (
+            <>
+              <FinancialStatCard
+                title="Total Sales"
+                value={`P${Number(totalRevenue || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                hiddenValue="P ••••••"
+                showFinancials={showFinancials}
+                onToggle={() => setShowFinancials((prev) => !prev)}
+                icon={(
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                )}
+              />
 
+              <StatCard
+                title="Total Orders"
+                value={totalOrders}
+                icon={(
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10m-13 9h16a2 2 0 002-2V7a2 2 0 00-2-2H4a2 2 0 00-2 2v11a2 2 0 002 2z" />
+                  </svg>
+                )}
+                titleClassName="text-sm"
+                valueClassName="text-lg"
+              />
 
+              <StatCard
+                title="Items Sold"
+                value={totalItemsSold}
+                icon={(
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7h18M6 7l1 12h10l1-12M9 7V5a3 3 0 016 0v2" />
+                  </svg>
+                )}
+                titleClassName="text-sm"
+                valueClassName="text-lg"
+              />
+            </>
+          ) : (
+            <>
+              <StatCard
+                title="Total Products"
+                value={inventory.length}
+                icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" /></svg>}
+                titleClassName="text-sm"
+                valueClassName="text-lg"
+              />
 
-        {!showInventoryOnlyLayout && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            <div className="relative overflow-hidden bg-white rounded-xl p-3 shadow-sm border-x border-b border-gray-100">
-              <div className="absolute top-0 left-0 right-0 h-1.5 bg-linear-to-r from-gray-700 to-black" />
-              <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1">Total Sales</p>
-              <p className="text-xl font-black text-gray-900">₱{totalRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
-            </div>
+              <StatCard
+                title="Low Stock Items"
+                value={lowStockCount}
+                icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>}
+                titleClassName="text-sm"
+                valueClassName="text-lg"
+              />
 
-            <div className="relative overflow-hidden bg-white rounded-xl p-3 shadow-sm border-x border-b border-gray-100">
-              <div className="absolute top-0 left-0 right-0 h-1.5 bg-linear-to-r from-gray-700 to-black" />
-              <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1">Total Orders</p>
-              <p className="text-xl font-black text-gray-900">{totalOrders}</p>
-            </div>
+              <StatCard
+                title="Out of Stock"
+                value={outOfStockCount}
+                icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" /></svg>}
+                titleClassName="text-sm"
+                valueClassName="text-lg"
+              />
 
-            <div className="relative overflow-hidden bg-white rounded-xl p-3 shadow-sm border-x border-b border-gray-100">
-              <div className="absolute top-0 left-0 right-0 h-1.5 bg-linear-to-r from-gray-700 to-black" />
-              <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1">Items Sold</p>
-              <p className="text-xl font-black text-gray-900">{filteredTransactions.reduce((s, t) => s + (t.items?.reduce((isum, i) => isum + (i.qty || 0), 0) || 0), 0)}</p>
-            </div>
+              <FinancialStatCard
+                title="Inventory Value"
+                value={`P${Number(inventoryValue || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                hiddenValue="P ••••••"
+                showFinancials={showFinancials}
+                onToggle={() => setShowFinancials((prev) => !prev)}
+                icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>}
+              />
+            </>
+          )}
+        </div>
 
-            <div className="relative overflow-hidden bg-white rounded-xl p-3 shadow-sm border-x border-b border-gray-100">
-              <div className="absolute top-0 left-0 right-0 h-1.5 bg-linear-to-r from-gray-700 to-black" />
-              <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1">Sales Growth</p>
-              <div className="flex items-baseline gap-2">
-                <p className="text-xl font-black text-gray-900">
-                  {salesGrowthPercent === null
-                    ? 'N/A'
-                    : `${salesGrowthPercent >= 0 ? '+' : ''}${salesGrowthPercent.toFixed(1)}%`}
-                </p>
-                <p className="text-[10px] font-semibold text-gray-400">vs prev period</p>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {!showInventoryOnlyLayout && (
-          <div className="grid grid-cols-1 lg:grid-cols-10 gap-4">
-            <div className={`relative overflow-hidden bg-white rounded-xl shadow-sm p-4 border border-gray-100 ${reportType === 'sales' ? 'lg:col-span-10' : 'lg:col-span-7'}`}>
+        <div className="grid grid-cols-1 lg:grid-cols-10 gap-4">
+            <div className={`relative overflow-hidden bg-white rounded-xl shadow-sm p-4 border border-gray-100 ${reportType === 'sales' || reportType === 'inventory' ? 'lg:col-span-10' : 'lg:col-span-7'}`}>
               <div className="absolute top-0 left-0 right-0 h-1.5 bg-linear-to-r from-gray-700 to-black" />
               <div className="flex items-center gap-2 mb-3">
                 <div className="p-1.5 bg-gray-100 rounded-lg text-gray-900"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" /></svg></div>
-                <h3 className="text-lg font-bold text-gray-800">{reportType === 'inventory' ? 'Inventory Summary' : reportType === 'sales' ? 'Sales Analytics' : 'Top Selling Products'}</h3>
+                <h3 className="text-lg font-bold text-gray-800">{reportType === 'sales' ? 'Sales Analytics' : 'Top Selling Products'}</h3>
               </div>
 
               {reportType === 'inventory' ? (
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-xs font-medium text-gray-500">Inventory Value</p>
-                      <p className="text-lg font-bold text-gray-900">₱{inventoryValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs font-medium text-gray-500">Low Stock</p>
-                      <p className="text-lg font-bold text-gray-900">{lowStockCount}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs font-medium text-gray-500">Out of Stock</p>
-                      <p className="text-lg font-bold text-gray-900">{outOfStockCount}</p>
-                    </div>
+                topProductsPieData.length > 0 ? (
+                  <div className="h-64 md:h-68 w-full pb-1">
+                    <ResponsiveContainer width="100%" height="100%" debounce={300}>
+                      <PieChart>
+                        <ChartTooltip
+                          formatter={(value, _name, item) => {
+                            const revenue = item?.payload?.revenue || 0;
+                            const revenueLabel = showFinancials
+                              ? `P${Number(revenue).toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+                              : 'P••••••';
+                            return [`${value} units • ${revenueLabel}`, 'Top Selling'];
+                          }}
+                        />
+                        <Legend
+                          iconType="circle"
+                          iconSize={8}
+                          layout="vertical"
+                          verticalAlign="middle"
+                          align="right"
+                          formatter={(value) => <span style={{ color: '#111827' }}>{value}</span>}
+                          wrapperStyle={{ fontSize: '11px', fontWeight: 400, letterSpacing: '0.03em', right: 110, lineHeight: '1.35' }}
+                        />
+                        <Pie
+                          data={topProductsPieData}
+                          dataKey="value"
+                          nameKey="name"
+                          cx="36%"
+                          cy="50%"
+                          outerRadius="68%"
+                          label={({ percent, x, y, textAnchor, dominantBaseline }) => (
+                            <text
+                              x={x}
+                              y={y}
+                              fill="#111827"
+                              textAnchor={textAnchor}
+                              dominantBaseline={dominantBaseline}
+                              fontSize={11}
+                              fontWeight={700}
+                            >
+                              {(percent * 100).toFixed(0)}%
+                            </text>
+                          )}
+                          labelLine={false}
+                        >
+                          {topProductsPieData.map((entry, index) => (
+                            <Cell key={`reports-cell-${entry.name}`} fill={TOP_SELLING_CHART_COLORS[index % TOP_SELLING_CHART_COLORS.length]} />
+                          ))}
+                        </Pie>
+                      </PieChart>
+                    </ResponsiveContainer>
                   </div>
-                  <p className="text-sm text-gray-500">Current inventory overview. Use the Export panel to download inventory data.</p>
-                </div>
+                ) : (
+                  <EmptyAnalyticsState
+                    title="No top-selling products yet"
+                    subtitle="No item sales were recorded in the selected date range."
+                    icon={(
+                      <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8c-1.657 0-3 1.343-3 3v4h6v-4c0-1.657-1.343-3-3-3zm0 0V6m-7 13h14" />
+                      </svg>
+                    )}
+                  />
+                )
               ) : reportType === 'sales' ? (
                 trendData.length > 0 ? (
                   <div className="h-64 md:h-68 w-full">
@@ -510,9 +584,17 @@ const Reports = () => {
                       <BarChart data={trendData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
                         <XAxis dataKey="name" axisLine={{ stroke: '#9CA3AF', strokeWidth: 1.5 }} tickLine={false} tick={{ fill: '#6B7280', fontSize: 11, fontWeight: 600 }} dy={8} />
-                        <YAxis yAxisId="sales" axisLine={false} tickLine={false} domain={[0, 'dataMax']} tick={{ fill: '#6B7280', fontSize: 10, fontWeight: 500 }} tickFormatter={(value) => (value >= 1000 ? `₱${(value / 1000).toFixed(0)}k` : `₱${value}`)} />
+                        <YAxis yAxisId="sales" axisLine={false} tickLine={false} domain={[0, 'dataMax']} tick={{ fill: '#6B7280', fontSize: 10, fontWeight: 500 }} tickFormatter={(value) => {
+                          if (!showFinancials) return 'P***';
+                          return value >= 1000 ? `P${(value / 1000).toFixed(0)}k` : `P${value}`;
+                        }} />
                         <YAxis yAxisId="orders" orientation="right" axisLine={false} tickLine={false} tick={{ fill: '#6B7280', fontSize: 10 }} allowDecimals={false} />
-                        <ChartTooltip formatter={(value, name) => (name === 'sales' ? [`₱${Number(value).toLocaleString(undefined, { minimumFractionDigits: 2 })}`, 'Sales'] : [value, 'Orders'])} />
+                        <ChartTooltip formatter={(value, name) => {
+                          if (name === 'sales') {
+                            return [showFinancials ? `P${Number(value).toLocaleString(undefined, { minimumFractionDigits: 2 })}` : 'P••••••', 'Sales'];
+                          }
+                          return [value, 'Orders'];
+                        }} />
                         <Legend
                           iconType="square"
                           iconSize={10}
@@ -526,7 +608,15 @@ const Reports = () => {
                     </ResponsiveContainer>
                   </div>
                 ) : (
-                  <div className="py-8 text-center text-gray-400"><p>No sales data yet</p></div>
+                  <EmptyAnalyticsState
+                    title="No sales data yet"
+                    subtitle="No transaction sales were recorded in the selected date range."
+                    icon={(
+                      <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                      </svg>
+                    )}
+                  />
                 )
               ) : (
                 <div>
@@ -544,129 +634,23 @@ const Reports = () => {
                       ))}
                     </div>
                   ) : (
-                    <div className="py-8 text-center text-gray-400"><p>No sales data yet</p></div>
+                    <EmptyAnalyticsState
+                      title="No top-selling products yet"
+                      subtitle="No item sales were recorded in the selected date range."
+                      icon={(
+                        <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8c-1.657 0-3 1.343-3 3v4h6v-4c0-1.657-1.343-3-3-3zm0 0V6m-7 13h14" />
+                        </svg>
+                      )}
+                    />
                   )}
 
                 </div>
               )}
             </div>
 
-            {reportType !== 'sales' && (
-              <div className="relative overflow-hidden bg-white rounded-xl shadow-sm p-4 border border-gray-100 print:hidden pdf-exclude lg:col-span-3">
-                <div className="absolute top-0 left-0 right-0 h-1.5 bg-linear-to-r from-gray-700 to-black" />
-                <div className="flex items-center gap-2 mb-3">
-                  <div className="p-1.5 bg-gray-100 rounded-lg text-gray-900"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg></div>
-                  <h3 className="text-lg font-bold text-gray-800">Export Reports</h3>
-                </div>
 
-                <div className="space-y-2">
-                  {reportType === 'inventory' && (
-                    <button onClick={handleExportCSV} className="w-full flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100">Inventory CSV</button>
-                  )}
-                </div>
-              </div>
-            )}
           </div>
-        )}
-
-        {reportType !== 'sales' && (
-          <div className="relative overflow-hidden bg-white rounded-xl shadow-sm p-3 border border-gray-100 flex-1 min-h-0">
-            <div className="absolute top-0 left-0 right-0 h-1.5 bg-linear-to-r from-gray-700 to-black" />
-            <div className="flex items-center gap-2 mb-3">
-              <div className="p-1.5 bg-gray-100 rounded-lg text-gray-900"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" /></svg></div>
-              <h3 className="text-lg font-bold text-gray-800">Inventory Overview</h3>
-            </div>
-
-            <p className="text-xs text-gray-500 mb-2">Metrics sourced from current inventory data</p>
-
-            <div className="flex-1 min-h-0 flex flex-col gap-2 overflow-hidden">
-            <div className="shrink-0">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-              <div className="p-1.5 bg-gray-50 rounded-lg flex items-center gap-2">
-                <div className="p-1.5 bg-gray-900 rounded-lg shadow-sm"><svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" /></svg></div>
-                <div>
-                  <p className="text-xs font-medium text-gray-500">Total Products</p>
-                  <p className="text-base font-bold text-gray-900">{inventory.length}</p>
-                </div>
-              </div>
-
-              <div className="p-1.5 bg-gray-50 rounded-lg flex items-center gap-2">
-                <div className="p-1.5 bg-gray-900 rounded-lg shadow-sm"><svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg></div>
-                <div>
-                  <p className="text-xs font-medium text-gray-500">Inventory Value</p>
-                  <p className="text-base font-bold text-gray-900">₱{inventoryValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
-                </div>
-              </div>
-
-              <div className="p-1.5 bg-gray-100 rounded-lg flex items-center gap-2">
-                <div className="p-1.5 bg-gray-900 rounded-lg shadow-sm"><svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg></div>
-                <div>
-                  <p className="text-xs font-medium text-gray-600">Low Stock Items</p>
-                  <p className="text-base font-bold text-gray-800">{lowStockCount}</p>
-                </div>
-              </div>
-
-              <div className="p-1.5 bg-gray-200 rounded-lg flex items-center gap-2">
-                <div className="p-1.5 bg-gray-900 rounded-lg shadow-sm"><svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" /></svg></div>
-                <div>
-                  <p className="text-xs font-medium text-gray-700">Out of Stock</p>
-                  <p className="text-base font-bold text-gray-900">{outOfStockCount}</p>
-                </div>
-              </div>
-            </div>
-            </div>
-
-            <div className="min-h-0 border-t border-gray-100 pt-2 flex flex-col overflow-hidden">
-              <h4 className="text-sm font-bold text-gray-800 mb-2 flex items-center gap-2">
-                <span className="inline-flex items-center justify-center p-1 rounded-md bg-gray-100 text-gray-900">
-                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
-                  </svg>
-                </span>
-                Top Selling Products
-              </h4>
-              {topProductsPieData.length > 0 ? (
-                <div className="h-64 md:h-72 w-full">
-                  <ResponsiveContainer width="100%" height="100%" debounce={300}>
-                    <PieChart>
-                      <ChartTooltip
-                        formatter={(value, _name, item) => {
-                          const revenue = item?.payload?.revenue || 0;
-                          return [`${value} units • ₱${Number(revenue).toLocaleString(undefined, { minimumFractionDigits: 2 })}`, 'Top Selling'];
-                        }}
-                      />
-                      <Legend
-                        iconType="circle"
-                        iconSize={8}
-                        layout="vertical"
-                        verticalAlign="middle"
-                        align="right"
-                        wrapperStyle={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.03em', right: 4, lineHeight: '1.2' }}
-                      />
-                      <Pie
-                        data={topProductsPieData}
-                        dataKey="value"
-                        nameKey="name"
-                        cx="36%"
-                        cy="50%"
-                        outerRadius="68%"
-                        label={({ percent }) => `${(percent * 100).toFixed(0)}%`}
-                        labelLine={false}
-                      >
-                        {topProductsPieData.map((entry, index) => (
-                          <Cell key={`reports-cell-${entry.name}`} fill={['#111827', '#374151', '#6B7280', '#9CA3AF', '#D1D5DB'][index % 5]} />
-                        ))}
-                      </Pie>
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
-              ) : (
-                <p className="text-xs text-gray-400">No sales data yet.</p>
-              )}
-            </div>
-            </div>
-          </div>
-        )}
       </div>
     </div>
     </div>

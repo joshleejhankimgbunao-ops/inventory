@@ -7,10 +7,10 @@ export const loginApi = async (username, password, pin) => {
   });
 };
 
-export const registerApi = async ({ name, username, email, password, pin, role }) => {
+export const registerApi = async ({ name, username, email, phone, password, pin, role }) => {
   return apiRequest('/api/auth/register', {
     method: 'POST',
-    body: JSON.stringify({ name, username, email, password, pin, role }),
+    body: JSON.stringify({ name, username, email, phone, password, pin, role }),
   });
 };
 
@@ -46,10 +46,23 @@ export const updateMyProfileApi = async (payload) => {
   });
 };
 
+export const updateMyPreferencesApi = async (preferences) => {
+  return apiRequest('/api/auth/me/preferences', {
+    method: 'PATCH',
+    body: JSON.stringify(preferences || {}),
+  });
+};
+
 export const updateUserByUsernameApi = async (username, payload) => {
   return apiRequest(`/api/auth/users/${encodeURIComponent(username)}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
+  });
+};
+
+export const deleteUserByUsernameApi = async (username) => {
+  return apiRequest(`/api/auth/users/${encodeURIComponent(username)}`, {
+    method: 'DELETE',
   });
 };
 

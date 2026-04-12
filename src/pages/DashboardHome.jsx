@@ -4,6 +4,20 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
 
+const TOP_SELLING_CHART_COLORS = ['#0EA5E9', '#F97316', '#10B981', '#A855F7', '#F43F5E', '#EAB308', '#14B8A6', '#6366F1'];
+
+const EmptyAnalyticsState = ({ title, subtitle, icon }) => (
+    <div className="h-full w-full flex items-center justify-center p-4">
+        <div className="w-full max-w-md px-4 py-6 text-center">
+            <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full text-gray-500">
+                {icon}
+            </div>
+            <p className="text-sm font-bold text-gray-700">{title}</p>
+            <p className="mt-1 text-xs text-gray-500">{subtitle}</p>
+        </div>
+    </div>
+);
+
 const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
     const { userRole, currentUserName, isAdminOrAbove, isSuperAdmin, ROLES } = useAuth();
     const { transactions = [], processedInventory = [] } = useInventory();
@@ -50,9 +64,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                 monthAgo.setMonth(monthAgo.getMonth() - 1);
                 return tDate >= monthAgo;
             } else if (dateRange === 'year') {
-                const yearAgo = new Date(today);
-                yearAgo.setFullYear(yearAgo.getFullYear() - 1);
-                return tDate >= yearAgo;
+                return tDate.getFullYear() === today.getFullYear();
             } else if (dateRange === 'custom' && customStartDate && customEndDate) {
                 const start = new Date(customStartDate);
                 const end = new Date(customEndDate);
@@ -73,20 +85,42 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
     const trendData = useMemo(() => {
         const byDate = {};
         selectedDateTransactions.forEach(t => {
-            const key = new Date(t.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-            if (!byDate[key]) byDate[key] = { name: key, sales: 0, orders: 0 };
+            const txDate = new Date(t.date);
+
+            if (dateRange === 'year') {
+                const monthIndex = txDate.getMonth();
+                const monthLabel = txDate.toLocaleDateString('en-US', { month: 'short' });
+                if (!byDate[monthIndex]) {
+                    byDate[monthIndex] = { name: monthLabel, sales: 0, orders: 0, _sort: monthIndex };
+                }
+                byDate[monthIndex].sales += t.total || 0;
+                byDate[monthIndex].orders += 1;
+                return;
+            }
+
+            const key = txDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            if (!byDate[key]) byDate[key] = { name: key, sales: 0, orders: 0, _sort: txDate.getTime() };
             byDate[key].sales += t.total || 0;
             byDate[key].orders += 1;
         });
-        return Object.values(byDate).sort((a, b) => new Date(a.name) - new Date(b.name));
-    }, [selectedDateTransactions]);
+        return Object.values(byDate)
+            .sort((a, b) => a._sort - b._sort)
+            .map(({ _sort, ...rest }) => rest);
+    }, [selectedDateTransactions, dateRange]);
 
     const topProducts = useMemo(() => {
+        const inventoryNameByCode = new Map(
+            processedInventory
+                .filter((item) => item?.code)
+                .map((item) => [item.code, item.name])
+        );
+
         const productStats = {};
         selectedDateTransactions.forEach(t => {
             t.items.forEach(item => {
                 if (!productStats[item.code]) {
-                    productStats[item.code] = { code: item.code, name: `${item.brand ? item.brand + ' ' : ''}${item.name}${item.color ? ' — ' + item.color : ''}`, sales: 0, revenue: 0 };
+                    const canonicalName = inventoryNameByCode.get(item.code) || item.name;
+                    productStats[item.code] = { code: item.code, name: canonicalName, sales: 0, revenue: 0 };
                 }
                 productStats[item.code].sales += item.qty || 0;
                 productStats[item.code].revenue += (item.price || 0) * (item.qty || 0);
@@ -97,7 +131,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
             .sort((a, b) => b.sales - a.sales)
             .slice(0, 10)
             .map((p, idx) => ({ id: idx + 1, name: p.name, sales: p.sales, revenue: `₱ ${p.revenue.toLocaleString(undefined, { minimumFractionDigits: 2 })}`, percent: Math.min(100, Math.round((p.sales / 50) * 100)) }));
-    }, [selectedDateTransactions]);
+    }, [selectedDateTransactions, processedInventory]);
 
     const topSellingPieData = useMemo(() => {
         return topProducts.map(product => ({
@@ -109,6 +143,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
     const isAdminUser = userRole === ROLES.ADMIN;
     const isSuperAdminUser = isSuperAdmin();
     const showPieAnalytics = isAdminUser || (isSuperAdminUser && superAdminAnalyticsView === 'pie');
+    const analyticsTitle = showPieAnalytics ? 'Top-Selling Products' : 'Sales Analytics';
 
     // total revenue within selected date range
     const selectedDateSales = useMemo(() => selectedDateTransactions.reduce((s, t) => s + (t.total || 0), 0), [selectedDateTransactions]);
@@ -123,7 +158,14 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
 
     // Low stock items from processedInventory
     const lowStockItems = useMemo(() => {
-        return processedInventory.filter(i => i.status === 'Critical' || i.status === 'Out of Stock');
+        return processedInventory
+            .filter(i => i.status === 'Low Stock' || i.status === 'Out of Stock')
+            .sort((a, b) => {
+                const aStock = Number(a?.stock ?? 0);
+                const bStock = Number(b?.stock ?? 0);
+                if (aStock !== bStock) return aStock - bStock;
+                return String(a?.name ?? '').localeCompare(String(b?.name ?? ''));
+            });
     }, [processedInventory]);
 
     const lowStockCount = lowStockItems.length;
@@ -133,11 +175,16 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
     }, [processedInventory]);
     // non-sales metrics
     const totalProducts = processedInventory.length;
-    const totalUsers = useMemo(() => {
-        const stored = localStorage.getItem('users');
-        return stored ? JSON.parse(stored).length : 0;
-    }, []);
-
+    const totalCategories = useMemo(() => {
+        return new Set(
+            processedInventory
+                .map((item) => String(item?.category || '').trim())
+                .filter(Boolean)
+        ).size;
+    }, [processedInventory]);
+    const cashierTransactionCount = useMemo(() => {
+        return selectedDateTransactions.filter((t) => t.cashier === currentUserName).length;
+    }, [selectedDateTransactions, currentUserName]);
     return (
         <div className="flex flex-col p-4 gap-2 h-auto md:h-full md:overflow-hidden mb-1 bg-slate-200/50 rounded-2xl shadow-inner border border-slate-300">
             {/* Header Section */}
@@ -214,20 +261,25 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                     {isAdminOrAbove() && (
                     <button 
                         onClick={() => setShowFinancials(!showFinancials)}
-                        className="p-2 rounded-lg bg-white border-2 border-gray-200 text-gray-600 hover:text-gray-900 hover:bg-gray-50 transition-all shadow-sm"
-                        title={showFinancials ? "Hide Financial Values" : "Show Financial Values"}
+                        className="group/btn relative p-2 rounded-lg border-2 border-gray-200 text-gray-600 hover:text-gray-900 transition-all"
                     >
                         {showFinancials ? (
                             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"></path></svg>
                         ) : (
                             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
                         )}
+                        <span className="absolute bottom-full right-0 mb-2 hidden group-hover/btn:block z-9999 w-max pointer-events-none">
+                            <span className="bg-gray-900 text-white text-[10px] rounded py-1 px-2 shadow-lg block whitespace-nowrap">
+                                {showFinancials ? 'Hide Financials' : 'Show Financials'}
+                            </span>
+                            <span className="w-2 h-2 bg-gray-900 rotate-45 absolute -bottom-1 right-3 block"></span>
+                        </span>
                     </button>)}
                 </div>
             </div>
 
             <div className="flex-1 min-h-0 flex flex-col gap-4">
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
                     {userRole === ROLES.CASHIER ? (
                         <>
                             <StatCard
@@ -240,26 +292,17 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                                 valueClassName="text-lg"
                             />
                             <StatCard
-                                title="Low Stock Items"
-                                value={lowStockCount.toString()}
-                                icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>}
-                                color="yellow"
+                                title="Total Categories"
+                                value={totalCategories.toString()}
+                                icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 7h6m-6 5h6m-6 5h6m6-10h4m-4 5h4m-4 5h4"/></svg>}
+                                color="indigo"
                                 onClick={() => onNavigate && onNavigate('Product List')}
                                 titleClassName="text-sm"
                                 valueClassName="text-lg"
                             />
                             <StatCard
-                                title="Out of Stocks"
-                                value={processedInventory.filter(i=>i.status==='Out of Stock').length.toString()}
-                                icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M18.364 5.636l-12.728 12.728M5.636 5.636l12.728 12.728"/></svg>}
-                                color="red"
-                                onClick={() => onNavigate && onNavigate('Product List')}
-                                titleClassName="text-sm"
-                                valueClassName="text-lg"
-                            />
-                            <StatCard
-                                title="My Transactions (Today)"
-                                value={transactions.filter(t=>{const d=new Date(t.date);const n=new Date();return t.cashier===currentUserName&&d.getFullYear()===n.getFullYear()&&d.getMonth()===n.getMonth()&&d.getDate()===n.getDate();}).length.toString()}
+                                title="My Transactions"
+                                value={cashierTransactionCount.toString()}
                                 icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>}
                                 color="amber"
                                 onClick={() => onNavigate && onNavigate('History Logs')}
@@ -284,14 +327,12 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                             <StatCard
                                 title="Total Inventory Value"
                                 value={formatMoney(totalInventoryValue)}
-                                icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8c-4.418 0-8 1.79-8 4v4h16v-4c0-2.21-3.582-4-8-4z"/></svg>}
+                                icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7.5A2.5 2.5 0 015.5 5h11A2.5 2.5 0 0119 7.5V8h1.5A1.5 1.5 0 0122 9.5v7a1.5 1.5 0 01-1.5 1.5H5.5A2.5 2.5 0 013 15.5v-8z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 8v7"/><circle cx="16" cy="12.5" r="1" fill="currentColor" stroke="none"/></svg>}
                                 color="indigo"
                                 onClick={() => onNavigate && onNavigate('Reports')}
                                 titleClassName="text-sm"
                                 valueClassName="text-lg"
                             />
-
-                            <StatCard title="Low Stock Items" value={lowStockCount.toString()} icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>} color="yellow" onClick={() => onNavigate && onNavigate('Inventory')} titleClassName="text-sm" valueClassName="text-lg" />
                         </>
                     ) : userRole === ROLES.ADMIN ? (
                         <>
@@ -314,18 +355,9 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                                 valueClassName="text-lg"
                             />
                             <StatCard
-                                title="Low Stock Items"
-                                value={lowStockCount.toString()}
-                                icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>}
-                                color="yellow"
-                                onClick={() => onNavigate && onNavigate('Inventory')}
-                                titleClassName="text-sm"
-                                valueClassName="text-lg"
-                            />
-                            <StatCard
                                 title="Inventory Value"
                                 value={formatMoney(totalInventoryValue)}
-                                icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8c-4.418 0-8 1.79-8 4v4h16v-4c0-2.21-3.582-4-8-4z"/></svg>}
+                                icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7.5A2.5 2.5 0 015.5 5h11A2.5 2.5 0 0119 7.5V8h1.5A1.5 1.5 0 0122 9.5v7a1.5 1.5 0 01-1.5 1.5H5.5A2.5 2.5 0 013 15.5v-8z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 8v7"/><circle cx="16" cy="12.5" r="1" fill="currentColor" stroke="none"/></svg>}
                                 color="indigo"
                                 onClick={() => onNavigate && onNavigate('Reports')}
                                 titleClassName="text-sm"
@@ -370,17 +402,27 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                                             ))}
                                         </tbody>
                                     </table>
-                                    {topProducts.length === 0 && <div className="p-4 text-center text-gray-400 text-xs">No data.</div>}
+                                    {topProducts.length === 0 && (
+                                        <EmptyAnalyticsState
+                                            title="No top-selling products yet"
+                                            subtitle="No item sales were recorded in the selected date range."
+                                            icon={(
+                                                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8c-1.657 0-3 1.343-3 3v4h6v-4c0-1.657-1.343-3-3-3zm0 0V6m-7 13h14" />
+                                                </svg>
+                                            )}
+                                        />
+                                    )}
                                 </div>
                                 <div className="p-2 text-center border-t border-gray-100 bg-gray-50 shrink-0">
                                     <button onClick={onViewAllProducts} className="w-full px-3 py-1.5 rounded-lg text-white font-bold text-xs shadow-md transition-all hover:opacity-90 transform hover:-translate-y-0.5" style={{ backgroundColor: '#111827', border: '2px solid #111827' }}>VIEW ALL</button>
                                 </div>
                             </div>
                             <div className="bg-white p-0 rounded-xl shadow-sm border border-gray-100 flex flex-col relative overflow-hidden w-1/2 h-full min-h-0">
-                                <div className="absolute top-0 left-0 right-0 h-1.5 bg-linear-to-r from-yellow-500 to-yellow-600"></div>
+                                <div className="absolute top-0 left-0 right-0 h-1.5 bg-linear-to-r from-gray-700 to-black"></div>
                                 <div className="px-4 py-2 border-b border-gray-100 flex justify-between items-center shrink-0">
-                                    <h3 className="text-base font-black text-gray-900 uppercase tracking-wide flex items-center gap-2"><svg className="w-3.5 h-3.5 text-yellow-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>Low Stock</h3>
-                                    <span className="bg-yellow-100 text-yellow-700 text-[9px] font-bold px-1.5 py-0.5 rounded-full">{lowStockCount} Items</span>
+                                    <h3 className="text-base font-black text-gray-900 uppercase tracking-wide flex items-center gap-2"><svg className="w-3.5 h-3.5 text-gray-900" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>Low/Out of Stock</h3>
+                                    <span className="bg-gray-100 text-gray-900 text-[9px] font-bold px-1.5 py-0.5 rounded-full">{lowStockCount} Items</span>
                                 </div>
                                 <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-2">
                                     {lowStockItems.length === 0 ? (
@@ -423,36 +465,42 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                                 <div className="p-1.5 bg-gray-100 rounded-lg text-gray-900">
                                     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
                                 </div>
-                                <h3 className="text-base font-black text-gray-900 uppercase tracking-wide">{showPieAnalytics ? 'Top-Selling Products' : 'Sales Analytics'}</h3>
+                                <h3 className="text-base font-black text-gray-900 uppercase tracking-wide">{analyticsTitle}</h3>
                             </div>
                             {isSuperAdminUser && (
-                                <div className="flex p-0.5 bg-gray-100/80 rounded-lg border border-gray-200/60 shadow-inner">
+                                <div className="flex items-center gap-2">
                                     <button
                                         onClick={() => setSuperAdminAnalyticsView('sales')}
-                                        className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-wide transition-all duration-300 ease-out ${
+                                        className={`group/toggle relative flex items-center rounded-lg border px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wide transition-all duration-300 ease-out ${
                                             superAdminAnalyticsView === 'sales' 
-                                                ? 'bg-white text-gray-900 shadow-sm ring-1 ring-gray-200' 
-                                                : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200/50'
+                                                ? 'border-gray-300 bg-white text-gray-900 shadow-sm' 
+                                                : 'border-gray-200 bg-gray-100/80 text-gray-500 hover:text-gray-700 hover:bg-gray-200/70'
                                         }`}
+                                        title="Sales Analytics"
                                     >
                                         <svg className={`w-3.5 h-3.5 transition-transform duration-300 ${superAdminAnalyticsView === 'sales' ? 'scale-110' : 'scale-100'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" />
                                         </svg>
-                                        Trends
+                                        <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-300 group-hover/toggle:ml-1.5 group-hover/toggle:max-w-32 group-hover/toggle:opacity-100">
+                                            Sales Analytics
+                                        </span>
                                     </button>
                                     <button
                                         onClick={() => setSuperAdminAnalyticsView('pie')}
-                                        className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-wide transition-all duration-300 ease-out ${
+                                        className={`group/toggle relative flex items-center rounded-lg border px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wide transition-all duration-300 ease-out ${
                                             superAdminAnalyticsView === 'pie' 
-                                                ? 'bg-white text-gray-900 shadow-sm ring-1 ring-gray-200' 
-                                                : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200/50'
+                                                ? 'border-gray-300 bg-white text-gray-900 shadow-sm' 
+                                                : 'border-gray-200 bg-gray-100/80 text-gray-500 hover:text-gray-700 hover:bg-gray-200/70'
                                         }`}
+                                        title="Top-Selling Products"
                                     >
                                         <svg className={`w-3.5 h-3.5 transition-transform duration-300 ${superAdminAnalyticsView === 'pie' ? 'scale-110' : 'scale-100'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M11 3.055A9.001 9.001 0 1020.945 13H11V3.055z" />
                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M20.488 9H15V3.512A9.025 9.025 0 0120.488 9z" />
                                         </svg>
-                                        Mix
+                                        <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-300 group-hover/toggle:ml-1.5 group-hover/toggle:max-w-36 group-hover/toggle:opacity-100">
+                                            Top-Selling Products
+                                        </span>
                                     </button>
                                 </div>
                             )}
@@ -472,7 +520,8 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                                                         layout="vertical"
                                                         verticalAlign="middle"
                                                         align="right"
-                                                        wrapperStyle={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.03em', right: 4, lineHeight: '1.2' }}
+                                                        formatter={(value) => <span style={{ color: '#111827' }}>{value}</span>}
+                                                        wrapperStyle={{ fontSize: '11px', fontWeight: 400, letterSpacing: '0.03em', right: 4, lineHeight: '1.35' }}
                                                     />
                                                     <Pie
                                                         data={topSellingPieData}
@@ -481,50 +530,84 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                                                         cx="36%"
                                                         cy="50%"
                                                         outerRadius="68%"
-                                                        label={({ percent }) => `${(percent * 100).toFixed(0)}%`}
+                                                        label={({ percent, x, y, textAnchor, dominantBaseline }) => (
+                                                            <text
+                                                                x={x}
+                                                                y={y}
+                                                                fill="#111827"
+                                                                textAnchor={textAnchor}
+                                                                dominantBaseline={dominantBaseline}
+                                                                fontSize={11}
+                                                                fontWeight={700}
+                                                            >
+                                                                {(percent * 100).toFixed(0)}%
+                                                            </text>
+                                                        )}
                                                         labelLine={false}
                                                     >
                                                         {topSellingPieData.map((entry, index) => (
-                                                            <Cell key={`cell-${entry.name}`} fill={['#111827', '#374151', '#6B7280', '#9CA3AF', '#D1D5DB'][index % 5]} />
+                                                            <Cell key={`cell-${entry.name}`} fill={TOP_SELLING_CHART_COLORS[index % TOP_SELLING_CHART_COLORS.length]} />
                                                         ))}
                                                     </Pie>
                                                 </PieChart>
                                             </ResponsiveContainer>
                                         ) : (
-                                            <div className="h-full w-full flex items-center justify-center text-xs text-gray-400 font-medium">No top-selling data in selected range.</div>
+                                            <EmptyAnalyticsState
+                                                title="No top-selling data in selected range"
+                                                subtitle="Try expanding the date filter to view product mix insights."
+                                                icon={(
+                                                    <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 3.055A9.001 9.001 0 1020.945 13H11V3.055z" />
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20.488 9H15V3.512A9.025 9.025 0 0120.488 9z" />
+                                                    </svg>
+                                                )}
+                                            />
                                         )}
                                     </>
                                 ) : (
-                                    <ResponsiveContainer width="100%" height="100%" debounce={300}>
-                                        <BarChart data={trendData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
-                                            <XAxis dataKey="name" axisLine={{ stroke: '#9CA3AF', strokeWidth: 1.5 }} tickLine={false} tick={{ fill: '#6B7280', fontSize: 11, fontWeight: 600 }} dy={8} />
-                                            <YAxis yAxisId="sales" axisLine={false} tickLine={false} domain={[0, 'dataMax']} tick={{ fill: '#6B7280', fontSize: 10, fontWeight: 500 }} tickFormatter={(v) => v >= 1000 ? `₱${(v/1000).toFixed(0)}k` : `₱${v}`} />
-                                            <YAxis yAxisId="orders" orientation="right" axisLine={false} tickLine={false} tick={{ fill: '#6B7280', fontSize: 10 }} allowDecimals={false} />
-                                            <Tooltip formatter={(value, name) => (name === 'sales' ? [`₱${value.toLocaleString(undefined, {minimumFractionDigits: 2})}`, 'Sales'] : [value, 'Orders'])} />
-                                            <Legend
-                                                iconType="square"
-                                                iconSize={10}
-                                                wrapperStyle={{ fontSize: '12px', fontWeight: 700, paddingTop: '8px', textTransform: 'uppercase', letterSpacing: '0.05em', cursor: 'pointer' }}
-                                                formatter={(value) => value === 'sales' ? 'SALES (₱)' : 'ORDERS'}
-                                                onClick={handleLegendClick}
-                                            />
-                                            <Bar
-                                                yAxisId="sales"
-                                                dataKey="sales"
-                                                fill="#111827"
-                                                barSize={30}
-                                                hide={hiddenBars.sales}
-                                            />
-                                            <Bar
-                                                yAxisId="orders"
-                                                dataKey="orders"
-                                                fill="#9CA3AF"
-                                                barSize={26}
-                                                hide={hiddenBars.orders}
-                                            />
-                                        </BarChart>
-                                    </ResponsiveContainer>
+                                    trendData.length > 0 ? (
+                                        <ResponsiveContainer width="100%" height="100%" debounce={300}>
+                                            <BarChart data={trendData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
+                                                <XAxis dataKey="name" axisLine={{ stroke: '#9CA3AF', strokeWidth: 1.5 }} tickLine={false} tick={{ fill: '#6B7280', fontSize: 11, fontWeight: 600 }} dy={8} />
+                                                <YAxis yAxisId="sales" axisLine={false} tickLine={false} domain={[0, 'dataMax']} tick={{ fill: '#6B7280', fontSize: 10, fontWeight: 500 }} tickFormatter={(v) => v >= 1000 ? `₱${(v/1000).toFixed(0)}k` : `₱${v}`} />
+                                                <YAxis yAxisId="orders" orientation="right" axisLine={false} tickLine={false} tick={{ fill: '#6B7280', fontSize: 10 }} allowDecimals={false} />
+                                                <Tooltip formatter={(value, name) => (name === 'sales' ? [`₱${value.toLocaleString(undefined, {minimumFractionDigits: 2})}`, 'Sales'] : [value, 'Orders'])} />
+                                                <Legend
+                                                    iconType="square"
+                                                    iconSize={10}
+                                                    wrapperStyle={{ fontSize: '12px', fontWeight: 700, paddingTop: '8px', textTransform: 'uppercase', letterSpacing: '0.05em', cursor: 'pointer' }}
+                                                    formatter={(value) => value === 'sales' ? 'SALES (₱)' : 'ORDERS'}
+                                                    onClick={handleLegendClick}
+                                                />
+                                                <Bar
+                                                    yAxisId="sales"
+                                                    dataKey="sales"
+                                                    fill="#111827"
+                                                    barSize={30}
+                                                    hide={hiddenBars.sales}
+                                                />
+                                                <Bar
+                                                    yAxisId="orders"
+                                                    dataKey="orders"
+                                                    fill="#9CA3AF"
+                                                    barSize={26}
+                                                    hide={hiddenBars.orders}
+                                                />
+                                            </BarChart>
+                                        </ResponsiveContainer>
+                                    ) : (
+                                        <EmptyAnalyticsState
+                                            title="No sales analytics in selected range"
+                                            subtitle="Adjust your date filter to generate trend and order insights."
+                                            icon={(
+                                                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 17l6-6 4 4 7-7" />
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14 8h6v6" />
+                                                </svg>
+                                            )}
+                                        />
+                                    )
                                 )}
                             </div>
                         </div>
@@ -532,10 +615,10 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
 
                     <div className="lg:col-span-3 flex flex-col gap-2 h-full min-h-0 overflow-hidden">
                         <div className="bg-white p-0 rounded-xl shadow-sm border border-gray-100 flex flex-col relative overflow-hidden flex-1 min-h-0">
-                            <div className="absolute top-0 left-0 right-0 h-1.5 bg-linear-to-r from-yellow-500 to-yellow-600"></div>
+                            <div className="absolute top-0 left-0 right-0 h-1.5 bg-linear-to-r from-gray-700 to-black"></div>
                             <div className="px-3 py-1.5 border-b border-gray-100 flex justify-between items-center shrink-0">
-                                <h3 className="text-sm font-black text-gray-900 uppercase tracking-wide flex items-center gap-2"><svg className="w-3.5 h-3.5 text-rose-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>Low Stock</h3>
-                                <span className="bg-yellow-100 text-yellow-700 text-[9px] font-bold px-1.5 py-0.5 rounded-full">{lowStockCount} Items</span>
+                                <h3 className="text-sm font-black text-gray-900 uppercase tracking-wide flex items-center gap-2"><svg className="w-3.5 h-3.5 text-gray-900" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>Low/Out of Stock</h3>
+                                <span className="bg-gray-100 text-gray-900 text-[9px] font-bold px-1.5 py-0.5 rounded-full">{lowStockCount} Items</span>
                             </div>
                             <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-1.5">
                                 {lowStockItems.length === 0 ? (

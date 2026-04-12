@@ -2,16 +2,18 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { showToast } from '../utils/toastHelper';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
+import { getAuthToken } from '../services/apiClient';
 import { createProductApi, updateProductApi } from '../services/inventoryApi';
+import { getStockStatus } from '../utils/recommendationLogic';
 
 const ProductList = () => {
     const { userRole, appSettings: settings, currentUserName, ROLES, isAdminOrAbove } = useAuth();
-    const { inventory, setInventory, logAction, logActivity, refreshBackendData } = useInventory();
+    const { inventory, setInventory, logAction, logActivity, categories: customCategories = [] } = useInventory();
 
     const [searchTerm, setSearchTerm] = useState('');
     const [statusFilter, setStatusFilter] = useState('All');
     const [categoryFilter, setCategoryFilter] = useState('All');
-    const [sortBy, setSortBy] = useState('name-asc');
+    const [sortBy, setSortBy] = useState('off');
     const [isFilterPanelOpen, setIsFilterPanelOpen] = useState(false);
     const [isArchiveModalOpen, setIsArchiveModalOpen] = useState(false);
     const [productToArchive, setProductToArchive] = useState(null);
@@ -27,7 +29,7 @@ const ProductList = () => {
     // Derived Suppliers List for Dropdown
     const suggestedSuppliers = useMemo(() => {
         const fromInventory = inventory
-            .map(p => p.supplierName)
+            .map(p => p.supplier)
             .filter(Boolean); // Get all non-empty suppliers from current items
             
         // Default popular/partner suppliers (Fallback/Suggestions)
@@ -36,8 +38,17 @@ const ProductList = () => {
         return [...new Set([...fromInventory, ...defaults])].sort();
     }, [inventory]);
 
-    // Active filter count for badge (status only; category has its own control)
-    const activeFilterCount = (statusFilter !== 'All' ? 1 : 0);
+    // Active filter count for badge (status + sort; category has its own control)
+    const activeFilterCount = (statusFilter !== 'All' ? 1 : 0) + (sortBy !== 'off' ? 1 : 0);
+
+    const deriveStatus = (item) => getStockStatus(item, settings);
+
+    const getStockBadgeClass = (item) => {
+        const status = deriveStatus(item);
+        if (status === 'Out of Stock') return 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300';
+        if (status === 'Low Stock') return 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300';
+        return 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300';
+    };
 
     // Category config with code prefixes, size/unit hints, and unit options
     const CATEGORY_CONFIG = {
@@ -68,12 +79,96 @@ const ProductList = () => {
         'Others':                      { prefix: 'OTH', sizePlaceholder: 'e.g. specify',        sizeLabel: 'Size / Variant',    sizeUnits: ['pcs', 'inches', 'mm', 'cm', 'ft', 'm', 'Liters', 'kg'] },
     };
 
-    const CATEGORY_LIST = Object.keys(CATEGORY_CONFIG);
+    const defaultCategory = useMemo(() => {
+        const firstDbCategory = customCategories.find((c) => String(c?.name || '').trim())?.name;
+        const firstInventoryCategory = inventory.find((item) => String(item?.category || '').trim())?.category;
+        return firstDbCategory || firstInventoryCategory || 'General';
+    }, [customCategories, inventory]);
+
+    // Prefer DB category settings and units when available.
+    const getCategoryConfig = (catName) => {
+        const staticConfig = CATEGORY_CONFIG[catName] || CATEGORY_CONFIG['Others'];
+        const dynamicCategory = customCategories.find((c) => c.name === catName);
+        if (!dynamicCategory) {
+            return staticConfig;
+        }
+
+        const dynamicUnits = Array.isArray(dynamicCategory.sizeUnits)
+            ? dynamicCategory.sizeUnits.map((unit) => String(unit || '').trim()).filter(Boolean)
+            : [];
+
+        return {
+            ...staticConfig,
+            sizeLabel: 'Size / Variant',
+            sizePlaceholder: staticConfig.sizePlaceholder || 'e.g. specify',
+            sizeUnits: dynamicUnits.length > 0 ? dynamicUnits : staticConfig.sizeUnits,
+        };
+    };
+    
+    // Keep category list aligned with DB + live inventory categories.
+        const CATEGORY_LIST = useMemo(() => {
+            const dynamicCats = customCategories
+                .map((c) => String(c?.name || '').trim())
+                .filter(Boolean);
+
+            if (dynamicCats.length > 0) {
+                return [...new Set(dynamicCats)].sort((a, b) => a.localeCompare(b));
+            }
+
+            return Object.keys(CATEGORY_CONFIG).sort((a, b) => a.localeCompare(b));
+        }, [customCategories]);
+
+    const CATEGORY_FIELD_RULES = {
+        default: { showBrand: false, showColor: false, showSize: true, showSupplier: true, requireBrand: false, requireColor: false, requireSize: true },
+        'Lumbers': { showBrand: false, showColor: false, showSize: true, showSupplier: true, requireBrand: false, requireColor: false, requireSize: true },
+        'Steel Bars': { showBrand: false, showColor: false, showSize: true, showSupplier: true, requireBrand: false, requireColor: false, requireSize: true },
+        'Galvanized Sheets': { showBrand: false, showColor: false, showSize: true, showSupplier: true, requireBrand: false, requireColor: false, requireSize: true },
+        'Plywoods': { showBrand: false, showColor: false, showSize: true, showSupplier: true, requireBrand: false, requireColor: false, requireSize: true },
+        'Boards': { showBrand: true, showColor: false, showSize: true, showSupplier: true, requireBrand: false, requireColor: false, requireSize: true },
+        'Steel Plates': { showBrand: false, showColor: false, showSize: true, showSupplier: true, requireBrand: false, requireColor: false, requireSize: true },
+        'Pipes': { showBrand: true, showColor: false, showSize: true, showSupplier: true, requireBrand: false, requireColor: false, requireSize: true },
+        'Paints': { showBrand: true, showColor: true, showSize: true, showSupplier: true, requireBrand: true, requireColor: true, requireSize: true },
+        'Thinners': { showBrand: true, showColor: false, showSize: true, showSupplier: true, requireBrand: true, requireColor: false, requireSize: true },
+        'Door Locksets': { showBrand: true, showColor: false, showSize: true, showSupplier: true, requireBrand: true, requireColor: false, requireSize: true },
+        'Drawer Handles': { showBrand: true, showColor: false, showSize: true, showSupplier: true, requireBrand: false, requireColor: false, requireSize: true },
+        'Padlocks': { showBrand: true, showColor: false, showSize: true, showSupplier: true, requireBrand: true, requireColor: false, requireSize: true },
+        'Adhesives & Tapes': { showBrand: true, showColor: false, showSize: true, showSupplier: true, requireBrand: false, requireColor: false, requireSize: true },
+        'Construction Tools': { showBrand: true, showColor: false, showSize: true, showSupplier: true, requireBrand: false, requireColor: false, requireSize: true },
+        'Galvanized Wires': { showBrand: false, showColor: false, showSize: true, showSupplier: true, requireBrand: false, requireColor: false, requireSize: true },
+        'Cement, Sand & Gravel': { showBrand: true, showColor: false, showSize: true, showSupplier: true, requireBrand: true, requireColor: false, requireSize: true },
+        'Bolts, Nuts, Screws & Nails': { showBrand: false, showColor: false, showSize: true, showSupplier: true, requireBrand: false, requireColor: false, requireSize: true },
+        'Door Closers & Hinges': { showBrand: true, showColor: false, showSize: true, showSupplier: true, requireBrand: false, requireColor: false, requireSize: true },
+        'Electrical & Lighting': { showBrand: true, showColor: false, showSize: true, showSupplier: true, requireBrand: false, requireColor: false, requireSize: true },
+        'Plumbing Materials': { showBrand: false, showColor: false, showSize: true, showSupplier: true, requireBrand: false, requireColor: false, requireSize: true },
+        'Pressure Tanks': { showBrand: true, showColor: false, showSize: true, showSupplier: true, requireBrand: false, requireColor: false, requireSize: true },
+        'Caster Wheels': { showBrand: false, showColor: false, showSize: true, showSupplier: true, requireBrand: false, requireColor: false, requireSize: true },
+        'Ropes & Chains': { showBrand: false, showColor: false, showSize: true, showSupplier: true, requireBrand: false, requireColor: false, requireSize: true },
+        'Screens': { showBrand: false, showColor: false, showSize: true, showSupplier: true, requireBrand: false, requireColor: false, requireSize: true },
+        'Others': { showBrand: false, showColor: false, showSize: false, showSupplier: true, requireBrand: false, requireColor: false, requireSize: false },
+    };
+
+    const getCategoryFieldRules = (categoryName) => {
+        // 1. Check if it's a dynamic category from DB
+        const dynamicCat = customCategories.find((c) => c.name === categoryName);
+        if (dynamicCat) {
+            return {
+                showBrand: dynamicCat.showBrand ?? false,
+                requireBrand: dynamicCat.requireBrand ?? false,
+                showColor: dynamicCat.showColor ?? false,
+                requireColor: dynamicCat.requireColor ?? false,
+                showSize: dynamicCat.showSize ?? true,
+                requireSize: dynamicCat.requireSize ?? true,
+                showSupplier: dynamicCat.showSupplier ?? true,
+            };
+        }
+        // 2. Check static built-in config
+        return CATEGORY_FIELD_RULES[categoryName] || CATEGORY_FIELD_RULES.default;
+    };
 
     // Helper: parse a size string back into value + unit
     const parseSizeString = (sizeStr, category) => {
         if (!sizeStr) return { value: '', unit: '' };
-        const units = (CATEGORY_CONFIG[category] || CATEGORY_CONFIG['Others']).sizeUnits || [];
+        const units = getCategoryConfig(category).sizeUnits || [];
         // Try to match the unit at the end of the string (case-insensitive)
         for (const u of units) {
             const regex = new RegExp(`^(.+?)\\s*${u.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'i');
@@ -83,13 +178,87 @@ const ProductList = () => {
         return { value: sizeStr, unit: '' };
     };
 
+    const normalizeProductNameAndSize = (rawName, category, sizeString = '') => {
+        const original = String(rawName || '').trim();
+        const normalizedSize = String(sizeString || '').trim();
+        if (!original) {
+            return { name: '', size: normalizedSize };
+        }
+
+        const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+        const cleanByExplicitSize = (nameValue, explicitSize) => {
+            const localSize = String(explicitSize || '').trim();
+            if (!localSize) return String(nameValue || '').trim();
+
+            const escapedSize = escapeRegex(localSize);
+            const trailingPatterns = [
+                new RegExp(`\\s*\\(${escapedSize}\\)\\s*$`, 'i'),
+                new RegExp(`\\s*[-–—,:|/]\\s*${escapedSize}\\s*$`, 'i'),
+                new RegExp(`\\s+${escapedSize}\\s*$`, 'i')
+            ];
+
+            let cleaned = String(nameValue || '').trim();
+            trailingPatterns.forEach((pattern) => {
+                cleaned = cleaned.replace(pattern, '').trim();
+            });
+            return cleaned;
+        };
+
+        const byKnownSize = cleanByExplicitSize(original, normalizedSize);
+        if (normalizedSize) {
+            return { name: byKnownSize || original, size: normalizedSize };
+        }
+
+        const units = (CATEGORY_CONFIG[category] || CATEGORY_CONFIG['Others']).sizeUnits || [];
+        if (units.length === 0) {
+            return { name: original, size: '' };
+        }
+
+        const unitPattern = units
+            .slice()
+            .sort((a, b) => b.length - a.length)
+            .map(escapeRegex)
+            .join('|');
+
+        const inferredPatterns = [
+            /^\s*(.*?)\s*\(([^)]+)\)\s*$/i,
+            /^\s*(.*?)\s*[-–—,:|/]\s*([^,]+?)\s*$/i,
+            new RegExp(`^\\s*(.*?[A-Za-z])\\s*((?:\\d+[A-Za-z²0-9./"]*)(?:\\s*[x×]\\s*(?:\\d+[A-Za-z²0-9./"]*)){1,3})\\s*$`, 'i'),
+            new RegExp(`^\\s*(.*?[A-Za-z])\\s*(\\d+[\\d./"]*(?:\\s*[x×]\\s*(?:\\d+[\\d./"]*)){1,3}(?:\\s*(?:${unitPattern}))?)\\s*$`, 'i'),
+            new RegExp(`^\\s*(.*?[A-Za-z])\\s*(\\d+[\\d./"]*\\s*(?:${unitPattern}))\\s*$`, 'i'),
+            new RegExp(`^\\s*(.*?)\\s+((?:\\d+[\\d./"]*)(?:\\s*[x×]\\s*(?:\\d+[\\d./"]*)){1,3}(?:\\s*(?:${unitPattern}))?)\\s*$`, 'i'),
+            new RegExp(`^\\s*(.*?)\\s+(\\d+[\\d./"]*\\s*(?:${unitPattern}))\\s*$`, 'i')
+        ];
+
+        for (const pattern of inferredPatterns) {
+            const match = original.match(pattern);
+            if (!match) continue;
+
+            const candidateName = String(match[1] || '').trim();
+            const candidateSize = String(match[2] || '').trim();
+            if (!candidateName || !candidateSize) continue;
+
+            const endsWithKnownUnit = new RegExp(`(?:${unitPattern})\\s*$`, 'i').test(candidateSize);
+            const looksLikeDimensions = /[x×]/i.test(candidateSize);
+            if (!endsWithKnownUnit && !looksLikeDimensions) continue;
+
+            const cleanedName = cleanByExplicitSize(candidateName, candidateSize) || candidateName;
+            if (cleanedName && cleanedName !== original) {
+                return { name: cleanedName, size: candidateSize };
+            }
+        }
+
+        return { name: original, size: normalizedSize };
+    };
+
     // Initial Form State
     const initialFormState = {
         code: '',
         brand: '',
         name: '',
         color: '',
-        category: 'Lumbers',
+        category: defaultCategory,
         size: '',
         sizeUnit: '',
         price: '',
@@ -97,19 +266,52 @@ const ProductList = () => {
         supplier: 'Local Supplier'
     };
     const [formData, setFormData] = useState(initialFormState);
+    const categoryFieldRules = useMemo(() => getCategoryFieldRules(formData.category), [formData.category]);
+
+    const resolveCombinedSize = (sizeValue, sizeUnitValue, category) => {
+        const trimmedSize = String(sizeValue || '').trim();
+        if (!trimmedSize) return '';
+
+        const parsed = parseSizeString(trimmedSize, category);
+        if (parsed.unit) {
+            return `${parsed.value} ${parsed.unit}`.trim();
+        }
+
+        if (sizeUnitValue) {
+            return `${trimmedSize} ${sizeUnitValue}`.trim();
+        }
+
+        return trimmedSize;
+    };
+
+    // Cleanup legacy items whenever inventory changes (e.g. after remote refresh).
+    useEffect(() => {
+        setInventory((prev) => {
+            let changed = false;
+            const next = prev.map((item) => {
+                const normalized = normalizeProductNameAndSize(item?.name, item?.category, item?.size || '');
+                if (normalized.name !== item?.name || String(normalized.size || '') !== String(item?.size || '')) {
+                    changed = true;
+                    return { ...item, name: normalized.name, size: normalized.size };
+                }
+                return item;
+            });
+            return changed ? next : prev;
+        });
+    }, [inventory, setInventory]);
 
 
 
     // Helper for logging
     const log = (action, code, details) => {
         if (logAction) {
-            logAction(action, code, details);
+            logAction(action, code, details, currentUserName);
         }
     };
 
     // Derived Data
     const generateNextCode = (category = formData.category) => {
-        const config = CATEGORY_CONFIG[category] || CATEGORY_CONFIG['Others'];
+        const config = getCategoryConfig(category);
         const prefix = config.prefix;
         const codes = inventory.map(i => i.code);
         let counter = 1;
@@ -121,8 +323,8 @@ const ProductList = () => {
         return newCode;
     };
 
-    const categories = ['All', ...Array.from(new Set(inventory.map(item => item.category).filter(Boolean))).sort((a, b) => a.localeCompare(b))];
-    const filteredProducts = useMemo(() => {
+    const categoryFilterOptions = ['All', ...Array.from(new Set(inventory.map(item => item.category).filter(Boolean))).sort((a, b) => a.localeCompare(b))];
+    const filteredProductsBase = useMemo(() => {
         return inventory.filter(item => {
             const matchesSearch = item.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
                                 item.code.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -138,24 +340,36 @@ const ProductList = () => {
             if (item.isArchived) return false;
 
             // Status filter
-            if (statusFilter !== 'All' && item.status !== statusFilter) return false;
+            const derivedStatus = deriveStatus(item);
+            if (statusFilter !== 'All' && derivedStatus !== statusFilter) return false;
 
             // Category filter
             if (categoryFilter !== 'All' && item.category !== categoryFilter) return false;
 
             return matchesSearch;
-        }).sort((a, b) => {
-            switch(sortBy) {
-                case 'name-asc': return a.name.localeCompare(b.name);
-                case 'name-desc': return b.name.localeCompare(a.name);
-                case 'price-asc': return a.price - b.price;
-                case 'price-desc': return b.price - a.price;
-                case 'stock-asc': return a.stock - b.stock;
-                case 'stock-desc': return b.stock - a.stock;
-                default: return 0;
+        });
+    }, [inventory, searchTerm, statusFilter, categoryFilter, settings]);
+
+    const filteredProducts = useMemo(() => {
+        return [...filteredProductsBase].sort((a, b) => {
+            switch (sortBy) {
+                case 'name-asc':
+                    return a.name.localeCompare(b.name);
+                case 'name-desc':
+                    return b.name.localeCompare(a.name);
+                case 'stock-asc':
+                    return a.stock - b.stock;
+                case 'stock-desc':
+                    return b.stock - a.stock;
+                case 'price-asc':
+                    return a.price - b.price;
+                case 'price-desc':
+                    return b.price - a.price;
+                default:
+                    return 0;
             }
         });
-    }, [inventory, searchTerm, statusFilter, categoryFilter, sortBy]);
+    }, [filteredProductsBase, sortBy]);
 
     // Pagination Logic
     const totalPages = Math.ceil(filteredProducts.length / itemsPerPage);
@@ -168,17 +382,16 @@ const ProductList = () => {
 
     // Check for changes (Memoized)
     const isFormModified = useMemo(() => {
-        // Disable if unit is not selected
-        if (!formData.sizeUnit) return false;
         if (modalMode === 'add') return true;
         if (modalMode === 'edit' && editingProduct) {
             const stockVal = parseInt(formData.stock);
+            const combinedSize = resolveCombinedSize(formData.size, formData.sizeUnit, formData.category);
             return (
                 formData.name !== editingProduct.name ||
                 (formData.brand || '') !== (editingProduct.brand || '') ||
                 (formData.color || '') !== (editingProduct.color || '') ||
                 formData.category !== editingProduct.category ||
-                (((formData.size || '') + (formData.sizeUnit ? ' ' + formData.sizeUnit : '')) || '') !== (editingProduct.size || '') ||
+                combinedSize !== (editingProduct.size || '') ||
                 parseFloat(formData.price) !== editingProduct.price ||
                 stockVal !== editingProduct.stock ||
                 (formData.supplier || 'Local Supplier') !== (editingProduct.supplier || 'Local Supplier')
@@ -211,13 +424,21 @@ const ProductList = () => {
             sizeUnit: parsed.unit,
             price: product.price,
             stock: product.stock,
-            supplier: product.supplierName || 'Local Supplier'
+            supplier: 'Local Supplier' // Mock data
         });
         setIsModalOpen(true);
     };
 
     const handleSave = async (e) => {
         e.preventDefault();
+
+        const rules = getCategoryFieldRules(formData.category);
+        const normalizedBrand = rules.showBrand ? String(formData.brand || '').trim() : '';
+        const normalizedColor = rules.showColor ? String(formData.color || '').trim() : '';
+        const normalizedSupplier = rules.showSupplier ? String(formData.supplier || '').trim() : '';
+        const combinedSize = rules.showSize
+            ? resolveCombinedSize(formData.size, formData.sizeUnit, formData.category)
+            : '';
         
         // Basic Validation
         if (!formData.code || !formData.name || !formData.price) {
@@ -225,15 +446,20 @@ const ProductList = () => {
             return;
         }
 
-        const calculateStatus = (stock, maxStock) => {
-             const max = maxStock ? parseInt(maxStock) : (settings?.maxStockLimit || 100);
-             const percentage = (settings?.lowStockAlert || 10) / 100;
-             const threshold = Math.floor(max * percentage);
-             
-             if (stock <= 0) return 'Out of Stock';
-             if (stock <= threshold) return 'Low Stock';
-             return 'In Stock';
-        };
+        if (rules.requireBrand && !normalizedBrand) {
+            showToast('Missing Fields', `Brand is required for ${formData.category}.`, 'error', 'product-validation');
+            return;
+        }
+
+        if (rules.requireColor && !normalizedColor) {
+            showToast('Missing Fields', `Color or variant is required for ${formData.category}.`, 'error', 'product-validation');
+            return;
+        }
+
+        if (rules.requireSize && !combinedSize) {
+            showToast('Missing Fields', `${getCategoryConfig(formData.category).sizeLabel} is required for ${formData.category}.`, 'error', 'product-validation');
+            return;
+        }
 
             const maxStockLimit = (settings && settings.maxStockLimit) ? parseInt(settings.maxStockLimit) : 100;
             if (modalMode === 'add') {
@@ -257,37 +483,33 @@ const ProductList = () => {
             // Let's simplified status based on global default for now, since visual status is less critical than the recommendation logic.
             // Or I can update `calculateStatus` to look at settings.stockRules if available.
             
-            const combinedSize = formData.size ? (formData.size + (formData.sizeUnit ? ' ' + formData.sizeUnit : '')).trim() : '';
+            const normalized = normalizeProductNameAndSize(formData.name, formData.category, combinedSize);
+            const cleanedName = normalized.name;
+            const finalSize = combinedSize || normalized.size || '';
             const newProduct = {
                 ...formData,
-                brand: formData.brand?.trim() || '',
-                color: formData.color?.trim() || '',
-                size: combinedSize,
+                name: cleanedName,
+                brand: normalizedBrand,
+                color: normalizedColor,
+                size: finalSize,
                 price: parseFloat(formData.price),
                 stock: stockVal,
-                status: stockVal > 20 ? 'In Stock' : (stockVal > 0 ? 'Low Stock' : 'Out of Stock'),
-                supplierName: formData.supplier?.trim() || 'Local Supplier'
+                supplier: normalizedSupplier || 'Local Supplier'
             };
+            newProduct.status = deriveStatus(newProduct);
             delete newProduct.sizeUnit;
 
-            try {
-                await createProductApi({
-                    name: newProduct.name,
-                    sku: newProduct.code,
-                    category: newProduct.category,
-                    brand: newProduct.brand,
-                    color: newProduct.color,
-                    size: newProduct.size,
-                    price: newProduct.price,
-                    stock: newProduct.stock,
-                    supplierName: newProduct.supplierName,
-                });
-                await refreshBackendData();
-            } catch (error) {
-                showToast('Save Failed', error.message || 'Unable to save product to server.', 'error', 'product-save-failed');
-                return;
+            let productToInsert = newProduct;
+            const token = getAuthToken();
+            if (token && navigator.onLine) {
+                try {
+                    productToInsert = await createProductApi(newProduct);
+                } catch (error) {
+                    showToast('Sync Failed', error.message || 'Saved locally only. Product was not synced to server.', 'warning', 'product-sync');
+                }
             }
 
+            setInventory(prev => [...prev, productToInsert]);
             log('CREATE', newProduct.code, `Created new product: ${newProduct.name}`);
             logActivity(currentUserName, 'Created Product', `${newProduct.code} - ${newProduct.name}`);
             showToast("Product Created", `${newProduct.name} has been added.`, "success", "product-action");
@@ -295,17 +517,19 @@ const ProductList = () => {
             // Update Logic
             const stockVal = parseInt(formData.stock);
             
-            const combinedSize = formData.size ? (formData.size + (formData.sizeUnit ? ' ' + formData.sizeUnit : '')).trim() : '';
+            const normalized = normalizeProductNameAndSize(formData.name, formData.category, combinedSize);
+            const cleanedName = normalized.name;
+            const finalSize = combinedSize || normalized.size || '';
             // Check for changes
             const hasChanges = 
-                formData.name !== editingProduct.name ||
-                (formData.brand || '') !== (editingProduct.brand || '') ||
-                (formData.color || '') !== (editingProduct.color || '') ||
+                cleanedName !== editingProduct.name ||
+                normalizedBrand !== (editingProduct.brand || '') ||
+                normalizedColor !== (editingProduct.color || '') ||
                 formData.category !== editingProduct.category ||
-                (combinedSize || '') !== (editingProduct.size || '') ||
+                (finalSize || '') !== (editingProduct.size || '') ||
                 parseFloat(formData.price) !== editingProduct.price ||
                 stockVal !== editingProduct.stock ||
-                (formData.supplier || 'Local Supplier') !== (editingProduct.supplier || 'Local Supplier');
+                (normalizedSupplier || 'Local Supplier') !== (editingProduct.supplier || 'Local Supplier');
 
             if (!hasChanges) {
                setIsModalOpen(false);
@@ -317,24 +541,35 @@ const ProductList = () => {
                 showToast('Stock Limit', `Stock capped to max (${maxStockLimit}).`, 'warning', 'stock-cap');
                 updatedStockVal = maxStockLimit;
             }
-            try {
-                await updateProductApi(editingProduct.id, {
-                    name: formData.name,
-                    sku: formData.code,
-                    category: formData.category,
-                    brand: formData.brand?.trim() || '',
-                    color: formData.color?.trim() || '',
-                    size: combinedSize,
-                    price: parseFloat(formData.price),
-                    stock: updatedStockVal,
-                    supplierName: formData.supplier?.trim() || 'Local Supplier',
-                });
-                await refreshBackendData();
-            } catch (error) {
-                showToast('Update Failed', error.message || 'Unable to update product on server.', 'error', 'product-update-failed');
-                return;
+            const { sizeUnit: _su, ...saveData } = formData;
+            const localUpdatedProduct = {
+                ...editingProduct,
+                ...saveData,
+                name: cleanedName,
+                brand: normalizedBrand,
+                color: normalizedColor,
+                size: finalSize,
+                price: parseFloat(formData.price),
+                stock: updatedStockVal,
+                supplier: normalizedSupplier || 'Local Supplier'
+            };
+            localUpdatedProduct.status = deriveStatus(localUpdatedProduct);
+
+            let mergedUpdatedProduct = localUpdatedProduct;
+            const token = getAuthToken();
+            if (token && navigator.onLine && editingProduct?.id) {
+                try {
+                    mergedUpdatedProduct = await updateProductApi(editingProduct.id, localUpdatedProduct);
+                } catch (error) {
+                    showToast('Sync Failed', error.message || 'Saved locally only. Product update was not synced to server.', 'warning', 'product-sync');
+                }
             }
 
+            setInventory(prev => prev.map(item => 
+                item.code === editingProduct.code
+                    ? { ...item, ...mergedUpdatedProduct }
+                    : item
+            ));
             log('UPDATE', editingProduct.code, `Updated product details`);
             logActivity(currentUserName, 'Updated Product', `${editingProduct.code} - ${editingProduct.name}`);
             showToast("Product Updated", "Product details have been saved.", "success", "product-action");
@@ -413,7 +648,7 @@ const ProductList = () => {
                 <div className="bg-white dark:bg-gray-900 p-3 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 flex items-center justify-between transition-colors">
                     <div>
                         <p className="text-xs text-gray-500 dark:text-gray-400 font-bold uppercase tracking-wider">Categories</p>
-                        <h2 className="text-xl font-black text-gray-900 dark:text-white">{categories.length - 1}</h2>
+                        <h2 className="text-xl font-black text-gray-900 dark:text-white">{categoryFilterOptions.length - 1}</h2>
                     </div>
                      <div className="bg-gray-900 dark:bg-gray-700 p-2 rounded-lg text-white">
                         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"></path></svg>
@@ -443,11 +678,7 @@ const ProductList = () => {
                         <div className="relative z-20 ml-2 sm:ml-2 inline-flex items-center gap-3">
                             <button 
                                 onClick={() => setIsFilterPanelOpen(!isFilterPanelOpen)}
-                                className={`px-3 py-2 rounded-xl font-bold text-xs shadow-sm flex items-center gap-1.5 transition-all border-2 ${
-                                    activeFilterCount > 0
-                                    ? 'bg-gray-900 dark:bg-gray-600 text-white border-gray-900 dark:border-gray-500'
-                                    : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-200 dark:border-gray-600 hover:border-gray-400'
-                                }`}
+                                className="px-3 py-2 rounded-xl font-bold text-xs shadow-sm flex items-center gap-1.5 transition-all border-2 bg-gray-900 dark:bg-gray-600 text-white border-gray-900 dark:border-gray-500 hover:opacity-90"
                             >
                                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"></path></svg>
                                 <span>Filter & Sort</span>
@@ -462,9 +693,9 @@ const ProductList = () => {
                                 <select
                                     value={categoryFilter}
                                     onChange={(e) => setCategoryFilter(e.target.value)}
-                                    className={`appearance-none px-3 py-1.5 rounded-xl text-sm font-bold inline-flex items-center transition-all border-2 ${categoryFilter !== 'All' ? 'bg-gray-900 dark:bg-gray-600 text-white border-gray-900 dark:border-gray-500' : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-200 dark:border-gray-600 hover:border-gray-400'}`}
+                                    className="appearance-none px-3 py-1.5 rounded-xl text-sm font-bold inline-flex items-center transition-all border-2 bg-gray-900 dark:bg-gray-600 text-white border-gray-900 dark:border-gray-500 hover:opacity-90"
                                 >
-                                    {categories.map(c => (
+                                    {categoryFilterOptions.map(c => (
                                         <option key={c} value={c}>{c}</option>
                                     ))}
                                 </select>
@@ -479,14 +710,13 @@ const ProductList = () => {
                                         <div className="text-[10px] font-black text-gray-400 dark:text-gray-500 uppercase tracking-wider">Status</div>
                                     </div>
                                     <div className="px-2 pb-2 flex flex-wrap gap-1">
-                                        {['All', 'In Stock', 'Low Stock', 'Critical', 'Out of Stock', 'Archived'].map(status => (
+                                        {['All', 'In Stock', 'Low Stock', 'Out of Stock', 'Archived'].map(status => (
                                             <button key={status} onClick={() => setStatusFilter(status)}
                                                 className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all ${
                                                     statusFilter === status
                                                     ? 'bg-gray-900 dark:bg-gray-600 text-white shadow-sm'
-                                                    : status === 'Critical' ? 'bg-rose-50 text-rose-600 hover:bg-rose-100 dark:bg-rose-900/20 dark:text-rose-400'
                                                     : status === 'Low Stock' ? 'bg-yellow-50 text-yellow-600 hover:bg-yellow-100 dark:bg-yellow-900/20 dark:text-yellow-400'
-                                                    : status === 'Out of Stock' ? 'bg-gray-100 text-gray-500 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-400'
+                                                    : status === 'Out of Stock' ? 'bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-900/20 dark:text-red-400'
                                                     : status === 'Archived' ? 'bg-orange-50 text-orange-600 hover:bg-orange-100 dark:bg-orange-900/20 dark:text-orange-400'
                                                     : 'bg-gray-50 text-gray-600 hover:bg-gray-100 dark:bg-gray-700 dark:text-gray-300'
                                                 }`}>
@@ -502,15 +732,28 @@ const ProductList = () => {
                                         <div className="text-[10px] font-black text-gray-400 dark:text-gray-500 uppercase tracking-wider">Sort By</div>
                                     </div>
                                     <div className="px-2 pb-2">
-                                        {[{key: 'name-asc', label: 'Name A→Z'}, {key: 'name-desc', label: 'Name Z→A'}, {key: 'stock-asc', label: 'Stock ↑ Lowest'}, {key: 'stock-desc', label: 'Stock ↓ Highest'}, {key: 'price-asc', label: 'Price ↑ Lowest'}, {key: 'price-desc', label: 'Price ↓ Highest'}].map(opt => (
-                                            <button key={opt.key} onClick={() => setSortBy(opt.key)}
+                                        {[
+                                            { key: 'off', label: 'OFF (No Sorting)' },
+                                            { key: 'stock-asc', label: 'Stock ↑ Lowest' },
+                                            { key: 'stock-desc', label: 'Stock ↓ Highest' },
+                                            { key: 'name-asc', label: 'Name A→Z' },
+                                            { key: 'name-desc', label: 'Name Z→A' },
+                                            { key: 'price-asc', label: 'Price ↑ Lowest' },
+                                            { key: 'price-desc', label: 'Price ↓ Highest' },
+                                        ].map(opt => (
+                                            <button
+                                                key={opt.key}
+                                                onClick={() => setSortBy(opt.key)}
                                                 className={`w-full text-left px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center justify-between ${
                                                     sortBy === opt.key
-                                                    ? 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white'
-                                                    : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50'
-                                                }`}>
+                                                        ? 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white'
+                                                        : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                                                }`}
+                                            >
                                                 <span>{opt.label}</span>
-                                                {sortBy === opt.key && <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 13l4 4L19 7"></path></svg>}
+                                                {sortBy === opt.key && (
+                                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 13l4 4L19 7"></path></svg>
+                                                )}
                                             </button>
                                         ))}
                                     </div>
@@ -520,7 +763,7 @@ const ProductList = () => {
                                         <>
                                             <div className="border-t border-gray-100 dark:border-gray-700 mx-3"></div>
                                             <div className="px-2 pt-2 pb-1">
-                                                <button onClick={() => { setStatusFilter('All'); setSortBy('name-asc'); }}
+                                                <button onClick={() => { setStatusFilter('All'); setSortBy('off'); }}
                                                     className="w-full text-center px-3 py-1.5 rounded-lg text-xs font-bold text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20 transition-all">
                                                     Clear All Filters
                                                 </button>
@@ -551,7 +794,7 @@ const ProductList = () => {
 
                  {/* Data Table */}
                 <div className="w-full md:flex-1 md:overflow-y-auto px-1 md:px-3 pb-3 overflow-x-auto">
-                    <table className="w-full text-left border-separate border-spacing-0 min-w-[700px] md:min-w-[900px]">
+                    <table className="w-full text-left border-separate border-spacing-0 table-fixed min-w-175 md:min-w-225">
                         <thead className="sticky top-0 z-10 shadow-sm">
                             <tr className="bg-gray-900 dark:bg-gray-700 text-white uppercase tracking-wider">
                                 <th className="px-4 py-2 text-[10px] font-bold text-center border border-gray-700 w-[10%]">Code</th>
@@ -559,7 +802,7 @@ const ProductList = () => {
                                 <th className="px-4 py-2 text-[10px] font-bold text-center border border-gray-700 w-[20%]">Category</th>
                                 <th className="px-4 py-2 text-[10px] font-bold text-center border border-gray-700 w-[15%]">Price</th>
                                 <th className="px-4 py-2 text-[10px] font-bold text-center border border-gray-700 w-[15%]">Stock</th>
-                                {isAdminOrAbove() && <th className="px-4 py-2 text-[10px] font-bold text-center border border-gray-700 w-[15%]">Actions</th>}
+                                {isAdminOrAbove() && <th className="px-4 py-2 text-[10px] font-bold text-center border border-gray-700 w-42.5">Actions</th>}
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-50 dark:divide-gray-700">
@@ -635,9 +878,7 @@ const ProductList = () => {
                                         <td className="px-4 py-2 whitespace-nowrap text-center border border-gray-200 dark:border-gray-700">
                                             <div className={`flex flex-col items-center ${product.isArchived ? 'opacity-30' : ''}`}>
                                                 <span className={`px-2 py-0.5 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                                                    product.stock === 0 ? 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300' : 
-                                                    product.stock < 20 ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300' : 
-                                                    'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300'
+                                                    getStockBadgeClass(product)
                                                 }`}>
                                                     {product.stock} Qty
                                                 </span>
@@ -645,22 +886,19 @@ const ProductList = () => {
                                         </td>
                                         {/* Actions */}
                                         {isAdminOrAbove() && (
-                                        <td className="px-4 py-2 whitespace-nowrap text-center text-sm font-medium border border-gray-200 dark:border-gray-700">
+                                        <td className="w-42.5 px-4 py-2 whitespace-nowrap text-center text-sm font-medium border border-gray-200 dark:border-gray-700 overflow-hidden">
                                             <div className="flex items-center justify-center gap-2">
                                                 <button 
                                                     onClick={() => handleOpenEdit(product)}
-                                                    className="group/btn relative p-1.5 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors"
+                                                    className="group/btn inline-flex items-center bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-all px-2 py-1.5"
                                                 >
                                                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
-                                                    <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover/btn:block z-20 w-max pointer-events-none">
-                                                        <span className="bg-gray-900 text-white text-xs rounded py-1 px-2 shadow-lg block">Edit</span>
-                                                        <span className="w-2 h-2 bg-gray-900 rotate-45 absolute -bottom-1 left-1/2 -translate-x-1/2 block"></span>
-                                                    </span>
+                                                    <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 text-[10px] font-bold group-hover/btn:ml-1 group-hover/btn:max-w-16 group-hover/btn:opacity-100">Edit</span>
                                                 </button>
                                                 
                                                 <button 
                                                     onClick={() => toggleArchive(product)}
-                                                    className={`group/btn relative p-1.5 rounded-lg transition-colors ${
+                                                    className={`group/btn inline-flex items-center rounded-lg transition-all px-2 py-1.5 ${
                                                         product.isArchived 
                                                         ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/40' 
                                                         : 'bg-orange-50 dark:bg-orange-900/20 text-orange-600 dark:text-orange-400 hover:bg-orange-100 dark:hover:bg-orange-900/40'
@@ -671,12 +909,7 @@ const ProductList = () => {
                                                     ) : (
                                                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path></svg>
                                                     )}
-                                                    <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover/btn:block z-20 w-max pointer-events-none">
-                                                        <span className="bg-gray-900 text-white text-xs rounded py-1 px-2 shadow-lg block">
-                                                            {product.isArchived ? "Restore" : "Archive"}
-                                                        </span>
-                                                        <span className="w-2 h-2 bg-gray-900 rotate-45 absolute -bottom-1 left-1/2 -translate-x-1/2 block"></span>
-                                                    </span>
+                                                    <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 text-[10px] font-bold group-hover/btn:ml-1 group-hover/btn:max-w-20 group-hover/btn:opacity-100">{product.isArchived ? "Restore" : "Archive"}</span>
                                                 </button>
                                             </div>
                                         </td>
@@ -785,11 +1018,16 @@ const ProductList = () => {
                                             value={formData.category}
                                             onChange={e => {
                                                 const newCat = e.target.value;
+                                                const newRules = getCategoryFieldRules(newCat);
                                                 setFormData(prev => ({
                                                     ...prev, 
                                                     category: newCat,
                                                     code: modalMode === 'add' ? generateNextCode(newCat) : prev.code,
-                                                    sizeUnit: ''
+                                                    brand: newRules.showBrand ? prev.brand : '',
+                                                    color: newRules.showColor ? prev.color : '',
+                                                    size: newRules.showSize ? prev.size : '',
+                                                    sizeUnit: newRules.showSize ? prev.sizeUnit : '',
+                                                    supplier: newRules.showSupplier ? prev.supplier : ''
                                                 }));
                                             }}
                                             className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
@@ -807,12 +1045,14 @@ const ProductList = () => {
                                 <p className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-2">Product Details</p>
                                 <div className="space-y-2.5">
                                     <div className="grid grid-cols-2 gap-2.5">
+                                        {categoryFieldRules.showBrand && (
                                         <div>
-                                            <label className="block text-[10px] font-bold text-gray-500 dark:text-gray-400 mb-1">Brand <span className="text-gray-300 dark:text-gray-600 font-normal">optional</span></label>
+                                            <label className="block text-[10px] font-bold text-gray-500 dark:text-gray-400 mb-1">Brand</label>
                                             <input 
                                                 type="text" 
                                                 value={formData.brand}
                                                 onChange={e => setFormData({...formData, brand: e.target.value})}
+                                                required={categoryFieldRules.requireBrand}
                                                 className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
                                                 placeholder={
                                                     ['Paints','Thinners'].includes(formData.category) ? 'e.g. Boysen, Davies' :
@@ -825,12 +1065,14 @@ const ProductList = () => {
                                                 }
                                             />
                                         </div>
-                                        <div>
+                                        )}
+                                        <div className={!categoryFieldRules.showBrand ? 'col-span-2' : ''}>
                                             <label className="block text-[10px] font-bold text-gray-500 dark:text-gray-400 mb-1">Product Name <span className="text-red-400">*</span></label>
                                             <input 
                                                 type="text" 
                                                 value={formData.name}
                                                 onChange={e => setFormData({...formData, name: e.target.value})}
+                                                required
                                                 className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
                                                 placeholder={
                                                     ['Paints'].includes(formData.category) ? 'e.g. Flat Latex, Enamel' :
@@ -846,13 +1088,16 @@ const ProductList = () => {
                                             />
                                         </div>
                                     </div>
+                                    {(categoryFieldRules.showColor || categoryFieldRules.showSize) && (
                                     <div className="grid grid-cols-2 gap-2.5">
-                                        <div>
-                                            <label className="block text-[10px] font-bold text-gray-500 dark:text-gray-400 mb-1">Color / Variant <span className="text-gray-300 dark:text-gray-600 font-normal">optional</span></label>
+                                        {categoryFieldRules.showColor && (
+                                        <div className={!categoryFieldRules.showSize ? 'col-span-2' : ''}>
+                                            <label className="block text-[10px] font-bold text-gray-500 dark:text-gray-400 mb-1">Color / Variant</label>
                                             <input 
                                                 type="text" 
                                                 value={formData.color}
                                                 onChange={e => setFormData({...formData, color: e.target.value})}
+                                                required={categoryFieldRules.requireColor}
                                                 className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
                                                 placeholder={
                                                     ['Paints','Thinners'].includes(formData.category) ? 'e.g. White, Red, Blue' :
@@ -864,17 +1109,20 @@ const ProductList = () => {
                                                 }
                                             />
                                         </div>
-                                        <div>
+                                        )}
+                                        {categoryFieldRules.showSize && (
+                                        <div className={!categoryFieldRules.showColor ? 'col-span-2' : ''}>
                                             <label className="block text-[10px] font-bold text-gray-500 dark:text-gray-400 mb-1">
-                                                {(CATEGORY_CONFIG[formData.category] || CATEGORY_CONFIG['Others']).sizeLabel}
+                                                {getCategoryConfig(formData.category).sizeLabel} {categoryFieldRules.requireSize && <span className="text-red-400">*</span>}
                                             </label>
                                             <div className="flex gap-1.5 items-center">
                                                 <input 
                                                     type="text" 
                                                     value={formData.size}
                                                     onChange={e => setFormData({...formData, size: e.target.value})}
+                                                    required={categoryFieldRules.requireSize}
                                                     className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
-                                                    placeholder={(CATEGORY_CONFIG[formData.category] || CATEGORY_CONFIG['Others']).sizePlaceholder}
+                                                    placeholder={getCategoryConfig(formData.category).sizePlaceholder}
                                                 />
                                                 <select
                                                     value={formData.sizeUnit}
@@ -882,14 +1130,16 @@ const ProductList = () => {
                                                     className="w-20 p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-[10px] font-bold focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white cursor-pointer"
                                                     aria-label="Size unit"
                                                 >
-                                                    <option value="">Unit</option>
-                                                    {((CATEGORY_CONFIG[formData.category] || CATEGORY_CONFIG['Others']).sizeUnits || []).map(u => (
+                                                    <option value="" disabled hidden>Unit</option>
+                                                    {(getCategoryConfig(formData.category).sizeUnits || []).map(u => (
                                                         <option key={u} value={u}>{u}</option>
                                                     ))}
                                                 </select>
                                             </div>
                                         </div>
+                                        )}
                                     </div>
+                                    )}
                                 </div>
                             </div>
 
@@ -950,6 +1200,7 @@ const ProductList = () => {
                             </div>
 
                             {/* ── Section 4: Supplier ── */}
+                            {categoryFieldRules.showSupplier && (
                             <div>
                                 <p className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-2">Supplier</p>
                                 <div className="w-full relative" ref={node => {
@@ -970,6 +1221,7 @@ const ProductList = () => {
                                                 if (!isSupplierDropdownOpen) setIsSupplierDropdownOpen(true);
                                             }}
                                             onFocus={() => setIsSupplierDropdownOpen(true)}
+                                            required
                                             className="w-full pl-3 pr-10 py-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
                                             placeholder="Select or type supplier name..."
                                         />
@@ -1004,6 +1256,7 @@ const ProductList = () => {
                                     )}
                                 </div>
                             </div>
+                            )}
 
                             {/* Submit */}
                             <button 

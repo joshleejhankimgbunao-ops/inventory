@@ -18,6 +18,32 @@ class ErrorBoundary extends React.Component {
 
   render() {
     if (this.state.hasError) {
+      const clearLegacyBrowserData = () => {
+        [
+          'appSettings',
+          'inventoryDiff',
+          'inventoryVersion',
+          'transactions',
+          'inventoryLogs',
+          'activityLogs',
+          'suppliers',
+          'customers',
+          'theme',
+          'authToken',
+        ].forEach((key) => {
+          localStorage.removeItem(key);
+        });
+
+        [
+          'userRole',
+          'userName',
+          'userAvatar',
+          'authUsername',
+        ].forEach((key) => {
+          sessionStorage.removeItem(key);
+        });
+      };
+
       return (
         <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50 p-4">
           <div className="bg-white p-8 rounded-lg shadow-xl max-w-lg w-full border border-red-100">
@@ -32,7 +58,7 @@ class ErrorBoundary extends React.Component {
             </div>
             <button
               onClick={() => {
-                  localStorage.clear();
+                  clearLegacyBrowserData();
                   window.location.href = '/';
               }}
               className="w-full bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 transition-colors"

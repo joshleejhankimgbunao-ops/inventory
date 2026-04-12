@@ -27,7 +27,7 @@ const EyeOffIcon = () => (
 );
 
 const Login = ({ onLogin }) => {
-  const { setUserRole, setCurrentUserName, setCurrentUserAvatar, applyAuthenticatedSession } = useAuth();
+  const { appSettings, setUserRole, setCurrentUserName, setCurrentUserAvatar, applyAuthenticatedSession } = useAuth();
   const { logActivity } = useInventory();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -63,14 +63,12 @@ const Login = ({ onLogin }) => {
     return () => clearInterval(interval);
   }, []);
 
-  // Retrieve public settings for display
-  const savedSettings = localStorage.getItem('appSettings');
-  const settings = savedSettings ? JSON.parse(savedSettings) : {};
-  const mapLink = settings.storeMapLink || "https://maps.app.goo.gl/9QdZo3bu4W62qTjQ8";
-  const email1 = settings.storePrimaryEmail || "tableria@yahoo.com";
-  const email2 = settings.storeSecondaryEmail || "tableria1@gmail.com";
-  const mobile = settings.contactPhone || "0917-545-2166";
-  const tel = settings.contactPhoneSecondary || "(049) 545-2166";
+  // Retrieve public settings for display from backend-hydrated auth context.
+  const mapLink = appSettings.storeMapLink || "https://maps.app.goo.gl/9QdZo3bu4W62qTjQ8";
+  const email1 = appSettings.storePrimaryEmail || "tableria@yahoo.com";
+  const email2 = appSettings.storeSecondaryEmail || "tableria1@gmail.com";
+  const mobile = appSettings.contactPhone || "0917-545-2166";
+  const tel = appSettings.contactPhoneSecondary || "(049) 545-2166";
 
   const toggleTooltip = (tooltip) => {
     if (activeTooltip === tooltip) {
@@ -106,10 +104,30 @@ const Login = ({ onLogin }) => {
     setIsLoading(true);
 
     try {
+      let response;
       if (forgotType === 'pin') {
-        await requestPinResetApi(emailValue);
+        response = await requestPinResetApi(emailValue);
       } else {
-        await requestPasswordResetApi(emailValue);
+        response = await requestPasswordResetApi(emailValue);
+      }
+
+      if (response?.resetUrl) {
+        try {
+          await navigator.clipboard.writeText(response.resetUrl);
+        } catch {
+          // Ignore clipboard failures and still show the reset link.
+        }
+
+        showToast(
+          'Reset Link Ready',
+          `Email is not configured in dev mode. Use this link: ${response.resetUrl}`,
+          'info',
+          'login-result'
+        );
+
+        setShowForgot(false);
+        setForgotEmail('');
+        return;
       }
 
       showToast(
@@ -154,34 +172,40 @@ const Login = ({ onLogin }) => {
         }
 
         const backendRole = response.user.role || ROLES.CASHIER;
+        const isSuperAdminSession = backendRole === ROLES.SUPER_ADMIN;
         const backendFullName = response.user.name || response.user.username || 'User';
+        const backendDisplayName = (response.user.displayName || '').trim();
+        const normalizedBackendFullName = String(backendFullName).trim().toLowerCase();
+        const hasGenericAdminName = normalizedBackendFullName === 'admin' || normalizedBackendFullName === 'admin user';
         const backendUsername = (response.user.username || '').trim().toLowerCase();
         let preferredDisplayName = '';
         let configuredAdminUser = '';
 
-        try {
-          const settings = JSON.parse(localStorage.getItem('appSettings') || '{}');
-          preferredDisplayName = (settings.adminDisplayName || '').trim();
-          configuredAdminUser = (settings.adminUser || '').trim().toLowerCase();
-        } catch {
-          preferredDisplayName = '';
-          configuredAdminUser = '';
-        }
+        preferredDisplayName = (appSettings.adminDisplayName || '').trim();
+        configuredAdminUser = (appSettings.adminUser || '').trim().toLowerCase();
 
         const isPrimaryAdminAccount = backendUsername && configuredAdminUser && backendUsername === configuredAdminUser;
-        const backendName = isPrimaryAdminAccount && preferredDisplayName
-          ? preferredDisplayName
-          : backendFullName;
+        const backendName = isSuperAdminSession
+          ? (preferredDisplayName || (hasGenericAdminName ? 'Super Admin' : backendFullName))
+          : (backendDisplayName || (isPrimaryAdminAccount && preferredDisplayName ? preferredDisplayName : backendFullName));
+
+        const backendAvatar = response.user.avatarUrl || response.user.avatar || '';
+        // Keep avatar undefined when unavailable so AuthContext can resolve fallback immediately.
+        const resolvedAvatar = backendAvatar || undefined;
 
         setAuthToken(response.token);
-        sessionStorage.setItem('isLoggedIn', 'true');
-        sessionStorage.setItem('authUsername', response.user.username || '');
 
         applyAuthenticatedSession({
           role: backendRole,
           name: backendName,
-          avatar: null,
+          avatar: resolvedAvatar,
+          username: response.user.username || '',
+          mustChangeCredentials: Boolean(response.user.mustChangeCredentials),
         });
+
+        if (response.user.mustChangeCredentials) {
+          showToast('Security Update Required', 'Please update your password or PIN before continuing.', 'warning', 'login-result');
+        }
 
         setEmail('');
         setPassword('');
@@ -192,6 +216,12 @@ const Login = ({ onLogin }) => {
         onLogin();
         showToast('Access Granted', `Welcome back, ${backendName}!`, 'success', 'login-result');
       } catch (error) {
+        if (needsPin) {
+          setPin('');
+          setTimeout(() => {
+            inputsRef.current?.[0]?.focus();
+          }, 0);
+        }
         setErrorShake(true);
         setCooldown(true);
         cooldownTimer.current = setTimeout(() => setCooldown(false), 2000);
@@ -208,7 +238,7 @@ const Login = ({ onLogin }) => {
     if (needsPin && pin.length === 6 && !isLoading && !cooldown) {
       handleSubmit({ preventDefault: () => {} });
     }
-  }, [pin, needsPin, isLoading, cooldown]);
+  }, [pin, needsPin, isLoading, cooldown, appSettings.adminDisplayName, appSettings.adminUser]);
    
   return (
     <div className="relative flex min-h-screen items-center justify-center bg-[#111827] p-4 overflow-hidden">
@@ -234,7 +264,7 @@ const Login = ({ onLogin }) => {
                 <img src={logo} alt="Logo" className="h-full w-full object-contain drop-shadow-sm rounded-full" />
             </div>
             <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Welcome Back</h2>
-            <p className="text-xs font-medium text-gray-500 mt-1 mb-6">Inventory & Point of Sale Management System</p>
+            <p className="text-xs font-medium text-gray-500 mt-1 mb-3">Inventory & Point of Sale Management System</p>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-3" autoComplete="off">
@@ -266,7 +296,7 @@ const Login = ({ onLogin }) => {
               </div>
             </div>
 
-            <div className="relative group">
+            <div className="relative group mt-5">
               <input
                 type={showPassword ? 'text' : 'password'}
                 id="password"
@@ -329,7 +359,14 @@ const Login = ({ onLogin }) => {
                   maxLength={1}
                   value={pin[i] || ''}
                   onChange={(e) => {
-                    const val = e.target.value.replace(/[^0-9]/g, '');
+                    const rawValue = e.target.value;
+                    if (rawValue && /[^0-9]/.test(rawValue)) {
+                      setPin('');
+                      inputsRef.current?.[0]?.focus();
+                      return;
+                    }
+
+                    const val = rawValue.replace(/[^0-9]/g, '');
                     const arr = pin.split('');
                     arr[i] = val;
                     const newPin = arr.join('');

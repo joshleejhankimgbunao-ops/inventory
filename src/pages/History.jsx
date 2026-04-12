@@ -8,19 +8,21 @@ const History = () => {
     const { userRole, currentUserName, appSettings, isAdminOrAbove, ROLES } = useAuth();
     const { 
         transactions, 
-        toggleTransactionArchive,
+        setTransactions, 
         inventoryLogs, 
-        handleResetHistory 
+        setInventoryLogs,
+        handleResetHistory,
+        isTransactionsLoading,
+        isInventoryLogsLoading,
     } = useInventory();
 
     const currentUser = currentUserName;
     const adminName = appSettings.adminDisplayName;
+    const onResetHistory = handleResetHistory;
 
     // Internal handler for archiving
-    const onArchiveTransaction = async (id) => {
-        if (typeof toggleTransactionArchive === 'function') {
-            await toggleTransactionArchive(id);
-        }
+    const onArchiveTransaction = (id) => {
+        setTransactions(prev => prev.map(t => t.id === id ? { ...t, isArchived: !t.isArchived } : t));
     };
 
     const [activeTab, setActiveTab] = useState('sales');
@@ -156,6 +158,7 @@ const History = () => {
 
     // Pagination Logic
     const currentList = activeTab === 'sales' ? filteredTransactions : filteredLogs;
+    const isCurrentTabLoading = activeTab === 'sales' ? isTransactionsLoading : isInventoryLogsLoading;
     const totalPages = Math.ceil(currentList.length / itemsPerPage);
     const indexOfLastItem = currentPage * itemsPerPage;
     const indexOfFirstItem = indexOfLastItem - itemsPerPage;
@@ -190,6 +193,9 @@ const History = () => {
     }, [currentList, sortOrder]);
 
     const currentItems = sortedItems.slice(indexOfFirstItem, indexOfLastItem);
+    const hasResults = currentList.length > 0;
+    const displayStart = hasResults ? indexOfFirstItem + 1 : 0;
+    const displayEnd = hasResults ? Math.min(indexOfLastItem, currentList.length) : 0;
     
     // Note: The original code used .slice().reverse() inside the render. 
     // I should apply reverse first then pagination to show latest items first properly.
@@ -211,11 +217,11 @@ const History = () => {
         setIsArchiveModalOpen(true);
     };
 
-    const confirmArchive = async () => {
+    const confirmArchive = () => {
         if (!transactionToArchive) return;
         
         if (onArchiveTransaction) {
-            await onArchiveTransaction(transactionToArchive.id);
+            onArchiveTransaction(transactionToArchive.id);
             if (transactionToArchive.isArchived) {
                 showToast('Restored', `Transaction ${transactionToArchive.id} restored successfully.`, 'save', 'archive-restore');
             } else {
@@ -296,7 +302,7 @@ const History = () => {
 
     return (
         <div className="h-auto md:h-[calc(100vh-80px)] flex flex-col md:overflow-hidden p-2 gap-2">
-            <div className="bg-slate-200/50 rounded-xl shadow-sm border border-gray-100 md:flex-1 flex flex-col border-t-8 border-t-[#111827] md:overflow-hidden">
+            <div className="relative bg-slate-200/50 rounded-xl shadow-sm border border-gray-100 md:flex-1 flex flex-col border-t-8 border-t-[#111827] md:overflow-hidden">
                 {/* Header + Controls */}
                 <div className="p-5 flex flex-col gap-5 md:shrink-0">
                     <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
@@ -366,20 +372,34 @@ const History = () => {
                             </div>
                         </div>
 
-                        {/* Combined Filter & Sort Button */}
-                        <div className="relative z-30">
+                        {/* Combined Filter & Sort Button + Archived Toggle */}
+                        <div className="relative z-30 w-full sm:w-auto flex items-center gap-2">
                             <button
                                 onClick={() => setIsFilterPanelOpen(!isFilterPanelOpen)}
-                                className={`px-3 py-2 rounded-xl font-bold text-xs shadow-sm flex items-center gap-1.5 transition-all border-2 ${
-                                    (dateRange !== 'all' || processedByFilter !== 'ALL' || filterAction !== 'ALL' || sortOrder !== 'desc')
-                                    ? 'bg-gray-900 text-white border-gray-900'
-                                    : 'bg-white text-gray-700 border-gray-200 hover:border-gray-400'
-                                }`}
+                                className="px-3 py-2 rounded-xl font-bold text-xs shadow-sm flex items-center gap-1.5 transition-all border-2 bg-gray-900 text-white border-gray-900 hover:opacity-90"
                             >
                                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"></path></svg>
                                 <span>Filter & Sort</span>
                                 <svg className={`w-3 h-3 transition-transform ${isFilterPanelOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
                             </button>
+
+                            {activeTab === 'sales' && (
+                                <button
+                                    type="button"
+                                    onClick={() => setShowArchived(!showArchived)}
+                                    className={`group flex items-center rounded-lg border px-2.5 py-2 transition-all duration-300 ${showArchived ? 'border-gray-300 bg-gray-100 text-gray-700 dark:border-gray-500 dark:bg-gray-700 dark:text-gray-200' : 'border-orange-200 bg-orange-50 text-orange-600 dark:border-orange-800 dark:bg-orange-900/20 dark:text-orange-400'}`}
+                                    title={showArchived ? 'Back to Active Logs' : 'View Archive'}
+                                >
+                                    {showArchived ? (
+                                        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7 7-7M3 12h13a5 5 0 010 10h-1"></path></svg>
+                                    ) : (
+                                        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path></svg>
+                                    )}
+                                    <span className={`ml-0 max-w-0 overflow-hidden whitespace-nowrap text-xs font-bold opacity-0 transition-all duration-300 group-hover:ml-2 group-hover:opacity-100 ${showArchived ? 'group-hover:max-w-40' : 'group-hover:max-w-28'}`}>
+                                        {showArchived ? 'Back to Active Logs' : 'View Archive'}
+                                    </span>
+                                </button>
+                            )}
 
                             {/* Filter Panel */}
                             {isFilterPanelOpen && (
@@ -474,27 +494,6 @@ const History = () => {
                                             </div>
                                         </>
                                     )}
-
-                                    {/* Archived Toggle (Sales tab) */}
-                                    {activeTab === 'sales' && (
-                                        <>
-                                            <div className="border-t border-gray-100 mx-3"></div>
-                                            <div className="px-2 pt-2 pb-1">
-                                                <button onClick={() => setShowArchived(!showArchived)}
-                                                    className={`w-full px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center justify-between ${
-                                                        showArchived
-                                                        ? 'bg-orange-50 text-orange-700'
-                                                        : 'text-gray-500 hover:bg-gray-50'
-                                                    }`}>
-                                                    <span className="flex items-center gap-1.5">
-                                                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path></svg>
-                                                        {showArchived ? 'Showing Archived' : 'Show Archived'}
-                                                    </span>
-                                                    {showArchived && <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 13l4 4L19 7"></path></svg>}
-                                                </button>
-                                            </div>
-                                        </>
-                                    )}
                                 </div>
                             )}
                         </div>
@@ -505,7 +504,7 @@ const History = () => {
                         )}
                 </div>
                 {/* Content Area */}
-                <div className="w-full px-4 pb-4 pt-0 overflow-x-auto md:flex-1 md:overflow-y-auto md:max-h-[calc(100vh-220px)]">
+                <div className="w-full px-4 pb-32 pt-0 overflow-x-auto md:flex-1 md:overflow-y-auto md:max-h-[calc(100vh-220px)] md:pb-28">
                         {activeTab === 'sales' ? (
                             <table className="w-full text-left border-separate border-spacing-0 table-fixed min-w-[700px]">
                                <thead className="sticky top-0 z-10 shadow-sm">
@@ -529,13 +528,15 @@ const History = () => {
                                                         </svg>
                                                     </div>
                                                     <h3 className="text-lg font-bold text-gray-900 mb-1">
-                                                        {searchTerm ? 'No transactions found' : 'No sales recorded'}
+                                                        {isCurrentTabLoading ? 'Loading sales history...' : (searchTerm ? 'No transactions found' : 'No sales recorded')}
                                                     </h3>
                                                     <p className="text-gray-500 text-sm max-w-md mx-auto">
-                                                        {searchTerm 
+                                                        {isCurrentTabLoading
+                                                            ? 'Fetching sales records from backend. Please wait a moment.'
+                                                            : (searchTerm 
                                                             ? `We couldn't find any transactions matching "${searchTerm}". Try a different ID or keyword.`
                                                             : 'Sales transactions will appear here once you process payments in the POS system.'
-                                                        }
+                                                            )}
                                                     </p>
                                                 </div>
                                             </td>
@@ -564,33 +565,27 @@ const History = () => {
                                                     <div className="flex items-center justify-center gap-1">
                                                         <button 
                                                             onClick={() => handleViewReceipt(trx)}
-                                                            className="group/btn relative inline-flex items-center justify-center gap-1 px-2 py-1 rounded-md shadow-sm hover:opacity-90 transition-all whitespace-nowrap text-[10px] font-bold bg-white text-black border border-black hover:z-50"
-                                           x             >
-                                                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
-                                                            <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover/btn:block z-[9999] w-max pointer-events-none">
-                                                                <span className="bg-gray-900 text-white text-[10px] font-medium rounded py-1 px-2 shadow-lg block border border-gray-700">View Receipt</span>
-                                                                <span className="w-2 h-2 bg-gray-900 rotate-45 absolute -bottom-1 left-1/2 -translate-x-1/2 block border-r border-b border-gray-700"></span>
-                                                            </span>
+                                                            className="group/btn inline-flex items-center rounded-lg bg-white dark:bg-gray-800 text-black dark:text-white border border-black dark:border-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 transition-all px-2 py-1.5"
+                                                        >
+                                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+                                                            <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 text-[10px] font-bold group-hover/btn:ml-1 group-hover/btn:max-w-20 group-hover/btn:opacity-100">View Receipt</span>
                                                         </button>
                                                         {onArchiveTransaction && (
                                                             <button 
                                                                 onClick={() => toggleArchive(trx)}
-                                                                className={`group/btn relative inline-flex items-center justify-center gap-1 px-2 py-1 rounded-md shadow-sm hover:opacity-90 transition-all whitespace-nowrap text-[10px] font-bold border hover:z-50 ${
+                                                                className={`group/btn inline-flex items-center rounded-lg transition-all px-2 py-1.5 ${
                                                                     trx.isArchived 
-                                                                    ? 'bg-green-50 text-green-700 border-green-200' 
-                                                                    : 'bg-orange-50 text-orange-700 border-orange-200'
+                                                                    ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/40' 
+                                                                    : 'bg-orange-50 dark:bg-orange-900/20 text-orange-600 dark:text-orange-400 hover:bg-orange-100 dark:hover:bg-orange-900/40'
                                                                 }`}
                                                             >
                                                                 {trx.isArchived ? (
-                                                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                                                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
                                                                 ) : (
-                                                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path></svg>
+                                                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path></svg>
                                                                 )}
-                                                                <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover/btn:block z-[9999] w-max pointer-events-none">
-                                                                    <span className="bg-gray-900 text-white text-[10px] font-medium rounded py-1 px-2 shadow-lg block border border-gray-700">
-                                                                        {trx.isArchived ? "Restore Transaction" : "Archive Transaction"}
-                                                                    </span>
-                                                                    <span className="w-2 h-2 bg-gray-900 rotate-45 absolute -bottom-1 left-1/2 -translate-x-1/2 block border-r border-b border-gray-700"></span>
+                                                                <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 text-[10px] font-bold group-hover/btn:ml-1 group-hover/btn:max-w-20 group-hover/btn:opacity-100">
+                                                                    {trx.isArchived ? "Restore" : "Archive"}
                                                                 </span>
                                                             </button>
                                                         )}
@@ -623,13 +618,15 @@ const History = () => {
                                                         </svg>
                                                     </div>
                                                     <h3 className="text-lg font-bold text-gray-900 mb-1">
-                                                        {searchTerm ? 'No logs found' : 'No activity recorded'}
+                                                        {isCurrentTabLoading ? 'Loading inventory logs...' : (searchTerm ? 'No logs found' : 'No activity recorded')}
                                                     </h3>
                                                     <p className="text-gray-500 text-sm max-w-md mx-auto">
-                                                        {searchTerm 
+                                                        {isCurrentTabLoading
+                                                            ? 'Fetching inventory activity from backend. Please wait a moment.'
+                                                            : (searchTerm 
                                                             ? `We couldn't find any logs matching "${searchTerm}". Try a different item code or keyword.`
                                                             : 'Inventory movements such as adding stock or sales will be logged here automatically.'
-                                                        }
+                                                            )}
                                                     </p>
                                                 </div>
                                             </td>
@@ -659,52 +656,55 @@ const History = () => {
                                 </tbody>
                             </table>
                         )}
-                            {/* Pagination Controls (bottom) */}
-                            <div className="sticky bottom-0 z-20 shrink-0 flex justify-between items-center px-5 py-3 border-t border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50">
-                                    <div className="text-xs text-gray-500 dark:text-gray-400 font-medium">
-                                        Showing <span className="font-bold text-gray-900 dark:text-white">{indexOfFirstItem + 1}</span> to <span className="font-bold text-gray-900 dark:text-white">{Math.min(indexOfLastItem, currentList.length)}</span> of <span className="font-bold text-gray-900 dark:text-white">{currentList.length}</span> results
-                                    </div>
-                                    <div className="flex items-center gap-1">
-                                        <button
-                                            onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
-                                            disabled={currentPage === 1}
-                                            className={`p-1.5 rounded-lg border border-gray-200 dark:border-gray-600 transition-all ${currentPage === 1 ? 'text-gray-300 dark:text-gray-600 cursor-not-allowed' : 'text-gray-600 dark:text-gray-300 hover:bg-white dark:hover:bg-gray-700'}`}
-                                        >
-                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7"></path></svg>
-                                        </button>
-                                        {(() => {
-                                            const maxVisible = 5;
-                                            let start = Math.max(1, currentPage - Math.floor(maxVisible / 2));
-                                            let end = start + maxVisible - 1;
-                                            if (end > totalPages) { end = totalPages; start = Math.max(1, end - maxVisible + 1); }
-                                            const pages = [];
-                                            if (start > 1) pages.push(<button key="first" onClick={() => setCurrentPage(1)} className="w-7 h-7 rounded-lg text-xs font-bold text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-all">1</button>);
-                                            if (start > 2) pages.push(<span key="dots-start" className="text-gray-400 text-xs px-0.5">...</span>);
-                                            for (let i = start; i <= end; i++) {
-                                                pages.push(
-                                                    <button key={i} onClick={() => setCurrentPage(i)}
-                                                        className={`w-7 h-7 rounded-lg text-xs font-bold transition-all ${
-                                                            currentPage === i
-                                                            ? 'bg-gray-900 dark:bg-gray-600 text-white shadow-sm'
-                                                            : 'text.gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
-                                                        }`}
-                                                    >{i}</button>
-                                                );
-                                            }
-                                            if (end < totalPages - 1) pages.push(<span key="dots-end" className="text-gray-400 text-xs px-0.5">...</span>);
-                                            if (end < totalPages) pages.push(<button key="last" onClick={() => setCurrentPage(totalPages)} className="w-7 h-7 rounded-lg text-xs font-bold text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-all">{totalPages}</button>);
-                                            return pages;
-                                        })()}
-                                        <button
-                                            onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
-                                            disabled={currentPage === totalPages}
-                                            className={`p-1.5 rounded-lg border border-gray-200 dark:border-gray-600 transition-all ${currentPage === totalPages ? 'text-gray-300 dark:text-gray-600 cursor-not-allowed' : 'text-gray-600 dark:text-gray-300 hover:bg-white dark:hover:bg-gray-700'}`}
-                                        >
-                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7"></path></svg>
-                                        </button>
-                                    </div>
-                            </div>
                         </div>
+
+                {/* Floating Pagination Controls */}
+                <div className="absolute bottom-0 left-0 right-0 z-30 w-full border-t border-gray-200 bg-slate-200/95 px-4 py-2 shadow-[0_-8px_24px_rgba(0,0,0,0.08)] backdrop-blur-sm md:px-6 md:py-3 dark:border-gray-700 dark:bg-slate-800/90">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="text-xs text-gray-500 dark:text-gray-400 font-medium">
+                            Showing <span className="font-bold text-gray-900 dark:text-white">{displayStart}</span> to <span className="font-bold text-gray-900 dark:text-white">{displayEnd}</span> of <span className="font-bold text-gray-900 dark:text-white">{currentList.length}</span> results
+                        </div>
+                        <div className="flex items-center gap-1">
+                            <button
+                                onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+                                disabled={currentPage === 1 || totalPages === 0}
+                                className={`p-1.5 rounded-lg border border-gray-200 dark:border-gray-600 transition-all ${(currentPage === 1 || totalPages === 0) ? 'text-gray-300 dark:text-gray-600 cursor-not-allowed' : 'text-gray-600 dark:text-gray-300 hover:bg-white dark:hover:bg-gray-700'}`}
+                            >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7"></path></svg>
+                            </button>
+                            {(() => {
+                                const maxVisible = 5;
+                                let start = Math.max(1, currentPage - Math.floor(maxVisible / 2));
+                                let end = start + maxVisible - 1;
+                                if (end > totalPages) { end = totalPages; start = Math.max(1, end - maxVisible + 1); }
+                                const pages = [];
+                                if (start > 1) pages.push(<button key="first" onClick={() => setCurrentPage(1)} className="w-7 h-7 rounded-lg text-xs font-bold text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-all">1</button>);
+                                if (start > 2) pages.push(<span key="dots-start" className="text-gray-400 text-xs px-0.5">...</span>);
+                                for (let i = start; i <= end; i++) {
+                                    pages.push(
+                                        <button key={i} onClick={() => setCurrentPage(i)}
+                                            className={`w-7 h-7 rounded-lg text-xs font-bold transition-all ${
+                                                currentPage === i
+                                                ? 'bg-gray-900 dark:bg-gray-600 text-white shadow-sm'
+                                                : 'text.gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
+                                            }`}
+                                        >{i}</button>
+                                    );
+                                }
+                                if (end < totalPages - 1) pages.push(<span key="dots-end" className="text-gray-400 text-xs px-0.5">...</span>);
+                                if (end < totalPages) pages.push(<button key="last" onClick={() => setCurrentPage(totalPages)} className="w-7 h-7 rounded-lg text-xs font-bold text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-all">{totalPages}</button>);
+                                return pages;
+                            })()}
+                            <button
+                                onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+                                disabled={currentPage === totalPages || totalPages === 0}
+                                className={`p-1.5 rounded-lg border border-gray-200 dark:border-gray-600 transition-all ${(currentPage === totalPages || totalPages === 0) ? 'text-gray-300 dark:text-gray-600 cursor-not-allowed' : 'text-gray-600 dark:text-gray-300 hover:bg-white dark:hover:bg-gray-700'}`}
+                            >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7"></path></svg>
+                            </button>
+                        </div>
+                    </div>
+                </div>
 
 
             </div>
@@ -713,25 +713,25 @@ const History = () => {
 
             {showReceipt && selectedTransaction && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md md:max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
-                        <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-gray-50">
-                            <h3 className="font-bold text-xl text-gray-800">Reprint Receipt</h3>
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm md:max-w-md overflow-hidden flex flex-col max-h-[90vh]">
+                        <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
+                            <h3 className="font-bold text-lg text-gray-800">Reprint Receipt</h3>
                             <button onClick={() => setShowReceipt(false)} className="text-gray-400 hover:text-gray-600">
-                                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                             </button>
                         </div>
                         
-                        <div className="flex-1 overflow-y-auto p-6 bg-white" id="history-receipt-content">
-                            <div className="text-center mb-6">
-                                <p className="text-2xl font-black uppercase tracking-wider text-gray-900 mb-1">Tableria La Confianza</p>
-                                <div className="text-xs text-gray-400 mt-2 space-y-1">
+                        <div className="flex-1 overflow-y-auto p-4 bg-white" id="history-receipt-content">
+                            <div className="text-center mb-4">
+                                <p className="text-xl font-bold text-gray-900 mb-1">Tableria La Confianza</p>
+                                <div className="text-[10px] text-gray-400 mt-1 space-y-0.5">
                                     <p>Manila S Rd, Calamba, 4027 Laguna</p>
                                     <p>Tel: (049) 545-2166 | (049) 545 1929</p>
                                     <p>Cell: 0917-545-2166</p>
                                 </div>
                             </div>
                             
-                            <div className="border-t-2 border-dashed border-gray-200 py-4 mb-4 text-sm">
+                            <div className="border-t border-dashed border-gray-200 py-2 mb-2 text-xs">
                                 <div className="flex justify-between mb-1">
                                     <span className="text-gray-500">Transaction ID:</span>
                                     <span className="font-mono font-bold text-gray-800">{selectedTransaction.id}</span>
@@ -746,53 +746,69 @@ const History = () => {
                                 </div>
                             </div>
 
-                            <table className="w-full text-sm mb-6">
+                            <table className="w-full text-xs mb-4">
                                 <thead>
                                     <tr className="border-b-2 border-gray-100">
-                                        <th className="py-2 text-left font-bold text-gray-700">Item</th>
-                                        <th className="py-2 text-center font-bold text-gray-700">Qty</th>
-                                        <th className="py-2 text-right font-bold text-gray-700">Amount</th>
+                                        <th className="py-1 text-left font-bold text-gray-700">Item</th>
+                                        <th className="py-1 text-center font-bold text-gray-700">Qty</th>
+                                        <th className="py-1 text-right font-bold text-gray-700">Amount</th>
                                     </tr>
                                 </thead>
                                 <tbody className="text-gray-600">
                                     {selectedTransaction.items.map((item, i) => (
                                         <tr key={i} className="border-b border-gray-50">
-                                            <td className="py-2">
+                                            <td className="py-1">
                                                 <div className="font-bold text-gray-800">{item.brand ? `${item.brand} ` : ''}{item.name}{item.color ? ` — ${item.color}` : ''}</div>
-                                                <div className="text-xs">{item.code}</div>
+                                                <div className="text-[10px]">{item.code}</div>
                                             </td>
-                                            <td className="py-2 text-center">{item.qty}</td>
-                                            <td className="py-2 text-right">₱{(item.price * item.qty).toFixed(2)}</td>
+                                            <td className="py-1 text-center">{item.qty}</td>
+                                            <td className="py-1 text-right">₱{(item.price * item.qty).toFixed(2)}</td>
                                         </tr>
                                     ))}
                                 </tbody>
                             </table>
 
-                            <div className="space-y-2 text-right text-sm border-t border-gray-200 pt-4">
-                                <div className="flex justify-between text-xl font-black text-gray-900 pt-2 border-t-2 border-gray-900 mt-2">
+                            <div className="space-y-1 text-right text-xs border-t border-gray-200 pt-2">
+                                <div className="flex justify-between text-base font-black text-gray-900 pt-1 border-t border-gray-900 mt-1">
                                     <span>TOTAL</span>
                                     <span>₱{selectedTransaction.total.toFixed(2)}</span>
                                 </div>
+                                <div className="flex justify-between text-gray-600 pt-1 text-xs font-bold uppercase">
+                                    <span>Cash</span>
+                                    <span>
+                                        ₱{Number.isFinite(Number(selectedTransaction.cash))
+                                            ? Number(selectedTransaction.cash).toFixed(2)
+                                            : Number(selectedTransaction.total || 0).toFixed(2)}
+                                    </span>
+                                </div>
+                                <div className="flex justify-between text-gray-500 text-xs">
+                                    <span>Change</span>
+                                    <span>
+                                        ₱{Number.isFinite(Number(selectedTransaction.change))
+                                            ? Number(selectedTransaction.change).toFixed(2)
+                                            : '0.00'}
+                                    </span>
+                                </div>
                             </div>
 
-                            <div className="mt-8 text-center text-xs text-gray-400">
-                                <p>Thank you for your business!</p>
-                                <p>Please keep this receipt for warranty purposes.</p>
+                            <div className="mt-4 text-center text-[10px] text-gray-400">
+                                <p>Thank you for choosing Tableria La Confianza Co., Inc.</p>
+                                <p>Please retain this receipt for returns and service support.</p>
                                 <p className="mt-2 font-mono">** REPRINT **</p>
                             </div>
                         </div>
 
-                        <div className="p-6 bg-gray-50 border-t border-gray-100 grid grid-cols-2 gap-4">
+                        <div className="p-4 bg-gray-50 border-t border-gray-100 grid grid-cols-2 gap-3">
                             <button 
                                 onClick={() => setShowReceipt(false)}
-                                className="py-3 px-6 rounded-xl text-sm font-black uppercase tracking-widest hover:bg-gray-200 transition-all duration-300 flex items-center justify-center gap-3 bg-gray-100 text-gray-600"
+                                className="py-2 px-4 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-gray-100 transition-all duration-300 flex items-center justify-center gap-2 shadow-sm transform hover:-translate-y-0.5 text-gray-600 bg-white"
                             >
                                 Close
                             </button>
                             <button 
                                 onClick={handlePrint}
                                 disabled={printStatus === 'printing'}
-                                className={`py-3 px-6 rounded-xl text-sm font-black uppercase tracking-widest transition-all duration-300 flex items-center justify-center gap-3 shadow-xl transform ${printStatus === 'printing' ? 'opacity-80 cursor-wait' : 'hover:opacity-90 hover:-translate-y-1'}`}
+                                className={`py-2 px-4 rounded-xl text-xs font-black uppercase tracking-widest transition-all duration-300 flex items-center justify-center gap-2 shadow-sm transform ${printStatus === 'printing' ? 'opacity-80 cursor-wait' : 'hover:opacity-90 hover:-translate-y-0.5'}`}
                                 style={{ backgroundColor: printStatus === 'success' ? '#10B981' : '#111827', color: '#ffffff', border: printStatus === 'success' ? '2px solid #10B981' : '2px solid #111827' }}
                             >
                                 {printStatus === 'printing' ? 'Printing...' : printStatus === 'success' ? 'Printed!' : 'Reprint'}

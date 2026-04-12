@@ -1,9 +1,8 @@
 import { apiRequest } from './apiClient';
+import { getStockStatus } from '../utils/recommendationLogic';
 
 const toStatus = (stock) => {
-  if (stock <= 0) return 'Out of Stock';
-  if (stock <= 10) return 'Critical';
-  return 'In Stock';
+  return getStockStatus({ stock });
 };
 
 export const mapApiProductToUi = (product) => ({
@@ -13,17 +12,47 @@ export const mapApiProductToUi = (product) => ({
   brand: product.brand || '',
   color: product.color || '',
   size: product.size || '',
+  supplier: product.supplierName || product.supplier || 'Local Supplier',
   category: product.category || 'General',
   price: Number(product.price || 0),
   stock: Number(product.stock || 0),
   status: toStatus(Number(product.stock || 0)),
   isActive: product.isActive,
-  supplierName: product.supplierName || '',
+  isArchived: product.isActive === false,
+});
+
+const mapUiProductToApi = (product) => ({
+  name: product.name,
+  sku: product.code,
+  category: product.category,
+  stock: Number(product.stock || 0),
+  price: Number(product.price || 0),
+  brand: product.brand || '',
+  color: product.color || '',
+  size: product.size || '',
+  supplierName: product.supplier || 'Local Supplier',
+  isActive: product.isArchived ? false : true,
 });
 
 export const listProductsApi = async () => {
   const products = await apiRequest('/api/products');
   return Array.isArray(products) ? products.map(mapApiProductToUi) : [];
+};
+
+export const createProductApi = async (product) => {
+  const created = await apiRequest('/api/products', {
+    method: 'POST',
+    body: JSON.stringify(mapUiProductToApi(product)),
+  });
+  return mapApiProductToUi(created);
+};
+
+export const updateProductApi = async (productId, updates) => {
+  const updated = await apiRequest(`/api/products/${productId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(mapUiProductToApi(updates)),
+  });
+  return mapApiProductToUi(updated);
 };
 
 export const updateProductStockApi = async (productId, stock) => {
@@ -33,117 +62,88 @@ export const updateProductStockApi = async (productId, stock) => {
   });
 };
 
-export const createProductApi = async (payload) => {
-  const created = await apiRequest('/api/products', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-  return mapApiProductToUi(created);
-};
-
-export const updateProductApi = async (productId, payload) => {
-  const updated = await apiRequest(`/api/products/${productId}`, {
-    method: 'PATCH',
-    body: JSON.stringify(payload),
-  });
-  return mapApiProductToUi(updated);
-};
-
-export const createSaleApi = async (items, paymentMethod = 'cash') => {
+export const createSaleApi = async (items, paymentMethod = 'cash', clientRequestId = '') => {
   return apiRequest('/api/sales', {
     method: 'POST',
-    body: JSON.stringify({ items, paymentMethod }),
+    body: JSON.stringify({ items, paymentMethod, ...(clientRequestId ? { clientRequestId } : {}) }),
   });
 };
 
-export const listSalesHistoryApi = async (includeArchived = true) => {
+export const listSalesHistoryViewApi = async (includeArchived = true) => {
   const sales = await apiRequest(`/api/sales/history-view?includeArchived=${includeArchived ? 'true' : 'false'}`);
   return Array.isArray(sales) ? sales : [];
 };
 
-export const archiveSaleApi = async (saleId) => {
-  return apiRequest(`/api/sales/${saleId}/archive`, {
-    method: 'PATCH',
-  });
-};
-
-export const restoreSaleApi = async (saleId) => {
-  return apiRequest(`/api/sales/${saleId}/restore`, {
-    method: 'PATCH',
-  });
-};
-
-const mapInventoryLog = (log) => ({
-  id: log._id,
-  date: log.createdAt,
-  action: log.action,
-  code: log.code || '',
-  details: log.details || '',
-  user: log.user || 'System',
-});
-
-const mapActivityLog = (log) => ({
-  id: log._id,
-  user: log.user || 'System',
-  action: log.action || '',
-  details: log.details || '',
-  timestamp: log.createdAt ? new Date(log.createdAt).getTime() : Date.now(),
-});
-
-export const listInventoryLogsApi = async (limit = 200) => {
-  const logs = await apiRequest(`/api/logs/inventory?limit=${limit}`);
-  return Array.isArray(logs) ? logs.map(mapInventoryLog) : [];
-};
-
-export const listActivityLogsApi = async (limit = 200) => {
-  const logs = await apiRequest(`/api/logs/activity?limit=${limit}`);
-  return Array.isArray(logs) ? logs.map(mapActivityLog) : [];
-};
-
-const mapPartnerToUi = (partner) => {
-  const kind = partner.type === 'supplier' ? 'suppliers' : 'customers';
-  return {
-    id: partner._id,
-    name: partner.name || '',
-    contact: partner.contact || '',
-    email: partner.email || '',
-    address: partner.address || '',
-    isArchived: Boolean(partner.isArchived),
-    products: kind === 'suppliers' ? (partner.note || 'General') : '',
-    type: kind === 'customers' ? (partner.note || 'Regular') : '',
-    partnerKind: kind,
-  };
-};
-
-export const listPartnersApi = async ({ type, includeArchived = true, search = '' } = {}) => {
-  const query = new URLSearchParams();
-  if (type) {
-    query.set('type', type);
-  }
-  query.set('includeArchived', includeArchived ? 'true' : 'false');
-  if (search) {
-    query.set('search', search);
+export const listActivityLogsApi = async (limit = 100) => {
+  const logs = await apiRequest(`/api/logs/activity?limit=${Number(limit) || 100}`);
+  if (!Array.isArray(logs)) {
+    return [];
   }
 
-  const endpoint = `/api/partners?${query.toString()}`;
-  const partners = await apiRequest(endpoint);
-  return Array.isArray(partners) ? partners.map(mapPartnerToUi) : [];
+  return logs.map((log) => ({
+    ...log,
+    timestamp: new Date(log.createdAt || log.timestamp || Date.now()).getTime(),
+  }));
 };
 
-export const createPartnerApi = async ({ type, name, contact, email, address, note }) => {
-  const created = await apiRequest('/api/partners', {
+export const listInventoryLogsApi = async (limit = 100) => {
+  const logs = await apiRequest(`/api/logs/inventory?limit=${Number(limit) || 100}`);
+  if (!Array.isArray(logs)) {
+    return [];
+  }
+
+  return logs.map((log) => ({
+    ...log,
+    date: log.date || log.createdAt || new Date().toISOString(),
+  }));
+};
+
+export const listCategoriesApi = async () => {
+  return apiRequest('/api/categories');
+};
+
+export const createCategoryApi = async (data) => {
+  return apiRequest('/api/categories', {
     method: 'POST',
-    body: JSON.stringify({ type, name, contact, email, address, note }),
+    body: JSON.stringify(data),
   });
-  return mapPartnerToUi(created);
+};
+
+export const updateCategoryApi = async (id, data) => {
+  return apiRequest(`/api/categories/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+};
+
+export const deleteCategoryApi = async (id) => {
+  return apiRequest(`/api/categories/${id}`, {
+    method: 'DELETE',
+  });
+};
+
+export const listPartnersApi = async ({ type, includeArchived = false, search = '' } = {}) => {
+  const params = new URLSearchParams();
+  if (type) params.set('type', type);
+  params.set('includeArchived', includeArchived ? 'true' : 'false');
+  if (search) params.set('search', search);
+
+  const result = await apiRequest(`/api/partners?${params.toString()}`);
+  return Array.isArray(result) ? result : [];
+};
+
+export const createPartnerApi = async (payload) => {
+  return apiRequest('/api/partners', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 };
 
 export const updatePartnerApi = async (id, payload) => {
-  const updated = await apiRequest(`/api/partners/${id}`, {
+  return apiRequest(`/api/partners/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
   });
-  return mapPartnerToUi(updated);
 };
 
 export const archivePartnerApi = async (id) => {

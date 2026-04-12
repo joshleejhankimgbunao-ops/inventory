@@ -10,12 +10,15 @@
     "mongo:path:7": "powershell -ExecutionPolicy Bypass -File .\\scripts\\powershell\\set-mongo-path.ps1 -Version 7.0",
     "mongo:path:82": "powershell -ExecutionPolicy Bypass -File .\\scripts\\powershell\\set-mongo-path.ps1 -Version 8.2",
     "build": "vite build",
+    "smoke:server": "npm --prefix server run smoke",
+    "verify:full": "npm run build && npm run smoke:server",
     "lint": "eslint .",
     "preview": "vite preview",
     "parse": "node tools/parse.js"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.18",
+    "framer-motion": "^12.38.0",
     "glob": "^13.0.6",
     "html-to-image": "^1.11.13",
     "jspdf": "^4.1.0",

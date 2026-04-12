@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef } from 'react';
 import toast from 'react-hot-toast';
 import { showToast } from '../utils/toastHelper';
 import { getSupplierRestockRecommendations } from '../utils/recommendationLogic';
@@ -32,40 +32,52 @@ const Partners = ({ viewOnly = false }) => {
     const [showArchived, setShowArchived] = useState(false);
     const [isArchiveModalOpen, setIsArchiveModalOpen] = useState(false);
     const [partnerToArchive, setPartnerToArchive] = useState(null);
+    const [isLoadingPartners, setIsLoadingPartners] = useState(false);
 
     // New State for Restock Recommendations
     const [isRecModalOpen, setIsRecModalOpen] = useState(false);
     const [selectedSupplierRecs, setSelectedSupplierRecs] = useState({ supplier: null, items: [] });
 
-
     const [suppliers, setSuppliers] = useState([]);
     const [customers, setCustomers] = useState([]);
 
-    const loadPartners = async () => {
+    const mapPartnerToUi = React.useCallback((partner) => {
+        const base = {
+            id: String(partner?._id || partner?.id || ''),
+            name: partner?.name || '',
+            contact: partner?.contact || '',
+            email: partner?.email || '',
+            address: partner?.address || '',
+            isArchived: Boolean(partner?.isArchived),
+        };
+
+        if ((partner?.type || '').toLowerCase() === 'supplier') {
+            return { ...base, products: partner?.note || 'General' };
+        }
+
+        return { ...base, type: partner?.note || 'Regular' };
+    }, []);
+
+    const loadPartners = React.useCallback(async () => {
+        setIsLoadingPartners(true);
         try {
-            const [remoteSuppliers, remoteCustomers] = await Promise.all([
+            const [supplierRows, customerRows] = await Promise.all([
                 listPartnersApi({ type: 'supplier', includeArchived: true }),
                 listPartnersApi({ type: 'customer', includeArchived: true }),
             ]);
-            const nextSuppliers = Array.isArray(remoteSuppliers) ? remoteSuppliers : [];
-            const nextCustomers = Array.isArray(remoteCustomers) ? remoteCustomers : [];
-            setSuppliers(nextSuppliers);
-            setCustomers(nextCustomers);
-            return { suppliers: nextSuppliers, customers: nextCustomers };
-        } catch {
-            setSuppliers([]);
-            setCustomers([]);
-            return { suppliers: [], customers: [] };
+
+            setSuppliers((supplierRows || []).map(mapPartnerToUi));
+            setCustomers((customerRows || []).map(mapPartnerToUi));
+        } catch (error) {
+            showToast('Load Failed', error.message || 'Unable to load partners from server.', 'error', 'partner-load');
+        } finally {
+            setIsLoadingPartners(false);
         }
-    };
+    }, [mapPartnerToUi]);
 
-    useEffect(() => {
-        const timer = window.setTimeout(() => {
-            loadPartners();
-        }, 0);
-
-        return () => window.clearTimeout(timer);
-    }, []);
+    React.useEffect(() => {
+        loadPartners();
+    }, [loadPartners]);
 
     const [newPartner, setNewPartner] = useState({ name: '', contact: '', email: '', address: '', note: '' });
 
@@ -81,18 +93,18 @@ const Partners = ({ viewOnly = false }) => {
 
     const handleRestore = async (id) => {
         if (isViewOnly) return;
-        const item = (activeTab === 'suppliers' ? suppliers : customers).find(i => i.id === id);
         try {
             await restorePartnerApi(id);
-            const refreshed = await loadPartners();
-            logActivity(currentUserName, 'Restored Partner', `Restored ${activeTab === 'suppliers' ? 'supplier' : 'customer'}: ${item?.name || 'Unknown'}`);
+            await loadPartners();
             showToast('Partner Restored', `${activeTab === 'suppliers' ? 'Supplier' : 'Customer'} has been restored.`, 'success', 'partner-restore');
+
+            const source = activeTab === 'suppliers' ? suppliers : customers;
+            const item = source.find((entry) => entry.id === id);
+            logActivity(currentUserName, 'Restored Partner', `Restored ${activeTab === 'suppliers' ? 'supplier' : 'customer'}: ${item?.name || 'Unknown'}`);
+        } catch (error) {
+            showToast('Restore Failed', error.message || 'Unable to restore partner.', 'error', 'partner-restore');
+        } finally {
             setOpenMenuId(null);
-            const refreshedList = activeTab === 'suppliers' ? refreshed.suppliers : refreshed.customers;
-            const remaining = refreshedList.filter(i => i.id !== id && i.isArchived).length;
-            if (remaining === 0) setShowArchived(false);
-        } catch {
-            showToast('Restore Failed', 'Unable to restore partner right now.', 'error', 'partner-restore-failed');
         }
     };
 
@@ -123,7 +135,7 @@ const Partners = ({ viewOnly = false }) => {
         };
 
         try {
-            if (isEditMode) {
+            if (isEditMode && editingId) {
                 await updatePartnerApi(editingId, payload);
                 logActivity(currentUserName, 'Updated Partner', `Updated ${activeTab === 'suppliers' ? 'supplier' : 'customer'}: ${newPartner.name}`);
                 showToast('Partner Updated', `${activeTab === 'suppliers' ? 'Supplier' : 'Customer'} details updated successfully.`, 'success', 'partner-save');
@@ -132,16 +144,15 @@ const Partners = ({ viewOnly = false }) => {
                 logActivity(currentUserName, 'Added Partner', `Added new ${activeTab === 'suppliers' ? 'supplier' : 'customer'}: ${newPartner.name}`);
                 showToast('New Partner Added', `${activeTab === 'suppliers' ? 'Supplier' : 'Customer'} has been added to the directory.`, 'success', 'partner-save');
             }
+
             await loadPartners();
-        } catch {
-            showToast('Save Failed', 'Unable to save partner right now.', 'error', 'partner-save-failed');
-            return;
+            setIsAddModalOpen(false);
+            setNewPartner({ name: '', contact: '', email: '', address: '', note: '' });
+            setIsEditMode(false);
+            setEditingId(null);
+        } catch (error) {
+            showToast('Save Failed', error.message || 'Unable to save partner.', 'error', 'partner-save');
         }
-        
-        setIsAddModalOpen(false);
-        setNewPartner({ name: '', contact: '', email: '', address: '', note: '' });
-        setIsEditMode(false);
-        setEditingId(null);
     };
 
     const handleEdit = (item) => {
@@ -175,11 +186,11 @@ const Partners = ({ viewOnly = false }) => {
             await loadPartners();
             logActivity(currentUserName, 'Archived Partner', `Archived ${activeTab === 'suppliers' ? 'supplier' : 'customer'}: ${partnerToArchive.name}`);
             showToast('Partner Archived', `${activeTab === 'suppliers' ? 'Supplier' : 'Customer'} has been archived.`, 'success', 'partner-archive');
-            setIsArchiveModalOpen(false);
-            setPartnerToArchive(null);
-        } catch {
-            showToast('Archive Failed', 'Unable to archive partner right now.', 'error', 'partner-archive-failed');
+        } catch (error) {
+            showToast('Archive Failed', error.message || 'Unable to archive partner.', 'error', 'partner-archive');
         }
+        setIsArchiveModalOpen(false);
+        setPartnerToArchive(null);
     };
 
     const handleOpenRecommendations = (supplier) => {
@@ -245,6 +256,9 @@ const Partners = ({ viewOnly = false }) => {
                                 <p className="text-gray-500 text-xs font-medium mt-0.5">
                                     {isViewOnly ? 'View suppliers and regular customers (read-only)' : 'Manage your suppliers and regular customers'}
                                 </p>
+                                {isLoadingPartners && (
+                                    <p className="text-[10px] text-gray-500 font-semibold mt-1">Syncing partner data from server...</p>
+                                )}
                             </div>
                         </div>
                         {!isViewOnly && (
@@ -271,10 +285,10 @@ const Partners = ({ viewOnly = false }) => {
 
                     {/* Tabs & Search */}
                     <div className="flex flex-col sm:flex-row justify-between items-center gap-4 mb-6">
-                        <div className="flex bg-gray-100 p-1 rounded-lg w-full sm:w-auto">
+                        <div className="inline-flex rounded-lg bg-gray-100 p-1 w-full sm:w-auto">
                             <button 
                                 onClick={() => setActiveTab('suppliers')}
-                                className={`flex-1 sm:flex-none px-6 py-2 rounded-md text-sm font-bold transition-all ${
+                                className={`flex-1 sm:flex-none px-4 py-2 rounded-md text-xs font-bold transition-all ${
                                     activeTab === 'suppliers' 
                                         ? 'text-white shadow-sm' 
                                         : 'text-gray-500 hover:text-gray-900'
@@ -285,7 +299,7 @@ const Partners = ({ viewOnly = false }) => {
                             </button>
                             <button 
                                 onClick={() => setActiveTab('customers')}
-                                className={`flex-1 sm:flex-none px-6 py-2 rounded-md text-sm font-bold transition-all ${
+                                className={`flex-1 sm:flex-none px-4 py-2 rounded-md text-xs font-bold transition-all ${
                                     activeTab === 'customers' 
                                         ? 'text-white shadow-sm' 
                                         : 'text-gray-500 hover:text-gray-900'
@@ -299,14 +313,23 @@ const Partners = ({ viewOnly = false }) => {
                             {!isViewOnly && (
                                 <button
                                     onClick={() => setShowArchived(!showArchived)}
-                                    className={`shrink-0 px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all border ${
+                                    title={showArchived ? `Back to Active ${activeTab === 'suppliers' ? 'Suppliers' : 'Customers'}` : `View Archived ${activeTab === 'suppliers' ? 'Suppliers' : 'Customers'}`}
+                                    className={`group/btn shrink-0 px-2.5 py-2 rounded-xl text-xs font-bold inline-flex items-center transition-all border ${
                                         showArchived 
-                                            ? 'bg-orange-50 text-orange-600 border-orange-200 hover:bg-orange-100' 
-                                            : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100 hover:text-gray-700'
+                                            ? 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100 hover:text-gray-700' 
+                                            : 'bg-orange-50 text-orange-600 border-orange-200 hover:bg-orange-100'
                                     }`}
                                 >
-                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path></svg>
-                                    {showArchived ? 'Back to Records' : `View Archive${archivedCount > 0 ? ` (${archivedCount})` : ''}`}
+                                    {showArchived ? (
+                                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7 7-7M3 12h13a5 5 0 010 10h-1"></path></svg>
+                                    ) : (
+                                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path></svg>
+                                    )}
+                                    <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 group-hover/btn:ml-2 group-hover/btn:max-w-40 group-hover/btn:opacity-100">
+                                        {showArchived
+                                            ? `Back to Active ${activeTab === 'suppliers' ? 'Suppliers' : 'Customers'}`
+                                            : `View Archived ${activeTab === 'suppliers' ? 'Suppliers' : 'Customers'}${archivedCount > 0 ? ` (${archivedCount})` : ''}`}
+                                    </span>
                                 </button>
                             )}
                             <div className="relative flex-1 sm:w-56 group">
@@ -501,7 +524,7 @@ const Partners = ({ viewOnly = false }) => {
                                             required 
                                             type="text"
                                             inputMode="numeric"
-                                            placeholder="09171234567"
+                                            placeholder="Enter 11-digit contact number"
                                             className="w-full bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-gray-900 outline-none transition-all" 
                                             value={newPartner.contact}
                                             onChange={e => {

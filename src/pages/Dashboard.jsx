@@ -1,10 +1,13 @@
 import React, { useState, useEffect, Suspense, lazy } from 'react';
 import { toast } from 'react-hot-toast';
 import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
+import { AnimatePresence } from 'framer-motion';
+import AnimatedPage from '../components/AnimatedPage';
 import { getLowStockThreshold } from '../utils/recommendationLogic';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
 import { ROLES } from '../constants/roles';
+import { listUsersApi, updateMyPreferencesApi } from '../services/authApi';
 // Dashboard Component for Inventory System
 import logo from '../assets/logo.png';
 import DateTimeDisplay from '../components/DateTimeDisplay';
@@ -43,9 +46,16 @@ const prefetchPages = () => {
 
 
 
-const RequireAdmin = ({ userRole, children }) => {
+const RequireSuperAdmin = ({ userRole, children }) => {
     // only the single super admin may pass this guard
     if (userRole !== ROLES.SUPER_ADMIN) {
+        return <Navigate to="/dashboard" replace />;
+    }
+    return children;
+};
+
+const RequireAdminOrAbove = ({ userRole, children }) => {
+    if (userRole !== ROLES.SUPER_ADMIN && userRole !== ROLES.ADMIN) {
         return <Navigate to="/dashboard" replace />;
     }
     return children;
@@ -79,7 +89,7 @@ const Dashboard = ({ onLogout }) => {
       // We don't need to manually set activeMenu because it is derived from location.pathname
   };
 
-  const { userRole, appSettings, updateSettings, currentUserName, isDarkMode, setIsDarkMode, isAdminOrAbove, roleNames, currentUserAvatar } = useAuth();
+    const { userRole, appSettings, updateSettings, currentUserName, isDarkMode, setIsDarkMode, isAdminOrAbove, roleNames, currentUserAvatar, currentAuthUsername, mustChangeCredentials } = useAuth();
   // we rely on the context's currentUserAvatar which already handles
   // super‑admin/appSettings and any avatar stored on a user record.
   const { 
@@ -88,6 +98,34 @@ const Dashboard = ({ onLogout }) => {
     renameUserReferences
   } = useInventory();
 
+    const [backendUsers, setBackendUsers] = useState([]);
+
+    const ACTIVITY_LOG_ONE_TIME_RESET_KEY = 'activityLogOneTimeResetDone';
+
+    useEffect(() => {
+        let isMounted = true;
+
+        const loadUsers = async () => {
+            try {
+                const users = await listUsersApi();
+                if (!isMounted) {
+                    return;
+                }
+                setBackendUsers(Array.isArray(users) ? users : []);
+            } catch {
+                if (isMounted) {
+                    setBackendUsers([]);
+                }
+            }
+        };
+
+        loadUsers();
+
+        return () => {
+            isMounted = false;
+        };
+    }, []);
+
   const handleUpdateSettings = (newSettings) => {
     if (newSettings.adminDisplayName !== appSettings.adminDisplayName) {
         renameUserReferences(appSettings.adminDisplayName, newSettings.adminDisplayName);
@@ -95,10 +133,6 @@ const Dashboard = ({ onLogout }) => {
     updateSettings(newSettings);
   };
   
-  // Track if user has viewed activity logs to clear notification badge
-  const [hasViewedLogs, setHasViewedLogs] = useState(() => {
-    return localStorage.getItem('hasViewedLogs') === 'true';
-  });
   
   // Request Desktop Notification Permission (User-Interactive Toast)
   useEffect(() => {
@@ -112,6 +146,16 @@ const Dashboard = ({ onLogout }) => {
       return () => clearTimeout(timer);
     }
   }, []);
+
+    useEffect(() => {
+        if (!mustChangeCredentials) {
+            return;
+        }
+
+        if (!location.pathname.startsWith('/profile')) {
+            navigate('/profile?section=security&required=1', { replace: true });
+        }
+    }, [mustChangeCredentials, location.pathname, navigate]);
 
   useEffect(() => {
     // Check if Notification API is available in the browser first
@@ -158,14 +202,13 @@ const Dashboard = ({ onLogout }) => {
 
 
 
-  // Trigger Notification when Critical Items are found
+  // Trigger notification when low/out-of-stock items are found
   useEffect(() => {
-      // Check for critical items based on app settings or default 0
-      const criticalItems = processedInventory.filter(item => item.status === 'Critical');
+      const attentionItems = processedInventory.filter((item) => item.status === 'Low Stock' || item.status === 'Out of Stock');
       
-      if (criticalItems.length > 0) {
+      if (attentionItems.length > 0) {
           // Unique key for session debounce
-          const notifiedKey = `notified_critical_${criticalItems.length}_${new Date().getHours()}`;
+          const notifiedKey = `notified_lowstock_${attentionItems.length}_${new Date().getHours()}`;
           
           if (!sessionStorage.getItem(notifiedKey)) {
               
@@ -183,7 +226,7 @@ const Dashboard = ({ onLogout }) => {
                     <div className="flex-1 min-w-0">
                         <p className="text-sm font-bold text-white truncate">Low Stock Alert</p>
                         <p className="text-xs text-gray-400">
-                            <span className="font-bold text-red-400">{criticalItems.length} {criticalItems.length === 1 ? 'item' : 'items'}</span> critical.
+                            <span className="font-bold text-red-400">{attentionItems.length} {attentionItems.length === 1 ? 'item' : 'items'}</span> low or out of stock.
                         </p>
                     </div>
 
@@ -206,7 +249,7 @@ const Dashboard = ({ onLogout }) => {
               // Safe check for Notification API existence
               if (appSettings.desktopNotifications && 'Notification' in window && window.Notification && window.Notification.permission === 'granted') {
                  new window.Notification("Inventory Alert!", {
-                    body: `You have ${criticalItems.length} ${criticalItems.length === 1 ? 'item that is' : 'items that are'} low on stock.`,
+                          body: `You have ${attentionItems.length} ${attentionItems.length === 1 ? 'item that is' : 'items that are'} low or out of stock.`,
                     icon: logo,
                     requireInteraction: true
                  });
@@ -227,6 +270,253 @@ const Dashboard = ({ onLogout }) => {
   const [actLogSearch, setActLogSearch] = useState('');
   const [actLogUserFilter, setActLogUserFilter] = useState('All');
   const [actLogActionFilter, setActLogActionFilter] = useState('All');
+    const ACTIVITY_LOG_BATCH_SIZE = 15;
+    const ACTIVITY_LOG_LOAD_DELAY_MS = 450;
+    const [activityLogVisibleCount, setActivityLogVisibleCount] = useState(ACTIVITY_LOG_BATCH_SIZE);
+    const [isActivityLogLoadingMore, setIsActivityLogLoadingMore] = useState(false);
+    const activityLogScrollContainerRef = React.useRef(null);
+    const activityLogLoadMoreTriggerRef = React.useRef(null);
+    const activityLogLoadTimerRef = React.useRef(null);
+    const isActivityLogLoadInFlightRef = React.useRef(false);
+
+    useEffect(() => {
+        if (sessionStorage.getItem(ACTIVITY_LOG_ONE_TIME_RESET_KEY) === 'true') {
+            return;
+        }
+
+        setActivityLogs([]);
+        sessionStorage.setItem(ACTIVITY_LOG_ONE_TIME_RESET_KEY, 'true');
+    }, [setActivityLogs]);
+
+    const currentBackendUser = React.useMemo(() => {
+        if (!Array.isArray(backendUsers) || backendUsers.length === 0) {
+            return null;
+        }
+
+        if (currentAuthUsername) {
+            const exactMatch = backendUsers.find((user) => {
+                const username = String(user?.username || '').trim().toLowerCase();
+                return username === currentAuthUsername;
+            });
+
+            if (exactMatch) {
+                return exactMatch;
+            }
+        }
+
+        return backendUsers.find((user) => {
+            const name = String(user?.name || '').trim();
+            return name === currentUserName;
+        }) || null;
+    }, [backendUsers, currentAuthUsername, currentUserName]);
+
+    const selectableActivityUsers = React.useMemo(() => {
+        const normalizeName = (value) => String(value || '').trim().toLowerCase();
+        const namesFromLogs = [...new Set(activityLogs.map((l) => (l?.user || '').trim()).filter(Boolean))];
+        const currentUsers = Array.isArray(backendUsers) ? backendUsers : [];
+
+        const existingNameSet = new Set(currentUsers.map((u) => normalizeName(u?.name)).filter(Boolean));
+        const superAdminNames = currentUsers
+            .filter((u) => normalizeName(u?.role) === 'superadmin')
+            .map((u) => String(u?.name || '').trim())
+            .filter(Boolean);
+        const configuredAdminName = String(appSettings?.adminDisplayName || '').trim();
+        const preferredSuperAdminName =
+            superAdminNames.find((name) => normalizeName(name) !== 'admin user')
+            || (normalizeName(currentUserName) !== 'admin user' ? String(currentUserName || '').trim() : '')
+            || (normalizeName(configuredAdminName) !== 'admin user' ? configuredAdminName : '');
+
+        const normalizedSuperAdminNames = superAdminNames.map((name) => {
+            if (normalizeName(name) === 'admin user' && preferredSuperAdminName) {
+                return preferredSuperAdminName;
+            }
+            return name;
+        });
+
+        const filteredLogNames = namesFromLogs
+            .map((name) => {
+                if (normalizeName(name) === 'admin user' && preferredSuperAdminName) {
+                    return preferredSuperAdminName;
+                }
+                return name;
+            })
+            .filter((name) => {
+                const normalized = normalizeName(name);
+                return existingNameSet.has(normalized);
+            })
+            .sort((a, b) => a.localeCompare(b));
+
+        return [...new Set([...normalizedSuperAdminNames, ...filteredLogNames])]
+            .filter((name) => normalizeName(name) !== 'admin user')
+            .sort((a, b) => a.localeCompare(b));
+    }, [activityLogs, currentUserName, appSettings?.adminDisplayName, backendUsers]);
+
+    useEffect(() => {
+        if (actLogUserFilter === 'All') return;
+        if (!selectableActivityUsers.includes(actLogUserFilter)) {
+            setActLogUserFilter('All');
+        }
+    }, [actLogUserFilter, selectableActivityUsers]);
+
+    const canViewAllActivityLogs = isAdminOrAbove();
+
+    const filteredActivityLogs = React.useMemo(() => {
+        let visibleLogs = canViewAllActivityLogs
+            ? [...activityLogs].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
+            : activityLogs
+                .filter((log) => log.user === currentUserName)
+                .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+        if (actLogUserFilter !== 'All') {
+            visibleLogs = visibleLogs.filter((log) => log.user === actLogUserFilter);
+        }
+
+        if (actLogActionFilter !== 'All') {
+            const actionMap = {
+                login: ['logged in', 'logged out'],
+                product: ['created product', 'updated product', 'archived product', 'restored product'],
+                stock: ['stock in', 'stock out'],
+                sale: ['processed sale'],
+                user: ['created user', 'updated user', 'archived user', 'restored user'],
+                partner: ['added partner', 'updated partner', 'archived partner'],
+                settings: ['updated settings'],
+            };
+            const keywords = actionMap[actLogActionFilter] || [];
+            visibleLogs = visibleLogs.filter((log) => {
+                const action = (log.action || '').toLowerCase();
+                return keywords.some((keyword) => action.includes(keyword));
+            });
+        }
+
+        if (actLogSearch.trim()) {
+            const query = actLogSearch.toLowerCase();
+            visibleLogs = visibleLogs.filter((log) => (
+                (log.user || '').toLowerCase().includes(query)
+                || (log.action || '').toLowerCase().includes(query)
+                || (log.details || '').toLowerCase().includes(query)
+            ));
+        }
+
+        return visibleLogs;
+    }, [activityLogs, canViewAllActivityLogs, currentUserName, actLogUserFilter, actLogActionFilter, actLogSearch]);
+
+    const visibleActivityLogs = React.useMemo(() => {
+        return filteredActivityLogs.slice(0, activityLogVisibleCount);
+    }, [filteredActivityLogs, activityLogVisibleCount]);
+
+    const hasMoreActivityLogs = visibleActivityLogs.length < filteredActivityLogs.length;
+
+    const formatActivityLogExact = React.useCallback((ts) => {
+        if (!ts) return '';
+        const date = new Date(ts);
+        if (Number.isNaN(date.getTime())) return ts;
+        return date.toLocaleString(undefined, {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+        });
+    }, []);
+
+    const getActivityLogDateGroup = React.useCallback((ts) => {
+        if (!ts) return 'Unknown';
+        const now = new Date();
+        const date = new Date(ts);
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const logDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+        const diffDays = Math.floor((today - logDay) / 86400000);
+
+        if (diffDays === 0) return 'Today';
+        if (diffDays === 1) return 'Yesterday';
+        if (diffDays < 7) return 'This Week';
+        return date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+    }, []);
+
+    const getActivityLogActionStyle = React.useCallback((action) => {
+        const normalized = (action || '').toLowerCase();
+        if (normalized.includes('logged in')) return { bg: 'bg-emerald-50', ring: 'ring-emerald-500/20', text: 'text-emerald-600', icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1" /> };
+        if (normalized.includes('logged out')) return { bg: 'bg-orange-50', ring: 'ring-orange-500/20', text: 'text-orange-600', icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /> };
+        if (normalized.includes('created') || normalized.includes('added')) return { bg: 'bg-blue-50', ring: 'ring-blue-500/20', text: 'text-blue-600', icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4" /> };
+        if (normalized.includes('updated') || normalized.includes('settings')) return { bg: 'bg-purple-50', ring: 'ring-purple-500/20', text: 'text-purple-600', icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /> };
+        if (normalized.includes('archived')) return { bg: 'bg-red-50', ring: 'ring-red-500/20', text: 'text-red-600', icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" /> };
+        if (normalized.includes('restored')) return { bg: 'bg-teal-50', ring: 'ring-teal-500/20', text: 'text-teal-600', icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /> };
+        if (normalized.includes('sale') || normalized.includes('processed')) return { bg: 'bg-amber-50', ring: 'ring-amber-500/20', text: 'text-amber-600', icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" /> };
+        if (normalized.includes('stock in')) return { bg: 'bg-green-50', ring: 'ring-green-500/20', text: 'text-green-600', icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 11l5-5m0 0l5 5m-5-5v12" /> };
+        if (normalized.includes('stock out')) return { bg: 'bg-rose-50', ring: 'ring-rose-500/20', text: 'text-rose-600', icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 13l-5 5m0 0l-5-5m5 5V6" /> };
+        return { bg: 'bg-gray-50', ring: 'ring-gray-500/20', text: 'text-gray-500', icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /> };
+    }, []);
+
+    const resetActivityLogLazyLoad = React.useCallback(() => {
+        if (activityLogLoadTimerRef.current) {
+            window.clearTimeout(activityLogLoadTimerRef.current);
+            activityLogLoadTimerRef.current = null;
+        }
+        isActivityLogLoadInFlightRef.current = false;
+        setIsActivityLogLoadingMore(false);
+        setActivityLogVisibleCount(ACTIVITY_LOG_BATCH_SIZE);
+    }, [ACTIVITY_LOG_BATCH_SIZE]);
+
+    const loadMoreActivityLogs = React.useCallback(() => {
+        if (!hasMoreActivityLogs || isActivityLogLoadInFlightRef.current) {
+            return;
+        }
+
+        isActivityLogLoadInFlightRef.current = true;
+        setIsActivityLogLoadingMore(true);
+
+        activityLogLoadTimerRef.current = window.setTimeout(() => {
+            setActivityLogVisibleCount((prev) => Math.min(prev + ACTIVITY_LOG_BATCH_SIZE, filteredActivityLogs.length));
+            setIsActivityLogLoadingMore(false);
+            isActivityLogLoadInFlightRef.current = false;
+            activityLogLoadTimerRef.current = null;
+        }, ACTIVITY_LOG_LOAD_DELAY_MS);
+    }, [hasMoreActivityLogs, ACTIVITY_LOG_BATCH_SIZE, filteredActivityLogs.length]);
+
+    useEffect(() => {
+        if (!isActivityLogOpen) {
+            return;
+        }
+        resetActivityLogLazyLoad();
+    }, [isActivityLogOpen, resetActivityLogLazyLoad, actLogSearch, actLogUserFilter, actLogActionFilter]);
+
+    useEffect(() => {
+        if (!isActivityLogOpen || !hasMoreActivityLogs) {
+            return;
+        }
+
+        const root = activityLogScrollContainerRef.current;
+        const target = activityLogLoadMoreTriggerRef.current;
+        if (!root || !target) {
+            return;
+        }
+
+        const observer = new IntersectionObserver(
+            (entries) => {
+                const [entry] = entries;
+                if (entry?.isIntersecting) {
+                    loadMoreActivityLogs();
+                }
+            },
+            {
+                root,
+                rootMargin: '0px 0px 180px 0px',
+                threshold: 0.01,
+            }
+        );
+
+        observer.observe(target);
+        return () => observer.disconnect();
+    }, [isActivityLogOpen, hasMoreActivityLogs, loadMoreActivityLogs, visibleActivityLogs.length]);
+
+    useEffect(() => {
+        return () => {
+            if (activityLogLoadTimerRef.current) {
+                window.clearTimeout(activityLogLoadTimerRef.current);
+            }
+        };
+    }, []);
   
   // When activity log is opened, mark notifications as read
   const handleOpenActivityLog = () => {
@@ -235,32 +525,39 @@ const Dashboard = ({ onLogout }) => {
     setActLogSearch('');
     setActLogUserFilter('All');
     setActLogActionFilter('All');
-    
-    // Calculate current relevant logs count and save as "read" count
-    const relevantLogsCount = activityLogs.filter(log => log.user !== currentUserName).length;
-    localStorage.setItem('readLogCount', relevantLogsCount.toString());
-    
-    // Also trigger UI update
-    setHasViewedLogs(true); // Using this as a trigger to re-render, though we'll use the count for logic
+        resetActivityLogLazyLoad();
   };
 
-  // Get read count on init
-  const [readLogCount, setReadLogCount] = useState(() => {
-     return parseInt(localStorage.getItem('readLogCount') || '0');
-  });
+    const [readLogCount, setReadLogCount] = useState(0);
+
+        useEffect(() => {
+                const nextReadCount = Number(currentBackendUser?.preferences?.readLogCount || 0);
+                setReadLogCount(Number.isFinite(nextReadCount) && nextReadCount >= 0 ? nextReadCount : 0);
+        }, [currentBackendUser?.preferences?.readLogCount]);
+
+    const relevantLogs = React.useMemo(() => {
+        return activityLogs.filter(log => log.user !== currentUserName);
+    }, [activityLogs, currentUserName]);
+
+    const unreadActivityCount = Math.max(0, relevantLogs.length - readLogCount);
+    const unreadActivityLabel = unreadActivityCount > 99 ? '99+' : String(unreadActivityCount);
 
   // Effect to update readLogCount when modal opens
   useEffect(() => {
      if (isActivityLogOpen) {
         const relevantLogsCount = activityLogs.filter(log => log.user !== currentUserName).length;
         setReadLogCount(relevantLogsCount);
-        localStorage.setItem('readLogCount', relevantLogsCount.toString());
+        updateMyPreferencesApi({
+            hasViewedLogs: true,
+            readLogCount: relevantLogsCount,
+        }).catch(() => {
+            // Keep UI state updated even when backend preference write fails.
+        });
      }
   }, [isActivityLogOpen, activityLogs, currentUserName]);
 
   // Desktop Hover State
   const [isSidebarHovered, setIsSidebarHovered] = useState(false);
-  const hoverTimeoutRef = React.useRef(null);
 
   // Mobile Menu State
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -299,16 +596,12 @@ const Dashboard = ({ onLogout }) => {
   const handleMouseEnter = () => {
     // Only apply hover effect on desktop
     if (window.innerWidth >= 768) {
-      if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
-      hoverTimeoutRef.current = setTimeout(() => {
-        setIsSidebarHovered(true);
-      }, 150);
+            setIsSidebarHovered(true);
     }
   };
 
   const handleMouseLeave = () => {
     if (window.innerWidth >= 768) {
-      if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
       setIsSidebarHovered(false);
     }
   };
@@ -400,7 +693,7 @@ const Dashboard = ({ onLogout }) => {
 
     if (userRole === ROLES.ADMIN) {
        // admin may now also use the point‑of‑sale module and view transaction history
-         const allowed = ['Dashboard','Recommendation','Inventory','Product List','Reports','Partners','Point of Sale','History Logs','Profile'];
+                 const allowed = ['Dashboard','Recommendation','Inventory','Product List','Reports','Partners','Point of Sale','History Logs','Settings','Profile'];
        return allItems.filter(item => allowed.includes(item.name));
     }
 
@@ -409,6 +702,7 @@ const Dashboard = ({ onLogout }) => {
   }, [userRole]);
 
   const isFixedLayout = ['Point of Sale', 'History Logs', 'Inventory', 'Dashboard', 'Recommendation', 'Partners'].includes(activeMenu);
+    const isSidebarExpanded = isSidebarHovered || isMobileMenuOpen;
 
   return (
     <div className="flex h-screen bg-gray-50 flex-col overflow-hidden">
@@ -489,7 +783,7 @@ const Dashboard = ({ onLogout }) => {
                                 className="flex-1 px-2.5 py-1.5 rounded-xl text-[11px] font-bold bg-white border border-gray-200 focus:border-gray-900 focus:outline-none cursor-pointer transition-all"
                             >
                                 <option value="All">All Users</option>
-                                {[...new Set(activityLogs.map(l => l.user))].sort().map(u => (
+                                {selectableActivityUsers.map(u => (
                                     <option key={u} value={u}>{u}</option>
                                 ))}
                             </select>
@@ -539,116 +833,25 @@ const Dashboard = ({ onLogout }) => {
                     )}
                 </div>
                 {/* Log Content */}
-                <div className="overflow-y-auto flex-1">
-                    {(() => {
-                        // Admin sees ALL logs. Cashier sees ONLY their own logs.
-                        let visibleLogs = isAdminOrAbove() 
-                            ? [...activityLogs].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
-                            : activityLogs.filter(log => log.user === currentUserName).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-
-                        // Apply user filter
-                        if (actLogUserFilter !== 'All') {
-                            visibleLogs = visibleLogs.filter(log => log.user === actLogUserFilter);
-                        }
-
-                        // Apply action type filter
-                        if (actLogActionFilter !== 'All') {
-                            const actionMap = {
-                                login: ['logged in', 'logged out'],
-                                product: ['created product', 'updated product', 'archived product', 'restored product'],
-                                stock: ['stock in', 'stock out'],
-                                sale: ['processed sale'],
-                                user: ['created user', 'updated user', 'archived user', 'restored user'],
-                                partner: ['added partner', 'updated partner', 'archived partner'],
-                                settings: ['updated settings']
-                            };
-                            const keywords = actionMap[actLogActionFilter] || [];
-                            visibleLogs = visibleLogs.filter(log => {
-                                const a = (log.action || '').toLowerCase();
-                                return keywords.some(k => a.includes(k));
-                            });
-                        }
-
-                        // Apply search
-                        if (actLogSearch.trim()) {
-                            const q = actLogSearch.toLowerCase();
-                            visibleLogs = visibleLogs.filter(log => 
-                                (log.user || '').toLowerCase().includes(q) ||
-                                (log.action || '').toLowerCase().includes(q) ||
-                                (log.details || '').toLowerCase().includes(q)
-                            );
-                        }
-
-                        // Relative time helper
-                        const getRelativeTime = (ts) => {
-                            if (!ts) return '';
-                            const diff = Date.now() - ts;
-                            const mins = Math.floor(diff / 60000);
-                            if (mins < 1) return 'Just now';
-                            if (mins < 60) return `${mins}m ago`;
-                            const hrs = Math.floor(mins / 60);
-                            if (hrs < 24) return `${hrs}h ago`;
-                            const days = Math.floor(hrs / 24);
-                            if (days === 1) return 'Yesterday';
-                            if (days < 7) return `${days}d ago`;
-                            return new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-                        };
-
-                        // Exact local date/time formatter for activity log
-                        const formatExact = (ts) => {
-                            if (!ts) return '';
-                            const d = new Date(ts);
-                            if (Number.isNaN(d.getTime())) return ts;
-                            return d.toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
-                        };
-
-                        // Date group helper
-                        const getDateGroup = (ts) => {
-                            if (!ts) return 'Unknown';
-                            const now = new Date();
-                            const date = new Date(ts);
-                            const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-                            const logDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-                            const diffDays = Math.floor((today - logDay) / 86400000);
-                            if (diffDays === 0) return 'Today';
-                            if (diffDays === 1) return 'Yesterday';
-                            if (diffDays < 7) return 'This Week';
-                            return date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
-                        };
-
-                        // Action style helper
-                        const getActionStyle = (action) => {
-                            const a = (action || '').toLowerCase();
-                            if (a.includes('logged in')) return { bg: 'bg-emerald-50', ring: 'ring-emerald-500/20', text: 'text-emerald-600', icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1" /> };
-                            if (a.includes('logged out')) return { bg: 'bg-orange-50', ring: 'ring-orange-500/20', text: 'text-orange-600', icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /> };
-                            if (a.includes('created') || a.includes('added')) return { bg: 'bg-blue-50', ring: 'ring-blue-500/20', text: 'text-blue-600', icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4" /> };
-                            if (a.includes('updated') || a.includes('settings')) return { bg: 'bg-purple-50', ring: 'ring-purple-500/20', text: 'text-purple-600', icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /> };
-                            if (a.includes('archived')) return { bg: 'bg-red-50', ring: 'ring-red-500/20', text: 'text-red-600', icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" /> };
-                            if (a.includes('restored')) return { bg: 'bg-teal-50', ring: 'ring-teal-500/20', text: 'text-teal-600', icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /> };
-                            if (a.includes('sale') || a.includes('processed')) return { bg: 'bg-amber-50', ring: 'ring-amber-500/20', text: 'text-amber-600', icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" /> };
-                            if (a.includes('stock in')) return { bg: 'bg-green-50', ring: 'ring-green-500/20', text: 'text-green-600', icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 11l5-5m0 0l5 5m-5-5v12" /> };
-                            if (a.includes('stock out')) return { bg: 'bg-rose-50', ring: 'ring-rose-500/20', text: 'text-rose-600', icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 13l-5 5m0 0l-5-5m5 5V6" /> };
-                            return { bg: 'bg-gray-50', ring: 'ring-gray-500/20', text: 'text-gray-500', icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /> };
-                        };
-
-                        // Group by date
-                        let lastGroup = '';
-
-                        return visibleLogs.length === 0 ? (
-                            <div className="p-10 text-center">
-                                <div className="bg-gray-100 rounded-2xl p-4 w-fit mx-auto mb-3">
-                                    <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                                </div>
-                                <p className="text-sm font-black text-gray-900">{actLogSearch || actLogUserFilter !== 'All' || actLogActionFilter !== 'All' ? 'No matching logs' : 'No activity recorded'}</p>
-                                <p className="text-xs font-medium text-gray-400 mt-1">{actLogSearch || actLogUserFilter !== 'All' || actLogActionFilter !== 'All' ? 'Try adjusting your search or filters' : 'Activity will appear here as actions are performed'}</p>
+                <div ref={activityLogScrollContainerRef} className="overflow-y-auto flex-1">
+                    {filteredActivityLogs.length === 0 ? (
+                        <div className="p-10 text-center">
+                            <div className="bg-gray-100 rounded-2xl p-4 w-fit mx-auto mb-3">
+                                <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                             </div>
-                        ) : (
-                            <div className="divide-y divide-gray-50">
-                                {visibleLogs.map((log) => {
-                                    const group = getDateGroup(log.timestamp);
+                            <p className="text-sm font-black text-gray-900">{actLogSearch || actLogUserFilter !== 'All' || actLogActionFilter !== 'All' ? 'No matching logs' : 'No activity recorded'}</p>
+                            <p className="text-xs font-medium text-gray-400 mt-1">{actLogSearch || actLogUserFilter !== 'All' || actLogActionFilter !== 'All' ? 'Try adjusting your search or filters' : 'Activity will appear here as actions are performed'}</p>
+                        </div>
+                    ) : (
+                        <div className="divide-y divide-gray-50">
+                            {(() => {
+                                let lastGroup = '';
+                                return visibleActivityLogs.map((log) => {
+                                    const group = getActivityLogDateGroup(log.timestamp);
                                     const showGroup = group !== lastGroup;
                                     lastGroup = group;
-                                    const style = getActionStyle(log.action);
+                                    const style = getActivityLogActionStyle(log.action);
+
                                     return (
                                         <React.Fragment key={log.id}>
                                             {showGroup && (
@@ -663,7 +866,7 @@ const Dashboard = ({ onLogout }) => {
                                                 <div className="flex-1 min-w-0">
                                                     <div className="flex justify-between items-center gap-2">
                                                         <p className="text-xs font-black text-gray-900 truncate">{log.user}</p>
-                                                        <span className="text-[10px] font-bold text-gray-400 whitespace-nowrap tabular-nums">{formatExact(log.timestamp)}</span>
+                                                        <span className="text-[10px] font-bold text-gray-400 whitespace-nowrap tabular-nums">{formatActivityLogExact(log.timestamp)}</span>
                                                     </div>
                                                     <p className="text-[11px] font-bold text-gray-600 mt-0.5">{log.action}</p>
                                                     {log.details && <p className="text-[10px] text-gray-400 font-medium mt-0.5 truncate">{log.details}</p>}
@@ -671,10 +874,27 @@ const Dashboard = ({ onLogout }) => {
                                             </div>
                                         </React.Fragment>
                                     );
-                                })}
-                            </div>
-                        );
-                    })()}
+                                });
+                            })()}
+
+                            {hasMoreActivityLogs && (
+                                <div ref={activityLogLoadMoreTriggerRef} className="px-4 py-3 flex items-center justify-center bg-white">
+                                    <div className="inline-flex items-center gap-2 text-[11px] font-bold text-gray-500">
+                                        <svg className={`w-4 h-4 text-gray-400 ${isActivityLogLoadingMore ? 'animate-spin' : 'animate-pulse'}`} viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 12a8 8 0 018-8m8 8a8 8 0 01-8 8" />
+                                        </svg>
+                                        Loading more activity...
+                                    </div>
+                                </div>
+                            )}
+
+                            {!hasMoreActivityLogs && filteredActivityLogs.length > ACTIVITY_LOG_BATCH_SIZE && (
+                                <div className="px-4 py-3 text-center bg-white">
+                                    <p className="text-[11px] font-bold text-gray-400">No more activity logs</p>
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
                 {/* Footer */}
                 <div className="p-3 bg-gray-50 border-t border-gray-100 shrink-0">
@@ -705,7 +925,7 @@ const Dashboard = ({ onLogout }) => {
               <img src={logo} alt="TLC Logo" className="w-10 h-10 object-contain hidden sm:block rounded-full border-2 border-white/20" />
               <div className="flex flex-col">
                 <span className="text-lg sm:text-xl font-semibold text-white tracking-tight leading-tight">Tableria La Confianza</span>
-                <span className="text-sm text-gray-400 font-medium">Co., Inc.</span>
+                <span className="text-sm text-gray-400 font-medium">Company, Incorporated</span>
               </div>
             </div>
          </div>
@@ -732,16 +952,21 @@ const Dashboard = ({ onLogout }) => {
                             {roleNames[userRole] || 'User'}
                         </p>
                     </div>
-                    <div className="h-9 w-9 rounded-full bg-gray-600 flex items-center justify-center text-white font-bold border border-white/20 relative overflow-hidden">
-                        {currentUserAvatar ? (
-                            <img src={currentUserAvatar} alt="User Info" className="w-full h-full object-cover rounded-full" />
-                        ) : userRole === ROLES.CASHIER ? (
-                            <span>C</span>
-                        ) : (
-                            <span>{currentUserName ? currentUserName.charAt(0).toUpperCase() : 'U'}</span>
+                    <div className="relative shrink-0">
+                        <div className="rounded-full bg-linear-to-br from-white/80 via-white/40 to-white/20 p-[1.5px] shadow-[0_10px_24px_-10px_rgba(0,0,0,0.65)]">
+                            <div className="h-9 w-9 rounded-full bg-[#111827] p-[1.5px]">
+                                <div className="h-full w-full rounded-full bg-gray-600 flex items-center justify-center text-white font-bold border border-white/20 overflow-hidden">
+                                    {currentUserAvatar ? (
+                                        <img src={currentUserAvatar} alt="User Info" className="w-full h-full object-cover rounded-full" />
+                                    ) : (
+                                        <span>{currentUserName ? currentUserName.charAt(0).toUpperCase() : 'U'}</span>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                        {isAdminOrAbove() && unreadActivityCount > 0 && (
+                            <span className="absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-red-500 ring-2 ring-[#111827] shadow-[0_4px_10px_-2px_rgba(239,68,68,0.9)]" />
                         )}
-                        {/* Red Notification Dot on Avatar */}
-                        {!currentUserAvatar && isAdminOrAbove() && <span className="absolute top-0 right-0 h-2 w-2 bg-red-500 rounded-full border border-white ring-1 ring-white"></span>}
                     </div>
                 </button>
 
@@ -753,14 +978,16 @@ const Dashboard = ({ onLogout }) => {
                         <div className="px-3 py-3 border-b border-gray-700/50 bg-gray-800/30">
                              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest leading-none mb-1.5 ml-1">Signed in as</p>
                              <div className="bg-gray-800/80 rounded-xl p-2 flex items-center gap-3 border border-gray-700/50 shadow-inner">
-                                 <div className="h-8 w-8 rounded-full bg-gray-700 flex items-center justify-center text-white font-bold text-xs shrink-0 border border-gray-600">
-                                    {currentUserAvatar ? (
-                                        <img src={currentUserAvatar} alt="User" className="w-full h-full object-cover rounded-full" />
-                                    ) : userRole === ROLES.CASHIER ? (
-                                        <span>C</span>
-                                    ) : (
-                                        <span>{currentUserName ? currentUserName.charAt(0).toUpperCase() : 'A'}</span>
-                                    )}
+                                 <div className="rounded-full bg-linear-to-br from-white/30 via-gray-300/20 to-transparent p-[1.5px] shrink-0">
+                                    <div className="h-8 w-8 rounded-full bg-gray-800 p-[1.5px]">
+                                        <div className="h-full w-full rounded-full bg-gray-700 flex items-center justify-center text-white font-bold text-xs border border-gray-600 overflow-hidden">
+                                            {currentUserAvatar ? (
+                                                <img src={currentUserAvatar} alt="User" className="w-full h-full object-cover rounded-full" />
+                                            ) : (
+                                                <span>{currentUserName ? currentUserName.charAt(0).toUpperCase() : 'U'}</span>
+                                            )}
+                                        </div>
+                                    </div>
                                  </div>
                                  <div className="overflow-hidden">
                                      <p className="text-xs font-bold text-white truncate leading-tight mb-0.5">
@@ -789,16 +1016,11 @@ const Dashboard = ({ onLogout }) => {
                                     <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                                 </div>
                                 Activity Log
-                                {(() => {
-                                    if (userRole !== 'admin') return null;
-                                    const relevantLogs = activityLogs.filter(log => log.user !== currentUserName);
-                                    const unreadCount = relevantLogs.length - readLogCount;
-                                    return unreadCount > 0 ? (
-                                        <span className="ml-auto bg-red-500/90 text-white text-[10px] font-black px-1.5 py-0.5 rounded-md shadow-sm shadow-red-900/50 ring-1 ring-red-400/50">
-                                            {unreadCount}
-                                        </span>
-                                    ) : null;
-                                })()}
+                                {isAdminOrAbove() && unreadActivityCount > 0 && (
+                                    <span className="ml-auto inline-flex min-w-[22px] h-[20px] items-center justify-center rounded-full bg-gradient-to-b from-red-500 to-red-600 px-1.5 text-[10px] font-black leading-none text-white shadow-[0_6px_14px_-4px_rgba(239,68,68,0.8)] ring-2 ring-red-300/60">
+                                        {unreadActivityLabel}
+                                    </span>
+                                )}
                             </button>
 
                             <div className="w-full text-left px-2.5 py-2 text-xs font-bold text-gray-300 hover:text-white rounded-xl flex items-center justify-between transition-all group !bg-transparent hover:!bg-gray-800/80 cursor-pointer" onClick={(e) => { e.stopPropagation(); setIsDarkMode(!isDarkMode); }}>
@@ -853,7 +1075,8 @@ const Dashboard = ({ onLogout }) => {
         {/* Sidebar - Responsive */}
         <aside 
           className={`
-            fixed top-16 bottom-0 left-0 z-40 bg-[#111827] border-r border-gray-800 flex flex-col shadow-xl transition-all duration-300 ease-in-out
+                        fixed top-16 bottom-0 left-0 z-40 bg-[#111827] border-r border-gray-800 flex flex-col shadow-xl transform-gpu
+                        transition-[width,transform] duration-420 ease-[cubic-bezier(0.16,1,0.3,1)]
             md:translate-x-0 
             ${isMobileMenuOpen ? 'translate-x-0 w-56' : '-translate-x-full w-56'} 
             ${isSidebarHovered ? 'md:w-56' : 'md:w-16'}
@@ -862,7 +1085,7 @@ const Dashboard = ({ onLogout }) => {
           onMouseLeave={handleMouseLeave}
         >
           
-          <nav className="flex-1 overflow-y-auto pb-6 scrollbar-hide overflow-x-hidden transition-all duration-300 pt-6">
+                      <nav className="flex-1 overflow-y-auto pb-6 scrollbar-hide overflow-x-hidden pt-6 transition-[padding] duration-420 ease-[cubic-bezier(0.16,1,0.3,1)]">
             <ul className="space-y-1 px-3">
               {menuItems.map((item, index) => {
                  if (item.hidden) return null; // Skip hidden items from sidebar
@@ -872,8 +1095,8 @@ const Dashboard = ({ onLogout }) => {
                         
                  return (
                     <React.Fragment key={item.name}>
-                        {showHeader && (isSidebarHovered || isMobileMenuOpen) && (
-                            <li className="px-3 py-2 mt-6 first:mt-2 text-xs font-semibold text-gray-500 uppercase tracking-widest">
+                        {showHeader && isSidebarExpanded && (
+                            <li className="px-3 py-2 mt-6 first:mt-2 text-xs font-semibold text-gray-500 uppercase tracking-widest transition-opacity duration-300">
                                 {item.category}
                             </li>
                         )}
@@ -883,17 +1106,17 @@ const Dashboard = ({ onLogout }) => {
                                 handleNavigation(item.name, item.path);
                                 setIsMobileMenuOpen(false);
                             }}
-                            className={`group w-full flex items-center ${(isSidebarHovered || isMobileMenuOpen) ? 'space-x-3 px-3' : 'justify-center px-0'} py-2 rounded-lg transition-all duration-300 ease-out text-sm outline-none border border-transparent ${
+                            className={`group w-full flex items-center ${isSidebarExpanded ? 'space-x-3 px-3' : 'justify-center px-0'} py-2 rounded-lg transition-all duration-380 ease-[cubic-bezier(0.16,1,0.3,1)] text-sm outline-none border border-transparent ${
                             isActive
                                 ? 'font-semibold bg-white text-gray-900 shadow-lg shadow-black/20 transform scale-[1.02]' 
                                 : 'font-medium text-gray-400 hover:bg-gray-800 hover:border-gray-700 hover:text-white active:scale-95'
                             }`}
-                            title={(!isSidebarHovered && !isMobileMenuOpen) ? item.name : ''}
+                            title={!isSidebarExpanded ? item.name : ''}
                         >
-                            <span className={`transition-all duration-300 shrink-0 ${isActive ? 'text-gray-900' : 'text-gray-400 group-hover:text-white group-hover:scale-110'}`}>
+                            <span className={`shrink-0 transition-all duration-380 ${isActive ? 'text-gray-900' : 'text-gray-400 group-hover:text-white group-hover:scale-110'}`}>
                             {item.icon}
                             </span>
-                            <span className={`whitespace-nowrap transition-all duration-300 transform ${(isSidebarHovered || isMobileMenuOpen) ? 'opacity-100 translate-x-0 w-auto' : 'opacity-0 -translate-x-10 w-0 overflow-hidden hidden md:block'} ${(!isActive) ? 'group-hover:translate-x-1' : ''}`}>
+                            <span className={`whitespace-nowrap overflow-hidden transform transition-[max-width,opacity,transform] duration-340 ease-[cubic-bezier(0.16,1,0.3,1)] ${isSidebarExpanded ? 'opacity-100 translate-x-0 max-w-40 delay-100' : 'opacity-0 -translate-x-2 max-w-0 delay-0'} ${!isActive ? 'group-hover:translate-x-0.5' : ''}`}>
                                 {item.name}
                             </span>
                         </button>
@@ -907,55 +1130,63 @@ const Dashboard = ({ onLogout }) => {
           <div className="p-3 border-t border-gray-800 bg-[#111827]">
              <button
                onClick={handleLogoutClick}
-               className={`w-full flex items-center ${(isSidebarHovered || isMobileMenuOpen) ? 'space-x-3 px-3' : 'justify-center px-0'} py-2 rounded-lg text-sm font-bold text-gray-400 hover:bg-red-500/10 hover:text-red-400 transition-colors`}
-               title={(!isSidebarHovered && !isMobileMenuOpen) ? "Sign Out" : ""}
+                               className={`w-full flex items-center ${isSidebarExpanded ? 'space-x-3 px-3' : 'justify-center px-0'} py-2 rounded-lg text-sm font-bold text-gray-400 hover:bg-red-500/10 hover:text-red-400 transition-all duration-380 ease-[cubic-bezier(0.16,1,0.3,1)]`}
+                             title={!isSidebarExpanded ? "Sign Out" : ""}
              >
                <svg className="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
-               <span className={`whitespace-nowrap transition-all duration-300 ${(isSidebarHovered || isMobileMenuOpen) ? 'opacity-100 w-auto' : 'opacity-0 w-0 overflow-hidden hidden md:block'}`}>Sign Out</span>
+                               <span className={`whitespace-nowrap overflow-hidden transition-[max-width,opacity] duration-340 ease-[cubic-bezier(0.16,1,0.3,1)] ${isSidebarExpanded ? 'opacity-100 max-w-30 delay-100' : 'opacity-0 max-w-0 delay-0'}`}>Sign Out</span>
              </button>
           </div>
         </aside>
 
         {/* Main Content Area */}
-        <main className={`flex-1 transition-all duration-300 ease-in-out bg-gray-50 ml-0 ${isSidebarHovered ? 'md:ml-56' : 'md:ml-16'} ${isProfilePage ? 'p-2 overflow-hidden h-full' : isFixedLayout ? 'p-2 md:overflow-hidden h-full overflow-y-auto' : 'p-2 overflow-y-auto h-full'}`}>
+        <main className={`flex-1 bg-gray-50 ml-0 transition-[margin] duration-420 ease-[cubic-bezier(0.16,1,0.3,1)] ${isSidebarHovered ? 'md:ml-56' : 'md:ml-16'} ${isProfilePage ? 'p-2 overflow-hidden h-full' : isFixedLayout ? 'p-2 md:overflow-hidden h-full overflow-y-auto' : 'p-2 overflow-y-auto h-full'}`}>
            <div className={`w-full ${isFixedLayout ? 'md:h-full min-h-full' : ''}`}>
              
              <Suspense fallback={<PageSkeleton />}>
-             <Routes>
+             <AnimatePresence mode="wait">
+             <Routes location={location} key={location.pathname}>
                 {/* Public / Common Routes */}
-                <Route index element={<Navigate to="/dashboard" replace />} />
-                <Route path="dashboard" element={<DashboardHome onViewAllProducts={() => handleNavigation('Product List', '/product-list')} onNavigate={(menu) => {
+                <Route index element={<AnimatedPage><DashboardHome onViewAllProducts={() => handleNavigation('Product List', '/product-list')} onNavigate={(menu) => {
+                    if (menu === 'Product List') handleNavigation('Product List', '/product-list');
+                    else if (menu === 'Dashboard') handleNavigation('Dashboard', '/dashboard');
+                    else if (menu === 'History Logs') handleNavigation('History Logs', '/history');
+                    else if (menu === 'Inventory') handleNavigation('Inventory', '/inventory');
+                    else if (menu === 'Reports') handleNavigation('Reports', '/reports');
+                }} /></AnimatedPage>} />
+                <Route path="dashboard" element={<AnimatedPage><DashboardHome onViewAllProducts={() => handleNavigation('Product List', '/product-list')} onNavigate={(menu) => {
                     // Map menu names to paths
                      if (menu === 'Product List') handleNavigation('Product List', '/product-list');
                      else if (menu === 'Dashboard') handleNavigation('Dashboard', '/dashboard');
                      else if (menu === 'History Logs') handleNavigation('History Logs', '/history');
                      else if (menu === 'Inventory') handleNavigation('Inventory', '/inventory');
                      else if (menu === 'Reports') handleNavigation('Reports', '/reports');
-                }} />} />
+                }} /></AnimatedPage>} />
                 
-                <Route path="pos" element={<PointOfSale />} />
+                <Route path="pos" element={<AnimatedPage><PointOfSale /></AnimatedPage>} />
                 
-                <Route path="product-list" element={<ProductList />} />
+                <Route path="product-list" element={<AnimatedPage><ProductList /></AnimatedPage>} />
                 
-                <Route path="history" element={<History />} />
+                <Route path="history" element={<AnimatedPage><History /></AnimatedPage>} />
                 
-                <Route path="profile" element={<Profile />} />
+                <Route path="profile" element={<AnimatedPage><Profile /></AnimatedPage>} />
 
-                {/* Admin Only Routes */}
-                <Route path="inventory" element={<Inventory />} />
-                <Route path="users" element={<RequireAdmin userRole={userRole}><UserList /></RequireAdmin>} />
-                <Route path="reports" element={<Reports />} />
-                <Route path="recommendations" element={<Recommendation />} />
-                <Route path="partners" element={<Partners viewOnly={userRole === ROLES.ADMIN} />} />
-                <Route path="settings" element={<RequireAdmin userRole={userRole}><Settings /></RequireAdmin>} />
+                {/* Restricted Routes */}
+                <Route path="inventory" element={<AnimatedPage><Inventory /></AnimatedPage>} />
+                <Route path="users" element={<RequireSuperAdmin userRole={userRole}><AnimatedPage><UserList /></AnimatedPage></RequireSuperAdmin>} />
+                <Route path="reports" element={<AnimatedPage><Reports /></AnimatedPage>} />
+                <Route path="recommendations" element={<AnimatedPage><Recommendation /></AnimatedPage>} />
+                <Route path="partners" element={<AnimatedPage><Partners viewOnly={userRole === ROLES.ADMIN} /></AnimatedPage>} />
+                <Route path="settings" element={<RequireAdminOrAbove userRole={userRole}><AnimatedPage><Settings /></AnimatedPage></RequireAdminOrAbove>} />
                 
                 {/* Fallback */}
-                <Route path="*" element={<div className="flex flex-col items-center justify-center p-10 mt-10 text-gray-400">
+                <Route path="*" element={<AnimatedPage><div className="flex flex-col items-center justify-center p-10 mt-10 text-gray-400">
                     <h1 className="text-6xl font-black text-gray-200">404</h1>
                     <p className="text-xl font-bold mt-2">Page Not Found</p>
                     <button onClick={() => navigate('/dashboard')} className="mt-6 px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors">Go Home</button>
-                </div>} />
+                </div></AnimatedPage>} />
              </Routes>
+             </AnimatePresence>
              </Suspense>
 
            </div>

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { showToast } from '../utils/toastHelper';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
@@ -9,25 +9,21 @@ import { listUsersApi, registerApi, updateUserByUsernameApi } from '../services/
 const PASSWORD_RULE = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{8,}$/;
 const EMAIL_RULE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-const mapUserToUi = (user, index) => ({
-    id: index + 1,
-    backendId: user.id,
-    name: user.name || '',
-    username: user.username || '',
-    email: user.email || '',
-    phone: user.phone || '',
-    role: user.role || ROLES.CASHIER,
-    status: user.isActive ? 'Active' : 'Inactive',
-    isArchived: !user.isActive,
-    lastLogin: user.lastLogin ? new Date(user.lastLogin).toLocaleString() : 'Never',
-});
-
 const getFieldErrorsFromMessage = (message = '') => {
     const lowerMessage = String(message).toLowerCase();
     const nextErrors = {};
 
-    if (lowerMessage.includes('username or email already in use') || lowerMessage.includes('email already in use')) {
+    if (lowerMessage.includes('username or email already in use') || lowerMessage.includes('username or email already exists')) {
+        nextErrors.username = 'Username is already in use by another account.';
         nextErrors.email = 'Email is already in use by another account.';
+    }
+
+    if (lowerMessage.includes('username already')) {
+        nextErrors.username = nextErrors.username || 'Username is already in use by another account.';
+    }
+
+    if (lowerMessage.includes('email already')) {
+        nextErrors.email = nextErrors.email || 'Email is already in use by another account.';
     }
 
     if (lowerMessage.includes('valid email')) {
@@ -54,24 +50,13 @@ const getFieldErrorsFromMessage = (message = '') => {
 };
 
 const UserList = () => {
-    const { currentUserName } = useAuth();
+    const isMountedRef = useRef(true);
+    const { currentUserName, currentAuthUsername, userRole } = useAuth();
     const { logActivity, renameUserReferences } = useInventory();
 
     const [users, setUsers] = useState([]);
-
-    const loadUsers = async () => {
-        try {
-            const response = await listUsersApi();
-            const list = Array.isArray(response) ? response : [];
-            setUsers(list.map(mapUserToUi));
-        } catch {
-            setUsers([]);
-        }
-    };
-
-    React.useEffect(() => {
-        loadUsers();
-    }, []);
+    const [usersLoadError, setUsersLoadError] = useState('');
+    const [isUsersLoading, setIsUsersLoading] = useState(false);
 
     const [searchTerm, setSearchTerm] = useState('');
     const [isModalOpen, setIsModalOpen] = useState(false);
@@ -79,15 +64,18 @@ const UserList = () => {
     const [selectedUser, setSelectedUser] = useState(null);
     const [isArchiveModalOpen, setIsArchiveModalOpen] = useState(false);
     const [userToArchive, setUserToArchive] = useState(null);
+    const [showArchived, setShowArchived] = useState(false);
 
     // Pagination
     const [currentPage, setCurrentPage] = useState(1);
     const itemsPerPage = 15;
     
-    const initialFormState = { name: '', username: '', email: '', phone: '', role: ROLES.CASHIER, status: 'Active', password: '', pin: '' };
+    const initialFormState = { name: '', displayName: '', username: '', email: '', phone: '', role: ROLES.CASHIER, status: 'Active', password: '', pin: '' };
     const [formData, setFormData] = useState(initialFormState);
     const [fieldErrors, setFieldErrors] = useState({});
     const [newItemId, setNewItemId] = useState(null);
+    const [isSavingUser, setIsSavingUser] = useState(false);
+    const [isArchiveSubmitting, setIsArchiveSubmitting] = useState(false);
     const passwordChecks = {
         length: (formData.password || '').length >= 8,
         lowercase: /[a-z]/.test(formData.password || ''),
@@ -98,21 +86,163 @@ const UserList = () => {
     const allPasswordChecksMet = Object.values(passwordChecks).every(Boolean);
 
     // Derived Data
-    const filteredUsers = users.filter(user => 
+    const matchesSearch = (user) => (
         user.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (user.displayName && user.displayName.toLowerCase().includes(searchTerm.toLowerCase())) ||
         (user.username && user.username.toLowerCase().includes(searchTerm.toLowerCase())) ||
         user.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
         (roleNames[user.role] || user.role).toLowerCase().includes(searchTerm.toLowerCase())
     );
 
+    const filteredActiveUsers = users.filter((user) => !user.isArchived && matchesSearch(user));
+    const filteredArchivedUsers = users.filter((user) => user.isArchived && matchesSearch(user));
+
+    const currentFilteredUsers = showArchived ? filteredArchivedUsers : filteredActiveUsers;
+
     // Pagination Logic
-    const totalPages = Math.ceil(filteredUsers.length / itemsPerPage);
+    const totalPages = Math.max(1, Math.ceil(currentFilteredUsers.length / itemsPerPage));
     const indexOfLastItem = currentPage * itemsPerPage;
     const indexOfFirstItem = indexOfLastItem - itemsPerPage;
-    const paginatedUsers = filteredUsers.slice(indexOfFirstItem, indexOfLastItem);
+    const paginatedUsers = currentFilteredUsers.slice(indexOfFirstItem, indexOfLastItem);
 
-    // Reset page when search changes
-    React.useEffect(() => { setCurrentPage(1); }, [searchTerm]);
+    // Reset page when filters change
+    React.useEffect(() => { setCurrentPage(1); }, [searchTerm, showArchived]);
+
+    // Keep pagination in range after data mutations (archive/delete/refresh)
+    React.useEffect(() => {
+        setCurrentPage((prevPage) => Math.min(prevPage, totalPages));
+    }, [totalPages]);
+
+    const mapBackendUsersToUi = (backendUsers = []) => {
+        return backendUsers.map((user, index) => ({
+            id: index + 1,
+            name: user.name || 'Unknown User',
+            displayName: user.displayName || user.name || 'Unknown User',
+            username: user.username || '',
+            email: user.email || '',
+            phone: user.phone || '',
+            role: user.role || ROLES.CASHIER,
+            status: user.isActive === false ? 'Inactive' : 'Active',
+            lastLogin: user.lastLogin ? new Date(user.lastLogin).toLocaleString() : 'Never',
+            isArchived: user.isActive === false,
+        }));
+    };
+
+    const getNextAutoUserSequence = (existingUsers = []) => {
+        const usernameSet = new Set(
+            existingUsers
+                .map((user) => String(user?.username || '').toLowerCase())
+                .filter(Boolean)
+        );
+
+        let maxSequence = 0;
+        existingUsers.forEach((user) => {
+            const match = /^user-(\d{6})$/i.exec(String(user?.username || ''));
+            if (match) {
+                maxSequence = Math.max(maxSequence, Number(match[1]));
+            }
+        });
+
+        let candidate = maxSequence + 1;
+        while (usernameSet.has(`user-${String(candidate).padStart(6, '0')}`)) {
+            candidate += 1;
+        }
+
+        return candidate;
+    };
+
+    const fetchUsersFromApiWithRetry = async (retries = 2) => {
+        let lastError = null;
+
+        for (let attempt = 0; attempt <= retries; attempt += 1) {
+            try {
+                return await listUsersApi();
+            } catch (error) {
+                lastError = error;
+
+                if (attempt === retries) {
+                    break;
+                }
+
+                await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
+            }
+        }
+
+        throw lastError;
+    };
+
+    const refreshUsersFromBackend = async ({ showLoader = true } = {}) => {
+        if (showLoader && isMountedRef.current) {
+            setIsUsersLoading(true);
+        }
+
+        try {
+            const backendUsers = await fetchUsersFromApiWithRetry();
+
+            if (!isMountedRef.current) {
+                return false;
+            }
+
+            if (!Array.isArray(backendUsers)) {
+                setUsersLoadError('Unexpected users response from server.');
+                return false;
+            }
+
+            const mappedUsers = mapBackendUsersToUi(backendUsers);
+            setUsers(mappedUsers);
+            setUsersLoadError('');
+            setCurrentPage(1);
+            return true;
+        } catch (error) {
+            if (isMountedRef.current) {
+                // Keep current in-memory list; backend remains source-of-truth.
+                setUsersLoadError(error?.message || 'Unable to load users from API.');
+            }
+            return false;
+        } finally {
+            if (showLoader && isMountedRef.current) {
+                setIsUsersLoading(false);
+            }
+        }
+    };
+
+    React.useEffect(() => {
+        isMountedRef.current = true;
+        let delayedRetryId = null;
+
+        if (!currentAuthUsername) {
+            setUsers([]);
+            setUsersLoadError('');
+            setIsUsersLoading(false);
+
+            return () => {
+                if (delayedRetryId) {
+                    clearTimeout(delayedRetryId);
+                }
+                isMountedRef.current = false;
+            };
+        }
+
+        const loadUsers = async () => {
+            const wasLoaded = await refreshUsersFromBackend();
+
+            // First fetch can race with token/session propagation in some browsers.
+            if (!wasLoaded && isMountedRef.current) {
+                delayedRetryId = setTimeout(() => {
+                    refreshUsersFromBackend({ showLoader: false });
+                }, 900);
+            }
+        };
+
+        loadUsers();
+
+        return () => {
+            if (delayedRetryId) {
+                clearTimeout(delayedRetryId);
+            }
+            isMountedRef.current = false;
+        };
+    }, [currentAuthUsername, userRole]);
 
     // Helper: Generate Random Password
     const generatePassword = () => {
@@ -141,10 +271,28 @@ const UserList = () => {
     };
 
     // Handlers
-    const handleOpenAdd = () => {
+    const handleOpenAdd = async () => {
+        setShowArchived(false);
+        setSearchTerm('');
         setModalMode('add');
         setFieldErrors({});
-        const nextId = users.length > 0 ? Math.max(...users.map(u => u.id)) + 1 : 1;
+
+        let sourceUsers = users;
+        try {
+            const backendUsers = await fetchUsersFromApiWithRetry(1);
+            if (Array.isArray(backendUsers)) {
+                const mappedUsers = mapBackendUsersToUi(backendUsers);
+                sourceUsers = mappedUsers;
+                if (isMountedRef.current) {
+                    setUsers(mappedUsers);
+                    setUsersLoadError('');
+                }
+            }
+        } catch {
+            // Fall back to current list if API call fails.
+        }
+
+        const nextId = getNextAutoUserSequence(sourceUsers);
         setNewItemId(nextId);
         
         // Auto-generate credentials
@@ -154,6 +302,7 @@ const UserList = () => {
         
         setFormData({
             ...initialFormState,
+            displayName: '',
             username: autoUsername,
             password: autoPassword,
             pin: autoPin
@@ -167,6 +316,7 @@ const UserList = () => {
         setSelectedUser(user);
         setFormData({ 
             name: user.name, 
+            displayName: user.displayName || user.name || '',
             username: user.username || '',
             email: user.email, 
             phone: user.phone || '',
@@ -182,6 +332,7 @@ const UserList = () => {
         if (!selectedUser) return false;
         return (
             formData.name !== selectedUser.name ||
+            (formData.displayName || '').trim() !== (selectedUser.displayName || '').trim() ||
             formData.username !== (selectedUser.username || '') ||
             formData.email !== selectedUser.email ||
             formData.phone !== (selectedUser.phone || '') ||
@@ -194,10 +345,15 @@ const UserList = () => {
 
     const handleSave = async (e) => {
         e.preventDefault();
+
+        if (isSavingUser) {
+            return;
+        }
+
         const normalizedEmail = (formData.email || '').trim().toLowerCase();
         const nextFieldErrors = {};
         setFieldErrors({});
-        
+
         if (!formData.name || !formData.email || !formData.username) {
             if (!formData.name) nextFieldErrors.name = 'Full name is required.';
             if (!formData.username) nextFieldErrors.username = 'Username is required.';
@@ -218,6 +374,7 @@ const UserList = () => {
             showToast('Invalid Phone', 'Phone number must be exactly 11 digits.', 'error', 'user-validation');
             return;
         }
+
         if (formData.pin && formData.pin.length !== 6) {
             setFieldErrors({ pin: 'PIN must be exactly 6 digits.' });
             showToast('Invalid PIN', 'PIN must be exactly 6 digits.', 'error', 'user-validation');
@@ -230,65 +387,184 @@ const UserList = () => {
             return;
         }
 
-        if (modalMode === 'add') {
-            try {
-                const response = await registerApi({
-                    name: formData.name,
-                    username: formData.username,
-                    email: normalizedEmail,
-                    phone: formData.phone,
-                    password: formData.password,
-                    pin: formData.pin,
-                    role: formData.role,
-                });
+        if (modalMode !== 'add' && !isFormModified) {
+            return;
+        }
 
-                const createdUser = response?.user;
-                if (createdUser?.username) {
-                    await updateUserByUsernameApi(createdUser.username, {
-                        role: formData.role,
-                        isActive: formData.status === 'Active',
+        setIsSavingUser(true);
+
+        try {
+            if (modalMode === 'add') {
+                const normalizedDisplayName = (formData.displayName || '').trim() || formData.name.trim();
+                let response;
+                try {
+                    response = await registerApi({
+                        name: formData.name,
+                        displayName: normalizedDisplayName,
+                        username: formData.username,
+                        email: normalizedEmail,
                         phone: formData.phone,
+                        password: formData.password,
+                        pin: formData.pin,
+                        role: formData.role,
+                    });
+                } catch (error) {
+                    const message = String(error?.message || '').toLowerCase();
+                    const isConflict = message.includes('already') || message.includes('in use') || message.includes('valid email');
+
+                    if (isConflict) {
+                        let latestUsers = users;
+                        try {
+                            const backendUsers = await fetchUsersFromApiWithRetry(1);
+                            latestUsers = Array.isArray(backendUsers) ? mapBackendUsersToUi(backendUsers) : users;
+                            setUsers(latestUsers);
+                            setUsersLoadError('');
+                        } catch {
+                            // Keep original error handling if refresh fails.
+                        }
+
+                        const usernameToFind = String(formData.username || '').trim().toLowerCase();
+                        const duplicateUser = latestUsers.find((u) =>
+                            String(u.username || '').toLowerCase() === usernameToFind ||
+                            String(u.email || '').toLowerCase() === normalizedEmail
+                        );
+
+                        if (duplicateUser?.isArchived) {
+                            setShowArchived(true);
+                            setSearchTerm(duplicateUser.username || duplicateUser.email || '');
+                            setIsModalOpen(false);
+                            showToast('User Exists In Archive', `${duplicateUser.name} already exists and is archived. Restore the account instead.`, 'warning', 'user-validation');
+                            return;
+                        }
+
+                        const hasUsernameConflict = message.includes('username') || message.includes('already exists') || message.includes('already in use');
+                        if (hasUsernameConflict) {
+                            const nextId = getNextAutoUserSequence(latestUsers);
+                            const suggestedUsername = `USER-${String(nextId).padStart(6, '0')}`;
+                            setNewItemId(nextId);
+                            setFormData((prev) => ({
+                                ...prev,
+                                username: suggestedUsername,
+                            }));
+                        }
+
+                        setFieldErrors(getFieldErrorsFromMessage(error.message));
+                        showToast('Create Failed', error.message || 'Unable to create user account.', 'error', 'user-validation');
+                        return;
+                    }
+
+                    showToast('Create Failed', error.message || 'Unable to create user account.', 'error', 'user-validation');
+                    return;
+                }
+
+                const createdUser = response?.user ? mapBackendUsersToUi([response.user])[0] : null;
+                if (createdUser) {
+                    setUsers((prevUsers) => {
+                        const existingUsers = Array.isArray(prevUsers) ? prevUsers : [];
+                        return [
+                            createdUser,
+                            ...existingUsers.filter((user) => String(user.username || '').toLowerCase() !== String(createdUser.username || '').toLowerCase()),
+                        ].map((user, index) => ({
+                            ...user,
+                            id: index + 1,
+                        }));
                     });
                 }
 
-                await loadUsers();
+                setShowArchived(false);
+                setSearchTerm('');
+                setCurrentPage(1);
                 logActivity(currentUserName, 'Created User', `Added new user: ${formData.name}`);
-                showToast('User Created', `${formData.name} added to the system.`, 'success', 'user-action');
-            } catch (error) {
-                setFieldErrors(getFieldErrorsFromMessage(error.message));
-                showToast('Create Failed', error.message || 'Unable to create user account.', 'error', 'user-validation');
-                return;
-            }
-        } else {
-            if (!isFormModified) return;
 
-            try {
-                await updateUserByUsernameApi(selectedUser.username, {
-                    name: formData.name,
-                    username: formData.username,
-                    email: normalizedEmail,
-                    phone: formData.phone,
-                    role: formData.role,
-                    isActive: formData.status === 'Active',
-                    ...(formData.password ? { password: formData.password } : {}),
-                    ...(formData.pin ? { pin: formData.pin } : {}),
+                const emailStatus = response?.emailDelivery?.status;
+                if (emailStatus === 'sent') {
+                    showToast('User Created', `${formData.name} added. Credentials sent to ${normalizedEmail}.`, 'success', 'user-action');
+                } else if (emailStatus === 'simulated') {
+                    showToast('User Created', `${formData.name} added, but email was not sent because SMTP is not configured.`, 'info', 'user-action');
+                } else if (emailStatus === 'failed') {
+                    showToast('User Created', `${formData.name} added, but credential email delivery failed.`, 'error', 'user-action');
+                } else {
+                    showToast('User Created', `${formData.name} added to the system.`, 'success', 'user-action');
+                }
+
+                refreshUsersFromBackend({ showLoader: false }).catch(() => {
+                    // Keep UI responsive even if background refresh fails.
                 });
-            } catch (error) {
-                setFieldErrors(getFieldErrorsFromMessage(error.message));
-                showToast('Update Failed', error.message || 'Unable to update user account.', 'error', 'user-validation');
-                return;
+            } else {
+                try {
+                    const normalizedDisplayName = (formData.displayName || '').trim() || formData.name.trim();
+                    await updateUserByUsernameApi(selectedUser.username, {
+                        name: formData.name,
+                        displayName: normalizedDisplayName,
+                        username: formData.username,
+                        email: normalizedEmail,
+                        phone: formData.phone,
+                        role: formData.role,
+                        isActive: formData.status === 'Active',
+                        ...(formData.password ? { password: formData.password } : {}),
+                        ...(formData.pin ? { pin: formData.pin } : {}),
+                    });
+                } catch (error) {
+                    const message = String(error?.message || '').toLowerCase();
+                    if (message.includes('user not found')) {
+                        try {
+                            await refreshUsersFromBackend();
+                        } catch {
+                            // If refresh fails, keep showing the actionable error below.
+                        }
+
+                        setFieldErrors({ username: 'User no longer exists in backend. User list was refreshed.' });
+                        showToast('User Synced', 'Backend user list was refreshed. If account is missing, create it again.', 'error', 'user-validation');
+                        return;
+                    }
+
+                    setFieldErrors(getFieldErrorsFromMessage(error.message));
+                    showToast('Update Failed', error.message || 'Unable to update user account.', 'error', 'user-validation');
+                    return;
+                }
+
+                const previousEffectiveName = (selectedUser.displayName || selectedUser.name || '').trim();
+                const nextEffectiveName = ((formData.displayName || '').trim() || formData.name || '').trim();
+                if (previousEffectiveName && nextEffectiveName && previousEffectiveName !== nextEffectiveName) {
+                    renameUserReferences(previousEffectiveName, nextEffectiveName);
+                }
+
+                setUsers((prevUsers) => {
+                    return (Array.isArray(prevUsers) ? prevUsers : []).map((user) => {
+                        if (String(user.username || '').toLowerCase() !== String(selectedUser.username || '').toLowerCase()) {
+                            return user;
+                        }
+
+                        return {
+                            ...user,
+                            name: formData.name,
+                            displayName: (formData.displayName || '').trim() || formData.name,
+                            username: formData.username,
+                            email: normalizedEmail,
+                            phone: formData.phone || '',
+                            role: formData.role,
+                            status: formData.status,
+                            isArchived: formData.status !== 'Active',
+                        };
+                    });
+                });
+
+                const nextActorName = (formData.displayName || '').trim() || formData.name;
+                const selectedEffectiveName = (selectedUser.displayName || selectedUser.name || '').trim();
+                const actorName = selectedEffectiveName === currentUserName ? nextActorName : currentUserName;
+                logActivity(actorName, 'Updated User', `Updated user: ${formData.name}`);
+                showToast('User Updated', `${formData.name}'s profile has been updated.`, 'success', 'user-action');
+
+                refreshUsersFromBackend({ showLoader: false }).catch(() => {
+                    // Keep UI responsive even if background refresh fails.
+                });
             }
 
-            if (selectedUser.name !== formData.name) {
-                renameUserReferences(selectedUser.name, formData.name);
-            }
-
-            await loadUsers();
-            logActivity(currentUserName, 'Updated User', `Updated user: ${formData.name}`);
-            showToast('User Updated', `${formData.name}'s profile has been updated.`, 'success', 'user-action');
+            setIsModalOpen(false);
+            setFieldErrors({});
+        } finally {
+            setIsSavingUser(false);
         }
-        setIsModalOpen(false);
-        setFieldErrors({});
     };
 
     const toggleArchive = (user) => {
@@ -297,32 +573,53 @@ const UserList = () => {
     };
 
     const confirmArchive = async () => {
-        if (!userToArchive) return;
-        
-        const isRestoring = userToArchive.isArchived;
+        if (!userToArchive || isArchiveSubmitting) return;
+
+        setIsArchiveSubmitting(true);
+        const targetUser = userToArchive;
+        const isRestoring = targetUser.isArchived;
 
         try {
-            await updateUserByUsernameApi(userToArchive.username, {
+            await updateUserByUsernameApi(targetUser.username, {
                 isActive: isRestoring,
             });
-            await loadUsers();
         } catch (error) {
             showToast('Update Failed', error.message || 'Unable to update user status.', 'error', 'user-archive-action');
+            setIsArchiveSubmitting(false);
             return;
         }
 
-        logActivity(currentUserName, isRestoring ? 'Restored User' : 'Archived User', `${isRestoring ? 'Restored' : 'Archived'} user: ${userToArchive.name}`);
+        setUsers((prevUsers) => {
+            return (Array.isArray(prevUsers) ? prevUsers : []).map((user) => {
+                if (String(user.username || '').toLowerCase() !== String(targetUser.username || '').toLowerCase()) {
+                    return user;
+                }
+
+                return {
+                    ...user,
+                    status: isRestoring ? 'Active' : 'Inactive',
+                    isArchived: !isRestoring,
+                };
+            });
+        });
+
+        logActivity(currentUserName, isRestoring ? 'Restored User' : 'Archived User', `${isRestoring ? 'Restored' : 'Archived'} user: ${targetUser.name}`);
         showToast(
             isRestoring ? 'User Restored' : 'User Archived',
-            isRestoring 
-                ? `${userToArchive.name} is now active.` 
-                : `${userToArchive.name} has been archived.`,
+            isRestoring
+                ? `${targetUser.name} is now active.`
+                : `${targetUser.name} has been archived.`,
             'success',
             'user-archive-action'
         );
-        
+
         setIsArchiveModalOpen(false);
         setUserToArchive(null);
+        setIsArchiveSubmitting(false);
+
+        refreshUsersFromBackend({ showLoader: false }).catch(() => {
+            // Keep UI responsive even if background refresh fails.
+        });
     };
 
     return (
@@ -345,7 +642,20 @@ const UserList = () => {
                 </div>
 
                 {/* Main Content Area */}
-                <div className="flex-1 flex flex-col md:overflow-hidden transition-colors bg-transparent pt-3">
+                <div className="flex-1 min-h-0 flex flex-col md:overflow-visible transition-colors bg-transparent pt-3">
+                    {usersLoadError && (
+                        <div className="mx-5 mb-3 flex items-center justify-between gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700 dark:border-rose-800 dark:bg-rose-900/20 dark:text-rose-300">
+                            <span>Unable to load users: {usersLoadError}</span>
+                            <button
+                                type="button"
+                                onClick={() => refreshUsersFromBackend()}
+                                className="rounded border border-rose-300 px-2 py-1 text-[11px] font-bold text-rose-700 hover:bg-rose-100 dark:border-rose-700 dark:text-rose-300 dark:hover:bg-rose-900/30"
+                            >
+                                Retry
+                            </button>
+                        </div>
+                    )}
+
                     {/* Toolbar */}
                     <div className="px-5 pb-4 flex flex-col sm:flex-row justify-between items-center gap-4 bg-transparent">
                     <div className="relative w-full sm:w-64 group">
@@ -361,74 +671,108 @@ const UserList = () => {
                         </div>
                     </div>
 
-                    <button 
-                        onClick={handleOpenAdd}
-                        className="w-full sm:w-auto px-4 py-2 rounded-lg text-white font-bold text-xs shadow-md flex items-center justify-center gap-2 transition-all hover:opacity-90 transform hover:-translate-y-0.5"
-                        style={{ backgroundColor: '#111827' }}
-                    >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z"></path></svg>
-                        Add New User
-                    </button>
+                    <div className="w-full sm:w-auto flex items-center gap-2">
+                        <button
+                            type="button"
+                            onClick={() => setShowArchived(prev => !prev)}
+                            className={`group flex items-center rounded-lg border px-2.5 py-2 transition-all duration-300 ${showArchived ? 'border-gray-300 bg-gray-100 text-gray-700 dark:border-gray-500 dark:bg-gray-700 dark:text-gray-200' : 'border-orange-200 bg-orange-50 text-orange-600 dark:border-orange-800 dark:bg-orange-900/20 dark:text-orange-400'}`}
+                            title={showArchived ? 'Back to Active Users' : 'View Archived Users'}
+                        >
+                            {showArchived ? (
+                                <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7 7-7M3 12h13a5 5 0 010 10h-1"></path></svg>
+                            ) : (
+                                <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path></svg>
+                            )}
+                            <span className={`ml-0 max-w-0 overflow-hidden whitespace-nowrap text-xs font-bold opacity-0 transition-all duration-300 group-hover:ml-2 group-hover:opacity-100 ${showArchived ? 'group-hover:max-w-40' : 'group-hover:max-w-28'}`}>
+                                {showArchived ? 'Back to Active Users' : 'View Archive'}
+                            </span>
+                        </button>
+                        <div className="relative group/disabled-add w-full sm:w-auto">
+                            <button
+                                onClick={handleOpenAdd}
+                                className="w-full sm:w-auto px-4 py-2 rounded-lg text-white font-bold text-xs shadow-md flex items-center justify-center gap-2 transition-all hover:opacity-90 transform hover:-translate-y-0.5"
+                                style={{ backgroundColor: '#111827' }}
+                            >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z"></path></svg>
+                                Add New User
+                            </button>
+                        </div>
+                    </div>
                 </div>
 
                 {/* Table */}
-                <div className="flex-1 overflow-auto px-5 pb-5 custom-scrollbar">
-                     <table className="w-full text-left border-separate border-spacing-0 min-w-[800px]">
+                 <div className="flex-1 min-h-0 overflow-auto px-5 pb-5 custom-scrollbar">
+                     <table className="w-full text-left border-separate border-spacing-0 table-fixed min-w-275">
                         <thead className="sticky top-0 z-20 shadow-sm">
                             <tr className="bg-gray-900 dark:bg-gray-700 text-white uppercase tracking-wider">
-                                <th className="px-6 py-3 text-xs font-bold text-center border border-gray-700 pl-6">ID</th>
-                                <th className="px-6 py-3 text-xs font-bold text-left border border-gray-700">Name</th>
-                                <th className="px-6 py-3 text-xs font-bold text-left border border-gray-700">Contact Info</th>
-                                <th className="px-6 py-3 text-xs font-bold text-center border border-gray-700">Role</th>
-                                <th className="px-6 py-3 text-xs font-bold text-center border border-gray-700">Status</th>
-                                <th className="px-6 py-3 text-xs font-bold text-center border border-gray-700">Last Login</th>
-                                <th className="px-6 py-3 text-xs font-bold text-center border border-gray-700">Actions</th>
+                                <th className="w-20 px-6 py-3 text-xs font-bold text-center border border-gray-700 pl-6">ID</th>
+                                <th className="w-60 px-6 py-3 text-xs font-bold text-left border border-gray-700">Name</th>
+                                <th className="w-57.5 px-6 py-3 text-xs font-bold text-left border border-gray-700">Contact Info</th>
+                                <th className="w-40 px-6 py-3 text-xs font-bold text-center border border-gray-700">Role</th>
+                                <th className="w-30 px-6 py-3 text-xs font-bold text-center border border-gray-700">Status</th>
+                                <th className="w-45 px-6 py-3 text-xs font-bold text-center border border-gray-700">Last Login</th>
+                                <th className="w-42.5 px-6 py-3 text-xs font-bold text-center border border-gray-700">Actions</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-50 dark:divide-gray-700">
-                            {filteredUsers.length === 0 ? (
+                            {currentFilteredUsers.length === 0 ? (
                                 <tr>
-                                    <td colSpan="7" className="px-6 py-12 text-center text-gray-400 dark:text-gray-500">
-                                        No users found.
+                                    <td colSpan="7" className="px-6 py-12 text-center">
+                                        <div className="mx-auto max-w-md rounded-2xl p-8">
+                                            <div className={`mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full border ${showArchived ? 'bg-orange-50 border-orange-200 text-orange-600 dark:bg-orange-900/20 dark:border-orange-800 dark:text-orange-400' : 'bg-gray-100 border-gray-200 text-gray-500 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300'}`}>
+                                                {showArchived ? (
+                                                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path></svg>
+                                                ) : (
+                                                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
+                                                )}
+                                            </div>
+                                            <h3 className="text-sm font-black text-gray-900 dark:text-white">
+                                                {isUsersLoading
+                                                    ? 'Loading users...'
+                                                    : (showArchived ? 'No archived users yet' : (usersLoadError ? 'Unable to load users' : 'No active users found'))}
+                                            </h3>
+                                            <p className="mt-1 text-xs font-medium text-gray-500 dark:text-gray-400">
+                                                                {isUsersLoading
+                                                                    ? 'Fetching user records from backend. Please wait a moment.'
+                                                                    : (showArchived ? 'Archived accounts will appear here once you archive a user.' : (usersLoadError || (users.some((u) => u.isArchived) ? 'No active users found. You may have archived users; click View Archive.' : 'Try changing your search keyword or add a new user account.')))}
+                                            </p>
+                                        </div>
                                     </td>
                                 </tr>
                             ) : (
                                 paginatedUsers.map((user) => (
-                                    <tr key={user.id} className={`hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors group ${
-                                        user.isArchived 
-                                        ? 'bg-gray-50/50 dark:bg-gray-800' // Removed grayscale/opacity filter to fix tooltip clipping
-                                        : ''
-                                    }`}>
-                                        <td className={`px-6 py-3 text-center font-mono text-xs border border-gray-200 dark:border-gray-700 ${user.isArchived ? 'text-gray-300 dark:text-gray-600' : 'text-gray-400'}`}>
+                                    <tr key={user.id} className={`transition-colors group ${showArchived ? 'bg-gray-50/50 dark:bg-gray-800' : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'}`}>
+                                        <td className={`px-6 py-3 text-center font-mono text-xs border border-gray-200 dark:border-gray-700 ${showArchived ? 'text-gray-300 dark:text-gray-600' : 'text-gray-400'}`}>
                                             #{String(user.id).padStart(3, '0')}
                                         </td>
                                         <td className="px-6 py-3 border border-gray-200 dark:border-gray-700">
                                             <div className="flex items-center gap-3">
-                                                <div className={`h-8 w-8 rounded-full flex items-center justify-center font-bold text-xs uppercase ${
-                                                    user.isArchived 
-                                                    ? 'bg-gray-200 text-gray-400 dark:bg-gray-700 dark:text-gray-500' 
-                                                    : 'bg-gray-100 text-gray-600 dark:bg-gray-600 dark:text-gray-300'
-                                                }`}>
+                                                <div className={`h-8 w-8 rounded-full flex items-center justify-center font-bold text-xs uppercase ${showArchived ? 'bg-gray-200 text-gray-400 dark:bg-gray-700 dark:text-gray-500' : 'bg-gray-100 text-gray-600 dark:bg-gray-600 dark:text-gray-300'}`}>
                                                     {user.name.charAt(0)}
                                                 </div>
-                                                <div className={`text-sm font-bold ${user.isArchived ? 'text-gray-400 dark:text-gray-500 line-through' : 'text-gray-900 dark:text-white'}`}>
+                                                <div className={`text-sm font-bold ${showArchived ? 'text-gray-400 dark:text-gray-500 line-through' : 'text-gray-900 dark:text-white'}`}>
                                                     {user.name} <span className="text-[10px] font-normal text-gray-500 ml-1 no-underline">(@{user.username})</span>
                                                 </div>
+                                                {user.displayName && user.displayName !== user.name && (
+                                                    <div className="text-[10px] font-semibold text-gray-500 dark:text-gray-400">
+                                                        Display: {user.displayName}
+                                                    </div>
+                                                )}
                                             </div>
                                         </td>
                                         <td className="px-6 py-3 border border-gray-200 dark:border-gray-700">
                                             <div className="flex flex-col">
-                                                <div className={`text-xs font-medium ${user.isArchived ? 'text-gray-300 dark:text-gray-600' : 'text-gray-700 dark:text-gray-300'}`}>
+                                                <div className={`text-xs font-medium ${showArchived ? 'text-gray-300 dark:text-gray-600' : 'text-gray-700 dark:text-gray-300'}`}>
                                                     {user.email}
                                                 </div>
                                                 {user.phone && (
-                                                    <div className={`text-[11px] ${user.isArchived ? 'text-gray-300 dark:text-gray-600' : 'text-gray-400 dark:text-gray-500'}`}>
+                                                    <div className={`text-[11px] ${showArchived ? 'text-gray-300 dark:text-gray-600' : 'text-gray-400 dark:text-gray-500'}`}>
                                                         {user.phone}
                                                     </div>
                                                 )}
                                             </div>
                                         </td>
-                                        <td className="px-6 py-3 text-center border border-gray-200 dark:border-gray-700">
+                                        <td className="w-40 px-6 py-3 text-center border border-gray-200 dark:border-gray-700 overflow-hidden">
                                             <span className={`px-2 py-1 rounded-md text-xs font-semibold ${
                                                 user.role === ROLES.SUPER_ADMIN 
                                                 ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300' 
@@ -450,40 +794,35 @@ const UserList = () => {
                                         </td>
                                         <td className="px-6 py-3 text-center border border-gray-200 dark:border-gray-700">
                                             <div className="flex items-center justify-center gap-2">
-                                                {user.role !== ROLES.SUPER_ADMIN && (
+                                                {user.role !== ROLES.SUPER_ADMIN && !showArchived && (
                                                     <>
                                                         <button 
                                                             onClick={() => handleOpenEdit(user)}
-                                                            className="group/btn relative p-1.5 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors"
+                                                            className="group/btn inline-flex items-center rounded-lg bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-all px-2 py-1.5"
                                                         >
                                                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
-                                                            <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover/btn:block z-20 w-max pointer-events-none">
-                                                                <span className="bg-gray-900 text-white text-xs rounded py-1 px-2 shadow-lg block">Edit</span>
-                                                                <span className="w-2 h-2 bg-gray-900 rotate-45 absolute -bottom-1 left-1/2 -translate-x-1/2 block"></span>
-                                                            </span>
+                                                            <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 text-[10px] font-bold group-hover/btn:ml-1 group-hover/btn:max-w-16 group-hover/btn:opacity-100">Edit</span>
                                                         </button>
-                                                        <button 
+                                                        <button
                                                             onClick={() => toggleArchive(user)}
-                                                            className={`group/btn relative p-1.5 rounded-lg transition-colors ${
-                                                                user.isArchived 
-                                                                ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/40' 
-                                                                : 'bg-orange-50 dark:bg-orange-900/20 text-orange-600 dark:text-orange-400 hover:bg-orange-100 dark:hover:bg-orange-900/40'
-                                                            }`}
+                                                            className="group/btn inline-flex items-center rounded-lg transition-all bg-orange-50 dark:bg-orange-900/20 text-orange-600 dark:text-orange-400 hover:bg-orange-100 dark:hover:bg-orange-900/40 px-2 py-1.5"
                                                         >
-                                                            {user.isArchived ? (
-                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-                                                     ) : (
-                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path></svg>
-                                                     )}
-                                                     <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover/btn:block z-20 w-max pointer-events-none">
-                                                        <span className="bg-gray-900 text-white text-xs rounded py-1 px-2 shadow-lg block">
-                                                            {user.isArchived ? "Restore" : "Archive"}
-                                                        </span>
-                                                        <span className="w-2 h-2 bg-gray-900 rotate-45 absolute -bottom-1 left-1/2 -translate-x-1/2 block"></span>
-                                                    </span>
-                                                </button>
+                                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path></svg>
+                                                            <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 text-[10px] font-bold group-hover/btn:ml-1 group-hover/btn:max-w-20 group-hover/btn:opacity-100">Archive</span>
+                                                        </button>
                                                 </>
                                             )}
+                                                {user.role !== ROLES.SUPER_ADMIN && showArchived && (
+                                                    <>
+                                                        <button
+                                                            onClick={() => toggleArchive(user)}
+                                                            className="group/btn inline-flex items-center rounded-lg transition-all bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 px-2 py-1.5"
+                                                        >
+                                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                                                            <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 text-[10px] font-bold group-hover/btn:ml-1 group-hover/btn:max-w-20 group-hover/btn:opacity-100">Restore</span>
+                                                        </button>
+                                                    </>
+                                                )}
                                             </div>
                                         </td>
                                     </tr>
@@ -496,7 +835,7 @@ const UserList = () => {
                 {/* Pagination Controls */}
                 <div className="shrink-0 flex justify-between items-center px-5 py-3 border-t border-slate-300 dark:border-gray-700 bg-transparent">
                         <div className="text-xs text-gray-500 dark:text-gray-400 font-medium">
-                            Showing <span className="font-bold text-gray-900 dark:text-white">{filteredUsers.length === 0 ? 0 : indexOfFirstItem + 1}</span> to <span className="font-bold text-gray-900 dark:text-white">{Math.min(indexOfLastItem, filteredUsers.length)}</span> of <span className="font-bold text-gray-900 dark:text-white">{filteredUsers.length}</span> results
+                            Showing <span className="font-bold text-gray-900 dark:text-white">{currentFilteredUsers.length === 0 ? 0 : indexOfFirstItem + 1}</span> to <span className="font-bold text-gray-900 dark:text-white">{Math.min(indexOfLastItem, currentFilteredUsers.length)}</span> of <span className="font-bold text-gray-900 dark:text-white">{currentFilteredUsers.length}</span> {showArchived ? 'archived users' : 'active users'}
                         </div>
                         <div className="flex items-center gap-1">
                             <button
@@ -595,6 +934,24 @@ const UserList = () => {
                                     {fieldErrors.name && <p className="text-rose-500 text-[11px] mt-1">{fieldErrors.name}</p>}
                                 </div>
                             </div>
+
+                            <div className="grid grid-cols-1 gap-3">
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 tracking-wider mb-1">Display Name</label>
+                                    <input
+                                        type="text"
+                                        value={formData.displayName}
+                                        onChange={e => {
+                                            setFieldErrors(prev => ({ ...prev, displayName: '' }));
+                                            setFormData({ ...formData, displayName: e.target.value });
+                                        }}
+                                        className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
+                                        placeholder="Name shown in dashboard and logs"
+                                    />
+                                    <p className="text-[10px] text-gray-400 mt-1">Optional. If left blank, full name will be used as display name.</p>
+                                    {fieldErrors.displayName && <p className="text-rose-500 text-[11px] mt-1">{fieldErrors.displayName}</p>}
+                                </div>
+                            </div>
                             
                             {/* Row 2: Role and Status */}
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -656,8 +1013,8 @@ const UserList = () => {
                                                 setFormData({...formData, phone: digits});
                                             }
                                         }}
-                                        className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white" required
-                                        placeholder="09171234567"
+                                        className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
+                                        placeholder="Enter 11-digit phone number"
                                     />
                                     <p className="text-[10px] text-gray-400 mt-1">Optional; enter 11 digits (e.g. 09171234567).</p>
                                     {formData.phone && formData.phone.length !== 11 && (
@@ -683,7 +1040,7 @@ const UserList = () => {
                                         className={`w-full p-2 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white ${modalMode === 'add' ? 'bg-gray-100 dark:bg-gray-800 text-gray-500 cursor-not-allowed' : 'bg-white dark:bg-gray-700'}`}
                                         placeholder="username123"
                                     />
-                                    {modalMode === 'add' && <p className="text-[10px] text-gray-400 mt-1">Auto-generated based on ID</p>}
+                                    {modalMode === 'add' && <p className="text-[10px] text-gray-400 mt-1">Auto-generated from next available username sequence.</p>}
                                     {modalMode === 'edit' && <p className="text-[10px] text-gray-400 mt-1">Alphanumeric, underscores and dots allowed. Cannot be changed for new users.</p>}
                                     {fieldErrors.username && <p className="text-rose-500 text-[11px] mt-1">{fieldErrors.username}</p>}
                                 </div>
@@ -768,11 +1125,17 @@ const UserList = () => {
                                         value={formData.pin}
                                         maxLength={6}
                                         onChange={e => {
-                                            const digits = e.target.value.replace(/\D/g, '');
-                                            if (digits.length <= 6) {
+                                            const rawValue = e.target.value;
+
+                                            if (rawValue && /\D/.test(rawValue)) {
                                                 setFieldErrors(prev => ({ ...prev, pin: '' }));
-                                                setFormData({...formData, pin: digits});
+                                                setFormData({ ...formData, pin: '' });
+                                                return;
                                             }
+
+                                            const digits = rawValue.slice(0, 6);
+                                            setFieldErrors(prev => ({ ...prev, pin: '' }));
+                                            setFormData({...formData, pin: digits});
                                         }}
                                         className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
                                     />
@@ -784,11 +1147,11 @@ const UserList = () => {
 
                             <button 
                                 type="submit"
-                                disabled={!isFormModified}
-                                style={{ backgroundColor: isFormModified ? '#111827' : '#9ca3af', cursor: isFormModified ? 'pointer' : 'not-allowed' }}
-                                className={`w-full py-2 text-white rounded-lg font-bold uppercase tracking-widest shadow-lg transition-all transform text-xs ${isFormModified ? 'hover:-translate-y-0.5 hover:opacity-90' : 'opacity-70'}`}
+                                disabled={!isFormModified || isSavingUser}
+                                style={{ backgroundColor: isFormModified && !isSavingUser ? '#111827' : '#9ca3af', cursor: isFormModified && !isSavingUser ? 'pointer' : 'not-allowed' }}
+                                className={`w-full py-2 text-white rounded-lg font-bold uppercase tracking-widest shadow-lg transition-all transform text-xs ${isFormModified && !isSavingUser ? 'hover:-translate-y-0.5 hover:opacity-90' : 'opacity-70'}`}
                             >
-                                {modalMode === 'add' ? 'Create User' : 'Save Changes'}
+                                {isSavingUser ? (modalMode === 'add' ? 'Creating...' : 'Saving...') : (modalMode === 'add' ? 'Create User' : 'Save Changes')}
                             </button>
                         </form>
                     </div>
@@ -816,16 +1179,18 @@ const UserList = () => {
                             <div className="flex gap-3">
                                 <button
                                     onClick={() => setIsArchiveModalOpen(false)}
+                                    disabled={isArchiveSubmitting}
                                     className="flex-1 py-2.5 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-xl font-bold text-sm hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
                                 >
                                     Cancel
                                 </button>
                                 <button
                                     onClick={confirmArchive}
+                                    disabled={isArchiveSubmitting}
                                     style={{ backgroundColor: '#111827' }}
                                     className="flex-1 py-2.5 text-white rounded-xl font-bold text-sm shadow-md hover:opacity-90 transition-all transform hover:-translate-y-0.5"
                                 >
-                                    Confirm
+                                    {isArchiveSubmitting ? 'Processing...' : 'Confirm'}
                                 </button>
                             </div>
                         </div>

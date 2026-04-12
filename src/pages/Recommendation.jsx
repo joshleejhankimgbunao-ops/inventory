@@ -1,5 +1,11 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { getAlternatives, getRawSystemRecommendations } from '../utils/recommendationLogic';
+import {
+    getAlternatives,
+    getAlternativesByBudget,
+    getRelativePriceTier,
+    getRawSystemRecommendations,
+    getStockStatus,
+} from '../utils/recommendationLogic';
 import { useInventory } from '../context/InventoryContext';
 import { useAuth } from '../context/AuthContext';
 import { showToast } from '../utils/toastHelper';
@@ -7,7 +13,20 @@ import { showToast } from '../utils/toastHelper';
 const Recommendation = () => {
     const [searchTerm, setSearchTerm] = useState('');
     const [selectedCategory, setSelectedCategory] = useState('All');
+    const [stockScope, setStockScope] = useState('all');
+    const [currentPage, setCurrentPage] = useState(1);
+    const itemsPerPage = 16;
     const { appSettings } = useAuth() || {};
+    const formatCurrency = (value) => `₱${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const getTierDisplayLabel = (tier) => {
+        if (tier === 'value') return 'Value';
+        if (tier === 'standard') return 'Standard';
+        if (tier === 'premium') return 'Premium';
+        if (tier === 'low') return 'Value';
+        if (tier === 'moderate') return 'Standard';
+        if (tier === 'high') return 'Premium';
+        return 'Standard';
+    };
 
     // Inventory helpers from context
     const { inventory: rawInventory, setInventory, processedInventory, logActivity, logAction } = useInventory();
@@ -42,9 +61,12 @@ const Recommendation = () => {
     }, [inventory]);
     
     // Logic to find items that need recommendation
-    const criticalItems = useMemo(() => {
+    const attentionItems = useMemo(() => {
         return inventory.filter(item => {
-            if (item.stock > 10) return false; // Threshold filters
+            const status = getStockStatus(item, appSettings);
+
+            if (stockScope === 'needs-attention' && status === 'In Stock') return false;
+            if (stockScope === 'in-stock' && status !== 'In Stock') return false;
             
             const searchLower = searchTerm.toLowerCase();
             const matchesSearch = item.name.toLowerCase().includes(searchLower) || 
@@ -55,7 +77,29 @@ const Recommendation = () => {
 
             return matchesSearch && matchesCategory;
         });
-    }, [inventory, searchTerm, selectedCategory]);
+    }, [inventory, searchTerm, selectedCategory, appSettings, stockScope]);
+
+    useEffect(() => {
+        setCurrentPage(1);
+    }, [searchTerm, selectedCategory, stockScope]);
+
+    const totalPages = Math.ceil(attentionItems.length / itemsPerPage);
+    const hasResults = attentionItems.length > 0;
+    const displayStart = hasResults ? (currentPage - 1) * itemsPerPage + 1 : 0;
+    const displayEnd = hasResults ? Math.min(currentPage * itemsPerPage, attentionItems.length) : 0;
+
+    useEffect(() => {
+        if (totalPages > 0 && currentPage > totalPages) {
+            setCurrentPage(totalPages);
+        }
+    }, [currentPage, totalPages]);
+
+    const paginatedAttentionItems = useMemo(() => {
+        if (!hasResults) return [];
+        const startIndex = (currentPage - 1) * itemsPerPage;
+        const endIndex = startIndex + itemsPerPage;
+        return attentionItems.slice(startIndex, endIndex);
+    }, [attentionItems, currentPage, hasResults]);
 
     // Remove Alternative Trigger
     const handleRemoveAlternative = (targetItemCode, alternativeCode, alternativeName) => {
@@ -116,7 +160,7 @@ const Recommendation = () => {
         if (!activeTargetItem) return [];
         
         // Get raw top recommendations by system (ignoring exclusions) to flag them
-        const systemRecs = getRawSystemRecommendations(activeTargetItem, inventory);
+        const systemRecs = getRawSystemRecommendations(activeTargetItem, inventory, appSettings);
         const systemRecCodes = systemRecs.map(r => r.code);
         
         const search = addSearchTerm.toLowerCase();
@@ -141,6 +185,7 @@ const Recommendation = () => {
         })
         .map(item => ({
              ...item,
+               recommendationTier: getRelativePriceTier(activeTargetItem?.price, item?.price),
              isSystemRecommended: systemRecCodes.includes(item.code)
         }))
         .sort((a, b) => {
@@ -156,22 +201,22 @@ const Recommendation = () => {
     return (
         <div className="flex flex-col h-auto md:h-full bg-slate-200/50 p-6 md:overflow-hidden rounded-2xl shadow-inner border border-slate-300">
             {/* Header Section */}
-            <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 mb-8 shrink-0 relative z-10">
+            <div className="flex flex-col gap-4 mb-8 shrink-0 relative z-10">
                 <div className="flex items-center gap-3">
                     <div className="p-2 bg-gray-100 rounded-lg shrink-0 hidden sm:block">
                         <svg className="w-6 h-6 text-gray-900" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.384-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" /></svg>
                     </div>
                     <div className="overflow-hidden">
-                        <h1 className="text-2xl font-bold text-gray-900 tracking-tight">Product Recommendations</h1>
+                        <h1 className="text-2xl font-bold text-gray-900 tracking-tight whitespace-nowrap">Product Recommendations</h1>
                         <p className="text-gray-500 text-sm mt-1 truncate">Manage product alternatives and view system suggestions.</p>
                     </div>
                 </div>
                 {/* Search / Filter Controls */}
-                <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto items-center">
+                <div className="flex flex-col sm:flex-row gap-3 w-full items-stretch sm:items-center">
                     <div className="relative w-full md:max-w-xs group z-20">
                         <input
                             type="text"
-                            placeholder="Search critical items..."
+                            placeholder="Search products..."
                             value={searchTerm}
                             onChange={(e) => setSearchTerm(e.target.value)}
                             className="w-full pl-10 pr-3 py-2 bg-gray-50 border-2 border-gray-100 rounded-xl text-sm focus:bg-white focus:border-gray-900 focus:ring-4 focus:ring-gray-100 transition-all shadow-sm placeholder:text-gray-400 font-bold text-gray-800"
@@ -185,30 +230,44 @@ const Recommendation = () => {
                     <select
                         value={selectedCategory}
                         onChange={(e) => setSelectedCategory(e.target.value)}
-                        className={`appearance-none w-full md:w-56 px-3 py-2 rounded-xl text-sm font-bold inline-flex items-center transition-all border-2 ${selectedCategory !== 'All' ? 'bg-gray-900 dark:bg-gray-600 text-white border-gray-900 dark:border-gray-500' : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-200 dark:border-gray-600 hover:border-gray-400'}`}
+                        className="appearance-none w-full md:w-48 px-3 py-1.5 rounded-xl text-sm font-bold inline-flex items-center transition-all border-2 bg-gray-900 dark:bg-gray-600 text-white border-gray-900 dark:border-gray-500 hover:opacity-90"
                     >
                         {categories.map(cat => (
-                            <option key={cat} value={cat} className="bg-white text-gray-900 py-1">{cat}</option>
+                            <option key={cat} value={cat}>{cat}</option>
                         ))}
+                    </select>
+                    <select
+                        value={stockScope}
+                        onChange={(e) => setStockScope(e.target.value)}
+                        className="appearance-none w-full md:w-48 px-3 py-1.5 rounded-xl text-sm font-bold inline-flex items-center transition-all border-2 bg-gray-900 dark:bg-gray-600 text-white border-gray-900 dark:border-gray-500 hover:opacity-90"
+                    >
+                        <option value="all" className="bg-white text-gray-900 py-1">All Products</option>
+                        <option value="needs-attention" className="bg-white text-gray-900 py-1">Low/Out Stock</option>
+                        <option value="in-stock" className="bg-white text-gray-900 py-1">In Stock</option>
                     </select>
                 </div>
             </div>
 
             {/* Main Content Grid */}
             <div className="flex-1 overflow-y-auto pr-2 pb-2 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-gray-200">
-                {criticalItems.length === 0 ? (
+                {attentionItems.length === 0 ? (
                     <div className="h-full flex flex-col items-center justify-center text-center p-8 opacity-60">
                         <div className="w-16 h-16 bg-gray-100/50 rounded-full flex items-center justify-center mb-4 border border-gray-100">
                             <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                         </div>
                         <h3 className="text-lg font-bold text-gray-900">No Recommendations</h3>
-                        <p className="text-gray-500 text-sm">No items require immediate attention.</p>
+                        <p className="text-gray-500 text-sm">No products match your current filters.</p>
                     </div>
                 ) : (
+                    <>
                     <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-                        {criticalItems.map((item) => {
-                            const alternatives = getAlternatives(item, inventory);
-                            const isOutOfStock = item.stock <= 0;
+                        {paginatedAttentionItems.map((item) => {
+                            const stockStatus = getStockStatus(item, appSettings);
+                            const alternatives = getAlternatives(item, inventory, appSettings, { maxSuggestions: 6 });
+                            const budgetOptions = getAlternativesByBudget(item, inventory, appSettings, { limitPerTier: 1, maxSuggestions: 9 });
+                            const isOutOfStock = stockStatus === 'Out of Stock';
+                            const isLowStock = stockStatus === 'Low Stock';
+                            const isInStock = stockStatus === 'In Stock';
                             
                             return (
                                 <div key={item.code} className="bg-white rounded-xl border border-slate-200 hover:border-slate-300 transition-all shadow-sm hover:shadow-md flex flex-col font-sans overflow-hidden min-h-[220px]">
@@ -218,9 +277,13 @@ const Recommendation = () => {
                                             <div>
                                                 <div className="flex items-center justify-between mb-2">
                                                     <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide ${
-                                                        isOutOfStock ? 'bg-rose-50 text-rose-700 border border-rose-100' : 'bg-amber-50 text-amber-700 border border-amber-100'
+                                                        isOutOfStock
+                                                            ? 'bg-rose-50 text-rose-700 border border-rose-100'
+                                                            : isLowStock
+                                                                ? 'bg-amber-50 text-amber-700 border border-amber-100'
+                                                                : 'bg-emerald-50 text-emerald-700 border border-emerald-100'
                                                     }`}>
-                                                        {isOutOfStock ? 'Out of Stock' : 'Low Stock'}
+                                                        {stockStatus}
                                                     </span>
                                                     <span className="text-[10px] font-mono text-gray-400">{item.code}</span>
                                                 </div>
@@ -234,7 +297,7 @@ const Recommendation = () => {
                                                     </div>
                                                     <div>
                                                         <span className="block text-[9px] font-semibold text-gray-400 uppercase tracking-wider">Price</span>
-                                                        <span className="text-lg font-bold text-gray-900">₱{item.price}</span>
+                                                        <span className="text-lg font-bold text-gray-900">{formatCurrency(item.price)}</span>
                                                     </div>
                                                 </div>
                                             </div>
@@ -258,7 +321,7 @@ const Recommendation = () => {
                                             <div className="flex items-center justify-between mb-2">
                                                 <h4 className="text-[10px] font-bold text-gray-900 flex items-center gap-1.5 uppercase tracking-wide">
                                                     <svg className="w-3 h-3 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-                                                    Alternatives
+                                                    {isInStock ? 'Budget Options & Alternatives' : 'Alternatives'}
                                                 </h4>
                                                 <button 
                                                     onClick={() => {
@@ -267,14 +330,36 @@ const Recommendation = () => {
                                                         setAddFilterCategory('All'); // Default all or item.category
                                                         setIsAddModalOpen(true);
                                                     }}
-                                                    className="p-1 rounded bg-gray-100 hover:bg-gray-200 text-gray-600 transition-colors"
-                                                    title="Add Alternative Product"
+                                                    className="group/btn inline-flex items-center rounded-md border border-gray-900 bg-gray-900 text-white hover:bg-black hover:border-black shadow-sm transition-all px-2 py-1"
                                                 >
                                                     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"/></svg>
+                                                    <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 text-[10px] font-bold group-hover/btn:ml-1 group-hover/btn:max-w-24 group-hover/btn:opacity-100">Add Alternative</span>
                                                 </button>
                                             </div>
+
+                                            <p className="text-[9px] text-gray-400 mb-2">
+                                                {isInStock
+                                                    ? 'Budget options are shown only for in-stock products.'
+                                                    : 'Low/Out-of-stock uses standard alternatives only.'}
+                                            </p>
                                             
-                                            <div className="space-y-2 overflow-y-auto max-h-40 scrollbar-thin scrollbar-thumb-gray-200 pr-1">
+                                            {isInStock && (
+                                                <div className="grid grid-cols-3 gap-1 mb-2">
+                                                    {[
+                                                        { key: 'low', label: 'Value', color: 'bg-emerald-50 border-emerald-200 text-emerald-700' },
+                                                        { key: 'moderate', label: 'Standard', color: 'bg-amber-50 border-amber-200 text-amber-700' },
+                                                        { key: 'high', label: 'Premium', color: 'bg-rose-50 border-rose-200 text-rose-700' },
+                                                    ].map((tier) => {
+                                                        return (
+                                                            <div key={tier.key} className={`rounded-md border px-1.5 py-1 ${tier.color}`}>
+                                                                <p className="text-[9px] font-black uppercase tracking-wider">{tier.label}</p>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            )}
+
+                                            <div className="space-y-2 overflow-y-auto overflow-x-hidden max-h-40 scrollbar-thin scrollbar-thumb-gray-200 pr-1">
                                                 {alternatives.length > 0 ? (
                                                     alternatives.map(alt => (
                                                         <div key={alt.code} className="relative p-3 bg-white rounded-xl border border-slate-100 hover:border-slate-300 shadow-sm hover:shadow-md transition-all group/alt">
@@ -286,10 +371,15 @@ const Recommendation = () => {
                                                                     setViewDetailsItem(alt);
                                                                     setIsDetailsModalOpen(true);
                                                                 }}
-                                                                className="absolute -top-2 -left-2 opacity-0 group-hover/alt:opacity-100 w-6 h-6 bg-white border border-gray-200 text-gray-400 hover:text-white hover:bg-[#111827] hover:border-gray-900 rounded-full flex items-center justify-center shadow-sm transition-all z-10 transform scale-90 group-hover/alt:scale-100"
-                                                                title="View Details"
+                                                                className="group/btn absolute -top-2 -left-2 opacity-0 group-hover/alt:opacity-100 w-6 h-6 bg-white border border-gray-200 text-gray-400 hover:text-white hover:bg-[#111827] hover:border-gray-900 rounded-full flex items-center justify-center shadow-sm transition-all z-10 transform scale-90 group-hover/alt:scale-100"
                                                             >
                                                                 <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                                                                <span className="absolute top-full left-0 mt-2 z-50 w-max pointer-events-none opacity-0 transition-opacity duration-150 group-hover/btn:opacity-100">
+                                                                    <span className="bg-gray-900 text-white text-[10px] rounded py-1 px-2 shadow-lg block whitespace-nowrap">
+                                                                        View Details
+                                                                    </span>
+                                                                    <span className="w-2 h-2 bg-gray-900 rotate-45 absolute -top-1 left-3 block"></span>
+                                                                </span>
                                                             </button>
 
                                                             {/* Remove Button (Absolute Top Right) */}
@@ -298,18 +388,30 @@ const Recommendation = () => {
                                                                     e.stopPropagation();
                                                                     handleRemoveAlternative(item.code, alt.code, alt.name);
                                                                 }}
-                                                                className="absolute -top-2 -right-2 opacity-0 group-hover/alt:opacity-100 w-6 h-6 bg-white border border-gray-200 text-gray-400 hover:text-rose-500 hover:border-rose-200 rounded-full flex items-center justify-center shadow-sm transition-all z-10 transform scale-90 group-hover/alt:scale-100"
-                                                                title="Remove from alternatives"
+                                                                className="group/btn absolute -top-2 -right-2 opacity-0 group-hover/alt:opacity-100 w-6 h-6 bg-white border border-gray-200 text-gray-400 hover:text-rose-500 hover:border-rose-200 rounded-full flex items-center justify-center shadow-sm transition-all z-10 transform scale-90 group-hover/alt:scale-100"
                                                             >
                                                                 <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                                                                <span className="absolute top-full right-0 mt-2 z-50 w-max pointer-events-none opacity-0 transition-opacity duration-150 group-hover/btn:opacity-100">
+                                                                    <span className="bg-gray-900 text-white text-[10px] rounded py-1 px-2 shadow-lg block whitespace-nowrap">
+                                                                        Remove from alternatives
+                                                                    </span>
+                                                                    <span className="w-2 h-2 bg-gray-900 rotate-45 absolute -top-1 right-3 block"></span>
+                                                                </span>
                                                             </button>
 
                                                             {/* Card Content using Flex and Grid for stability */}
                                                             <div className="flex flex-col gap-1.5">
                                                                 <div className="flex justify-between items-start gap-2">
                                                                     <span className="text-[11px] font-bold text-gray-800 leading-snug line-clamp-2" title={alt.name}>{alt.name}</span>
-                                                                    <span className="text-[11px] font-bold text-gray-900 bg-gray-50 px-1.5 py-0.5 rounded shrink-0">₱{alt.price}</span>
+                                                                    <span className="text-[11px] font-bold text-gray-900 bg-gray-50 px-1.5 py-0.5 rounded shrink-0">{formatCurrency(alt.price)}</span>
                                                                 </div>
+                                                                {isInStock && (
+                                                                    <div className="flex items-center justify-between gap-2">
+                                                                        <span className="text-[9px] font-black uppercase tracking-wider text-indigo-700 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded-full">
+                                                                            {getTierDisplayLabel(alt.recommendationTier || getRelativePriceTier(item?.price, alt?.price))}
+                                                                        </span>
+                                                                    </div>
+                                                                )}
                                                                 
                                                                 <div className="flex justify-between items-center pt-1 border-t border-slate-50 mt-1">
                                                                     <span className="text-[9px] font-semibold text-gray-400 uppercase tracking-wider truncate max-w-[80px]">{alt.brand || 'No Brand'}</span>
@@ -334,6 +436,53 @@ const Recommendation = () => {
                             );
                         })}
                     </div>
+                    <div className="mt-4 w-full border border-slate-300 bg-slate-200 px-4 py-2 rounded-xl">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="text-xs text-gray-500 font-medium">
+                                Showing <span className="font-bold text-gray-900">{displayStart}</span> to <span className="font-bold text-gray-900">{displayEnd}</span> of <span className="font-bold text-gray-900">{attentionItems.length}</span> results
+                            </div>
+                            <div className="flex items-center gap-1">
+                                <button
+                                    onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+                                    disabled={currentPage === 1 || totalPages === 0}
+                                    className={`p-1.5 rounded-lg border border-gray-200 transition-all ${(currentPage === 1 || totalPages === 0) ? 'text-gray-300 cursor-not-allowed' : 'text-gray-600 hover:bg-white'}`}
+                                >
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7"></path></svg>
+                                </button>
+                                {(() => {
+                                    const maxVisible = 5;
+                                    let start = Math.max(1, currentPage - Math.floor(maxVisible / 2));
+                                    let end = start + maxVisible - 1;
+                                    if (end > totalPages) { end = totalPages; start = Math.max(1, end - maxVisible + 1); }
+                                    const pages = [];
+                                    if (start > 1) pages.push(<button key="first" onClick={() => setCurrentPage(1)} className="w-7 h-7 rounded-lg text-xs font-bold text-gray-500 hover:bg-gray-100 transition-all">1</button>);
+                                    if (start > 2) pages.push(<span key="dots-start" className="text-gray-400 text-xs px-0.5">...</span>);
+                                    for (let i = start; i <= end; i++) {
+                                        pages.push(
+                                            <button key={i} onClick={() => setCurrentPage(i)}
+                                                className={`w-7 h-7 rounded-lg text-xs font-bold transition-all ${
+                                                    currentPage === i
+                                                    ? 'bg-gray-900 text-white shadow-sm'
+                                                    : 'text-gray-600 hover:bg-gray-100'
+                                                }`}
+                                            >{i}</button>
+                                        );
+                                    }
+                                    if (end < totalPages - 1) pages.push(<span key="dots-end" className="text-gray-400 text-xs px-0.5">...</span>);
+                                    if (end < totalPages) pages.push(<button key="last" onClick={() => setCurrentPage(totalPages)} className="w-7 h-7 rounded-lg text-xs font-bold text-gray-500 hover:bg-gray-100 transition-all">{totalPages}</button>);
+                                    return pages;
+                                })()}
+                                <button
+                                    onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+                                    disabled={currentPage === totalPages || totalPages === 0}
+                                    className={`p-1.5 rounded-lg border border-gray-200 transition-all ${(currentPage === totalPages || totalPages === 0) ? 'text-gray-300 cursor-not-allowed' : 'text-gray-600 hover:bg-white'}`}
+                                >
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7"></path></svg>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    </>
                 )}
             </div>
 
@@ -431,7 +580,7 @@ const Recommendation = () => {
                                                         </span>
                                                     )}
                                                 </div>
-                                                <div className="text-xs text-gray-500 truncate">{item.brand} • ₱{item.price} • {item.stock} in stock</div>
+                                                <div className="text-xs text-gray-500 truncate">{item.brand} • {formatCurrency(item.price)} • {item.stock} in stock • {getTierDisplayLabel(item.recommendationTier || getRelativePriceTier(activeTargetItem?.price, item?.price))}</div>
                                             </div>
                                             
                                             <div className="flex items-center gap-2 shrink-0">
@@ -513,7 +662,7 @@ const Recommendation = () => {
                                     </div>
                                     <div>
                                         <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Price</p>
-                                        <p className="text-sm font-bold text-gray-900">₱{viewDetailsItem.price}</p>
+                                        <p className="text-sm font-bold text-gray-900">{formatCurrency(viewDetailsItem.price)}</p>
                                     </div>
                                     <div>
                                         <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Size</p>

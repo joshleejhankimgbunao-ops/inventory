@@ -1,78 +1,220 @@
 import React, { createContext, useState, useEffect, useMemo, useContext } from 'react';
-import { getLowStockThreshold } from '../utils/recommendationLogic';
+import { getStockStatus } from '../utils/recommendationLogic';
 import { useAuth } from './AuthContext';
 import { getAuthToken } from '../services/apiClient';
 import {
     listProductsApi,
     createSaleApi,
-    listSalesHistoryApi,
-    listInventoryLogsApi,
+    listCategoriesApi,
+    listSalesHistoryViewApi,
     listActivityLogsApi,
-    archiveSaleApi,
-    restoreSaleApi,
+    listInventoryLogsApi,
 } from '../services/inventoryApi';
 
-const InventoryContext = createContext();
+const INVENTORY_FALLBACK = {
+    inventory: [],
+    setInventory: () => {},
+    categories: [],
+    setCategories: () => {},
+    fetchCategories: () => {},
+    transactions: [],
+    setTransactions: () => {},
+    inventoryLogs: [],
+    setInventoryLogs: () => {},
+    activityLogs: [],
+    setActivityLogs: () => {},
+    logActivity: () => {},
+    processedInventory: [],
+    logAction: () => {},
+    handleResetHistory: () => {},
+    renameUserReferences: () => {},
+    removeUserReferences: () => {},
+    syncQueue: [],
+    addToSyncQueue: () => {},
+    isOnline: true,
+    isTransactionsLoading: false,
+    isInventoryLogsLoading: false,
+};
+
+const InventoryContext = createContext(INVENTORY_FALLBACK);
 
 export const useInventory = () => {
     const context = useContext(InventoryContext);
     if (!context) {
-        throw new Error('useInventory must be used within an InventoryProvider');
+        return INVENTORY_FALLBACK;
     }
     return context;
 };
 
 export const InventoryProvider = ({ children }) => {
-    const { appSettings, currentUserName } = useAuth(); // Depend on Auth Context for settings
+    const { appSettings, userRole, currentUserName, currentAuthUsername } = useAuth(); // Depend on Auth Context for settings and auth session changes
 
-    const [inventory, setInventory] = useState([]);
-    const [transactions, setTransactions] = useState([]);
-    const [inventoryLogs, setInventoryLogs] = useState([]);
-    const [activityLogs, setActivityLogs] = useState([]);
+    const normalizeName = (value) => String(value || '').trim().toLowerCase();
+    const preferredSuperAdminName = useMemo(() => {
+        const configured = String(appSettings?.adminDisplayName || '').trim();
+        const currentSessionName = String(currentUserName || '').trim();
 
-    const refreshBackendData = async () => {
-        const token = getAuthToken();
-        if (!token) {
-            setInventory([]);
-            setTransactions([]);
-            setInventoryLogs([]);
-            setActivityLogs([]);
-            return;
+        if (configured && normalizeName(configured) !== 'admin user') {
+            return configured;
         }
 
-        const [remoteProducts, remoteTransactions, remoteInventoryLogs, remoteActivityLogs] = await Promise.all([
-            listProductsApi(),
-            listSalesHistoryApi(true),
-            listInventoryLogsApi(300),
-            listActivityLogsApi(300),
-        ]);
+        if (currentSessionName && normalizeName(currentSessionName) !== 'admin user') {
+            return currentSessionName;
+        }
 
-        setInventory(Array.isArray(remoteProducts) ? remoteProducts : []);
-        setTransactions(Array.isArray(remoteTransactions) ? remoteTransactions : []);
-        setInventoryLogs(Array.isArray(remoteInventoryLogs) ? remoteInventoryLogs : []);
-        setActivityLogs(Array.isArray(remoteActivityLogs) ? remoteActivityLogs : []);
-    };
+        return configured || currentSessionName || 'Admin User';
+    }, [appSettings?.adminDisplayName, currentUserName]);
+
+    // 1. Inventory State (backend-first)
+    const [inventory, setInventory] = useState([]);
 
      useEffect(() => {
+        let isMounted = true;
+
         const loadRemoteInventory = async () => {
             const token = getAuthToken();
             if (!token) {
-                setInventory([]);
-                setTransactions([]);
-                setInventoryLogs([]);
-                setActivityLogs([]);
                 return;
             }
 
             try {
-                await refreshBackendData();
+                const remoteProducts = await listProductsApi();
+                if (isMounted && Array.isArray(remoteProducts)) {
+                    setInventory(remoteProducts);
+                }
             } catch {
-                // keep in-memory state when backend is unavailable
+                // Keep the latest in-memory inventory when backend is unavailable.
             }
         };
 
         loadRemoteInventory();
-     }, [currentUserName]);
+
+        return () => {
+            isMounted = false;
+        };
+    }, [userRole, currentUserName, currentAuthUsername]);
+
+     // Categories State
+         const [categories, setCategories] = useState([]);
+
+     const fetchCategories = async () => {
+         const token = getAuthToken();
+         if (!token) return;
+         try {
+             const remoteCategories = await listCategoriesApi();
+            setCategories(Array.isArray(remoteCategories) ? remoteCategories : []);
+         } catch (error) {
+             console.error("Failed to fetch categories:", error);
+         }
+     };
+
+     useEffect(() => {
+        let isMounted = true;
+
+        const loadRemoteCategories = async () => {
+            const token = getAuthToken();
+            if (!token) {
+                return;
+            }
+
+            try {
+                const remoteCategories = await listCategoriesApi();
+                if (isMounted) {
+                    setCategories(Array.isArray(remoteCategories) ? remoteCategories : []);
+                }
+            } catch (error) {
+                console.error("Failed to fetch categories:", error);
+            }
+        };
+
+        loadRemoteCategories();
+
+        return () => {
+            isMounted = false;
+        };
+    }, [userRole, currentUserName, currentAuthUsername]);
+
+     // 2. Transactions State (backend-first)
+     const [transactions, setTransactions] = useState([]);
+    const [isTransactionsLoading, setIsTransactionsLoading] = useState(false);
+
+     useEffect(() => {
+        let isMounted = true;
+
+        const loadRemoteTransactions = async () => {
+            const token = getAuthToken();
+            if (!token) {
+                if (isMounted) {
+                    setIsTransactionsLoading(false);
+                }
+                return;
+            }
+
+            if (isMounted) {
+                setIsTransactionsLoading(true);
+            }
+
+            try {
+                const remoteTransactions = await listSalesHistoryViewApi(true);
+                if (isMounted && Array.isArray(remoteTransactions)) {
+                    setTransactions(remoteTransactions);
+                }
+            } catch {
+                // Cashier role cannot list sales history in backend; keep in-memory values.
+            } finally {
+                if (isMounted) {
+                    setIsTransactionsLoading(false);
+                }
+            }
+        };
+
+        loadRemoteTransactions();
+
+        return () => {
+            isMounted = false;
+        };
+    }, [userRole, currentUserName, currentAuthUsername]);
+     
+     // 3. Inventory Logs State (backend-first)
+     const [inventoryLogs, setInventoryLogs] = useState([]);
+    const [isInventoryLogsLoading, setIsInventoryLogsLoading] = useState(false);
+
+     useEffect(() => {
+        let isMounted = true;
+
+        const loadRemoteInventoryLogs = async () => {
+            const token = getAuthToken();
+            if (!token) {
+                if (isMounted) {
+                    setIsInventoryLogsLoading(false);
+                }
+                return;
+            }
+
+            if (isMounted) {
+                setIsInventoryLogsLoading(true);
+            }
+
+            try {
+                const remoteLogs = await listInventoryLogsApi(200);
+                if (isMounted && Array.isArray(remoteLogs)) {
+                    setInventoryLogs(remoteLogs);
+                }
+            } catch {
+                // Non-admin users may not have access to log endpoints.
+            } finally {
+                if (isMounted) {
+                    setIsInventoryLogsLoading(false);
+                }
+            }
+        };
+
+        loadRemoteInventoryLogs();
+
+        return () => {
+            isMounted = false;
+        };
+    }, [userRole, currentUserName, currentAuthUsername]);
 
      // 3.1 Sync Queue State (Offline Config)
      const [syncQueue, setSyncQueue] = useState(() => {
@@ -128,7 +270,7 @@ export const InventoryProvider = ({ children }) => {
                     quantity: item.qty
                 }));
 
-                await createSaleApi(apiItems, queueItem.paymentMethod || 'cash');
+                await createSaleApi(apiItems, queueItem.paymentMethod || 'cash', queueItem.id);
                 
                 // If successful, remove from queue
                 setSyncQueue(prev => prev.slice(1));
@@ -162,15 +304,97 @@ export const InventoryProvider = ({ children }) => {
         setSyncQueue(prev => [...prev, transaction]);
      };
 
+     // 4. Activity Logs (backend-first)
+     const [activityLogs, setActivityLogs] = useState([]);
+
+     useEffect(() => {
+        let isMounted = true;
+
+        const loadRemoteActivityLogs = async () => {
+            const token = getAuthToken();
+            if (!token) {
+                return;
+            }
+
+            try {
+                const remoteLogs = await listActivityLogsApi(200);
+                if (isMounted && Array.isArray(remoteLogs)) {
+                    setActivityLogs(remoteLogs);
+                }
+            } catch {
+                // Non-admin users may not have access to activity log endpoints.
+            }
+        };
+
+        loadRemoteActivityLogs();
+
+        return () => {
+            isMounted = false;
+        };
+    }, [userRole, currentUserName, currentAuthUsername]);
+
+     useEffect(() => {
+        if (!preferredSuperAdminName || normalizeName(preferredSuperAdminName) === 'admin user') {
+            return;
+        }
+
+        setTransactions((prev) => {
+            let changed = false;
+            const next = prev.map((trx) => {
+                if (normalizeName(trx?.cashier) === 'admin user') {
+                    changed = true;
+                    return { ...trx, cashier: preferredSuperAdminName };
+                }
+                return trx;
+            });
+            return changed ? next : prev;
+        });
+
+        setInventoryLogs((prev) => {
+            let changed = false;
+            const next = prev.map((log) => {
+                if (normalizeName(log?.user) === 'admin user') {
+                    changed = true;
+                    return { ...log, user: preferredSuperAdminName };
+                }
+                return log;
+            });
+            return changed ? next : prev;
+        });
+
+        setActivityLogs((prev) => {
+            let changed = false;
+            const next = prev.map((log) => {
+                if (normalizeName(log?.user) === 'admin user') {
+                    changed = true;
+                    return { ...log, user: preferredSuperAdminName };
+                }
+                return log;
+            });
+            return changed ? next : prev;
+        });
+
+        setSyncQueue((prev) => {
+            let changed = false;
+            const next = prev.map((entry) => {
+                if (normalizeName(entry?.cashier) === 'admin user') {
+                    changed = true;
+                    return { ...entry, cashier: preferredSuperAdminName };
+                }
+                return entry;
+            });
+            return changed ? next : prev;
+        });
+     }, [preferredSuperAdminName]);
 
      // Activity Log Helper (used across pages)
      const logActivity = (user, action, details = '') => {
        setActivityLogs(prev => [{ id: Date.now(), user, action, details, timestamp: Date.now() }, ...prev]);
      };
 
-    // 5. Log Action Helper (in-memory helper; backend actions are logged server-side)
-    // Note: We need to use "Admin User" default if no user passed, but ideally we pass current user
-    const logAction = (action, code, details, user = "Admin User") => {
+    // 5. Log Action Helper
+    // Use preferred superadmin display name as fallback when caller does not pass a user.
+    const logAction = (action, code, details, user = preferredSuperAdminName) => {
         const newLog = {
             date: new Date().toLocaleString(),
             action, // ADD, DEDUCT, UPDATE, CREATE
@@ -183,41 +407,37 @@ export const InventoryProvider = ({ children }) => {
 
     // 6. Rename User References (for Settings update)
     const renameUserReferences = (oldName, newName) => {
-        // Update Transactions
-        const updatedTrx = transactions.map(t => 
-            t.cashier === oldName ? { ...t, cashier: newName } : t
-        );
-        setTransactions(updatedTrx);
+        if (!oldName || !newName || oldName === newName) {
+            return;
+        }
 
-        // Update Inventory Logs
-        const updatedLogs = inventoryLogs.map(l => 
+        // Use functional updates to avoid stale-state overwrites when multiple updates happen quickly.
+        setTransactions(prev => prev.map(t =>
+            t.cashier === oldName ? { ...t, cashier: newName } : t
+        ));
+
+        setInventoryLogs(prev => prev.map(l =>
             l.user === oldName ? { ...l, user: newName } : l
-        );
-        setInventoryLogs(updatedLogs);
-        
-        // Update Activity Logs
-        const updatedActivity = activityLogs.map(l => 
+        ));
+
+        setActivityLogs(prev => prev.map(l =>
             l.user === oldName ? { ...l, user: newName } : l
-        );
-        setActivityLogs(updatedActivity);
+        ));
     };
 
-    const toggleTransactionArchive = async (id) => {
-        const trx = transactions.find((item) => item.id === id);
-        if (!trx) return;
-
-        try {
-            if (trx.isArchived) {
-                await restoreSaleApi(id);
-            } else {
-                await archiveSaleApi(id);
-            }
-
-            const refreshed = await listSalesHistoryApi(true);
-            setTransactions(Array.isArray(refreshed) ? refreshed : []);
-        } catch {
-            // keep previous state if archive toggle fails
+    // 6.1 Remove All User References (for hard account deletion)
+    const removeUserReferences = (targetName) => {
+        if (!targetName) {
+            return;
         }
+
+        const normalizeName = (value) => String(value || '').trim().toLowerCase();
+        const target = normalizeName(targetName);
+
+        setTransactions(prev => prev.filter(t => normalizeName(t.cashier) !== target));
+        setInventoryLogs(prev => prev.filter(l => normalizeName(l.user) !== target));
+        setActivityLogs(prev => prev.filter(l => normalizeName(l.user) !== target));
+        setSyncQueue(prev => prev.filter(entry => normalizeName(entry.cashier) !== target));
     };
 
     // 7. Reset History Logic
@@ -229,10 +449,9 @@ export const InventoryProvider = ({ children }) => {
     // 8. Derived Processed Inventory (using appSettings from AuthContext)
     const processedInventory = useMemo(() => {
         return inventory.map(item => {
-           const threshold = getLowStockThreshold(item, appSettings);
            return {
                ...item,
-               status: item.stock === 0 ? 'Out of Stock' : (item.stock <= threshold ? 'Critical' : 'In Stock')
+               status: getStockStatus(item, appSettings)
            };
         });
      }, [inventory, appSettings]);
@@ -247,12 +466,16 @@ export const InventoryProvider = ({ children }) => {
             processedInventory,
             logAction,
             handleResetHistory,
+            categories,
+            setCategories,
+            fetchCategories,
             renameUserReferences,
-            toggleTransactionArchive,
-            refreshBackendData,
+            removeUserReferences,
             syncQueue,
             addToSyncQueue,
-            isOnline
+            isOnline,
+            isTransactionsLoading,
+            isInventoryLogsLoading
         }}>
             {children}
         </InventoryContext.Provider>

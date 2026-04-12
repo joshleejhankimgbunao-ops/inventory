@@ -10,6 +10,18 @@ import logo from '../assets/logo.png';
 const PASSWORD_MIN_LENGTH = 8;
 const PIN_LENGTH = 6;
 
+const getValidatedPinInput = (rawValue) => {
+  if (!rawValue) {
+    return '';
+  }
+
+  if (/[^0-9]/.test(rawValue)) {
+    return null;
+  }
+
+  return rawValue.slice(0, PIN_LENGTH);
+};
+
 const ResetCredential = ({ mode }) => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -111,7 +123,7 @@ const ResetCredential = ({ mode }) => {
           <div className="mx-auto mb-2 h-12 w-12">
             <img src={logo} alt="Logo" className="h-full w-full object-contain rounded-full" />
           </div>
-          <h1 className="text-xl font-bold text-gray-900">{labels.title}</h1>
+          <h2 className="text-2xl font-bold text-gray-900 tracking-tight">{labels.title}</h2>
           <p className="text-xs text-gray-600 mt-1">{labels.subtitle}</p>
         </div>
 
@@ -129,7 +141,17 @@ const ResetCredential = ({ mode }) => {
               inputMode={isPinMode ? 'numeric' : undefined}
               maxLength={isPinMode ? PIN_LENGTH : undefined}
               value={value}
-              onChange={(e) => setValue(e.target.value.trim())}
+              onChange={(e) => {
+                const nextValue = e.target.value.trim();
+
+                if (!isPinMode) {
+                  setValue(nextValue);
+                  return;
+                }
+
+                const validatedPin = getValidatedPinInput(nextValue);
+                setValue(validatedPin === null ? '' : validatedPin);
+              }}
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-gray-900 focus:ring-2 focus:ring-gray-200 outline-none"
               placeholder={isPinMode ? 'Enter 6-digit PIN' : 'Enter new password'}
             />
@@ -142,7 +164,17 @@ const ResetCredential = ({ mode }) => {
               inputMode={isPinMode ? 'numeric' : undefined}
               maxLength={isPinMode ? PIN_LENGTH : undefined}
               value={confirmValue}
-              onChange={(e) => setConfirmValue(e.target.value.trim())}
+              onChange={(e) => {
+                const nextValue = e.target.value.trim();
+
+                if (!isPinMode) {
+                  setConfirmValue(nextValue);
+                  return;
+                }
+
+                const validatedPin = getValidatedPinInput(nextValue);
+                setConfirmValue(validatedPin === null ? '' : validatedPin);
+              }}
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-gray-900 focus:ring-2 focus:ring-gray-200 outline-none"
               placeholder={isPinMode ? 'Confirm 6-digit PIN' : 'Confirm new password'}
             />

@@ -5,15 +5,69 @@ import { useInventory } from '../context/InventoryContext';
 import { useAuth } from '../context/AuthContext';
 import { getAuthToken } from '../services/apiClient';
 import { updateProductStockApi } from '../services/inventoryApi';
+import { getStockStatus } from '../utils/recommendationLogic';
 
 const Inventory = () => {
     const { inventory, setInventory, logAction, logActivity } = useInventory();
-    const { appSettings } = useAuth();
+    const { appSettings, currentUserName } = useAuth();
+
+    const stripTrailingSizeFromName = (nameValue, sizeValue) => {
+        const name = String(nameValue || '').trim();
+        const size = String(sizeValue || '').trim();
+        if (!name || !size) return name;
+
+        const escapedSize = size.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const patterns = [
+            new RegExp(`\\s*\\(${escapedSize}\\)\\s*$`, 'i'),
+            new RegExp(`\\s*[-–—,:|/]\\s*${escapedSize}\\s*$`, 'i'),
+            new RegExp(`\\s+${escapedSize}\\s*$`, 'i')
+        ];
+
+        let cleaned = name;
+        patterns.forEach((pattern) => {
+            cleaned = cleaned.replace(pattern, '').trim();
+        });
+
+        return cleaned || name;
+    };
+
+    const extractTrailingSizeFromName = (nameValue) => {
+        const name = String(nameValue || '').trim();
+        if (!name) return { name: '', size: '' };
+
+        const unitPattern = 'ft|inches|inch|mm|cm|m|meters|kg|g|bags|cu\\.m|liters|liter|ml|gallons|gallon|oz|lbs|watts|mm²|set|pcs|quart|gauge';
+        const patterns = [
+            /^\s*(.*?)\s*\(([^)]+)\)\s*$/i,
+            /^\s*(.*?)\s*[-–—,:|/]\s*([^,]+?)\s*$/i,
+            new RegExp(`^\\s*(.*?[A-Za-z])\\s*((?:\\d+[A-Za-z²0-9./"]*)(?:\\s*[x×]\\s*(?:\\d+[A-Za-z²0-9./"]*)){1,3})\\s*$`, 'i'),
+            new RegExp(`^\\s*(.*?[A-Za-z])\\s*(\\d+[\\d./"]*(?:\\s*[x×]\\s*(?:\\d+[\\d./"]*)){1,3}(?:\\s*(?:${unitPattern}))?)\\s*$`, 'i'),
+            new RegExp(`^\\s*(.*?[A-Za-z])\\s*(\\d+[\\d./"]*\\s*(?:${unitPattern}))\\s*$`, 'i'),
+            new RegExp(`^\\s*(.*?)\\s+((?:\\d+[\\d./"]*)(?:\\s*[x×]\\s*(?:\\d+[\\d./"]*)){1,3}(?:\\s*(?:${unitPattern}))?)\\s*$`, 'i'),
+            new RegExp(`^\\s*(.*?)\\s+(\\d+[\\d./"]*\\s*(?:${unitPattern}))\\s*$`, 'i')
+        ];
+
+        for (const pattern of patterns) {
+            const match = name.match(pattern);
+            if (!match) continue;
+
+            const candidateName = String(match[1] || '').trim();
+            const candidateSize = String(match[2] || '').trim();
+            if (!candidateName || !candidateSize) continue;
+
+            const endsWithUnit = new RegExp(`(?:${unitPattern})\\s*$`, 'i').test(candidateSize);
+            const looksLikeDimensions = /[x×]/i.test(candidateSize);
+            if (!endsWithUnit && !looksLikeDimensions) continue;
+
+            return { name: candidateName, size: candidateSize };
+        }
+
+        return { name, size: '' };
+    };
     
     // Helper to log actions
     const log = (action, code, details) => {
         if (logAction) {
-            logAction(action, code, details);
+            logAction(action, code, details, currentUserName);
         }
     }; 
 
@@ -24,55 +78,71 @@ const Inventory = () => {
 
     const [statusFilter, setStatusFilter] = useState('All');
     const [categoryFilter, setCategoryFilter] = useState('All');
-    const [sortBy, setSortBy] = useState('stock-asc'); 
+    const [sortBy, setSortBy] = useState('off'); 
     const [searchQuery, setSearchQuery] = useState('');
     
     // UI State for Filter Panel
     const [isFilterPanelOpen, setIsFilterPanelOpen] = useState(false);
 
+    const deriveStatus = (item) => getStockStatus(item, appSettings);
+
+    const normalizedInventory = useMemo(() => {
+        return inventory.map((item) => {
+            const storedSize = String(item?.size || '').trim();
+            if (storedSize) {
+                const cleanedName = stripTrailingSizeFromName(item?.name, storedSize);
+                return { ...item, _displayName: cleanedName, _displaySize: storedSize };
+            }
+
+            const inferred = extractTrailingSizeFromName(item?.name);
+            return { ...item, _displayName: inferred.name, _displaySize: inferred.size };
+        });
+    }, [inventory]);
+
     // Derived Categories
-    const categories = ['All', ...Array.from(new Set(inventory.map(item => item.category).filter(Boolean))).sort((a, b) => a.localeCompare(b))];
+    const categories = ['All', ...Array.from(new Set(normalizedInventory.map(item => item.category).filter(Boolean))).sort((a, b) => a.localeCompare(b))];
 
     // Pagination State
     const [currentPage, setCurrentPage] = useState(1);
     const itemsPerPage = 15; 
 
     // Active filter count for badge
-    const activeFilterCount = (statusFilter !== 'All' ? 1 : 0) + (categoryFilter !== 'All' ? 1 : 0);
+    const activeFilterCount = (statusFilter !== 'All' ? 1 : 0) + (categoryFilter !== 'All' ? 1 : 0) + (sortBy !== 'off' ? 1 : 0);
 
     // Filtered & Sorted Logic
     const filteredInventory = useMemo(() => {
-        return inventory
+        return normalizedInventory
             .filter(item => {
                 // Hide archived
                 if (item.isArchived) return false;
 
                 // Status filter
-                if (statusFilter !== 'All' && item.status !== statusFilter) return false;
+                const derivedStatus = deriveStatus(item);
+                if (statusFilter !== 'All' && derivedStatus !== statusFilter) return false;
 
                 // Category filter
                 if (categoryFilter !== 'All' && item.category !== categoryFilter) return false;
 
                 // Search
                 const q = searchQuery.toLowerCase();
-                const matchesSearch = !q || item.name.toLowerCase().includes(q) || 
+                const matchesSearch = !q || item._displayName.toLowerCase().includes(q) || 
                                     item.code.toLowerCase().includes(q) ||
                                     (item.brand || '').toLowerCase().includes(q) ||
                                     (item.color || '').toLowerCase().includes(q) ||
-                                    (item.size && item.size.toLowerCase().includes(q));
+                                    (item._displaySize && item._displaySize.toLowerCase().includes(q));
                 
                 return matchesSearch;
             })
             .sort((a, b) => {
                 switch(sortBy) {
-                    case 'name-asc': return a.name.localeCompare(b.name);
-                    case 'name-desc': return b.name.localeCompare(a.name);
+                    case 'name-asc': return a._displayName.localeCompare(b._displayName);
+                    case 'name-desc': return b._displayName.localeCompare(a._displayName);
                     case 'stock-asc': return a.stock - b.stock;
                     case 'stock-desc': return b.stock - a.stock;
                     default: return 0;
                 }
             });
-    }, [inventory, statusFilter, categoryFilter, searchQuery, sortBy]);
+    }, [normalizedInventory, statusFilter, categoryFilter, searchQuery, sortBy, appSettings]);
 
     useEffect(() => {
         setCurrentPage(1);
@@ -84,16 +154,9 @@ const Inventory = () => {
     const currentItems = filteredInventory.slice(indexOfFirstItem, indexOfLastItem);
     const totalPages = Math.ceil(filteredInventory.length / itemsPerPage);
 
-    // Status Helpers
-    const getStatus = (stock) => {
-        if (stock <= 10) return 'Critical';
-        if (stock <= 50) return 'Low Stock';
-        return 'In Stock';
-    };
-    
     const getStatusColor = (status) => {
         switch(status) {
-            case 'Critical': return 'bg-rose-50 text-rose-600 border border-rose-200 font-bold'; 
+            case 'Out of Stock': return 'bg-red-50 text-red-600 border border-red-200 font-bold';
             case 'Low Stock': return 'bg-yellow-50 text-yellow-600 border border-yellow-200 font-bold'; 
             default: return 'bg-emerald-50 text-emerald-600 border border-emerald-200 font-bold'; 
         }
@@ -142,14 +205,17 @@ const Inventory = () => {
                 } else {
                     newStock = Math.max(0, item.stock - qty);
                 }
+                const statusCarrier = { ...item, stock: newStock };
                 return { 
                     ...item, 
                     stock: newStock,
-                    status: getStatus(newStock)
+                    status: deriveStatus(statusCarrier)
                 };
             }
             return item;
         });
+
+        setInventory(updatedInventory);
 
         const selectedUpdatedItem = updatedInventory.find(item => item.code === selectedItem.code);
         const token = getAuthToken();
@@ -158,14 +224,8 @@ const Inventory = () => {
                 await updateProductStockApi(selectedItem.id, selectedUpdatedItem.stock);
             } catch (error) {
                 showToast('Sync Failed', error.message || 'Stock change was not synced to server.', 'error', 'stock-sync');
-                return;
             }
-        } else {
-            showToast('Session Required', 'Please log in again so stock updates can be saved to the database.', 'error', 'stock-auth-required');
-            return;
         }
-
-        setInventory(updatedInventory);
         
         // Detailed Logging
         const logAction = modalAction === 'IN' ? 'STOCK_IN' : 'STOCK_OUT';
@@ -174,7 +234,7 @@ const Inventory = () => {
             : `Removed ${qty} Qty due to ${stockForm.reason}`;
             
         log(logAction, selectedItem.code, logDesc);
-        logActivity('System', modalAction === 'IN' ? 'Stock In' : 'Stock Out', `${selectedItem.code}: ${logDesc}`);
+        logActivity(currentUserName || 'System', modalAction === 'IN' ? 'Stock In' : 'Stock Out', `${selectedItem.code}: ${logDesc}`);
 
         setIsStockModalOpen(false);
         if (modalAction === 'IN') {
@@ -224,11 +284,7 @@ const Inventory = () => {
                      <div className="relative z-30 inline-flex items-center gap-3">
                         <button 
                             onClick={() => setIsFilterPanelOpen(!isFilterPanelOpen)}
-                            className={`px-3 py-1.5 rounded-xl font-bold text-xs shadow-sm flex items-center gap-1.5 transition-all border-2 ${
-                                activeFilterCount > 0
-                                ? 'bg-gray-900 dark:bg-gray-600 text-white border-gray-900 dark:border-gray-500'
-                                : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-200 dark:border-gray-600 hover:border-gray-400'
-                            }`}
+                            className="px-3 py-2 rounded-xl font-bold text-xs shadow-sm flex items-center gap-1.5 transition-all border-2 bg-gray-900 dark:bg-gray-600 text-white border-gray-900 dark:border-gray-500 hover:opacity-90"
                         >
                             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"></path></svg>
                             <span>Filter & Sort</span>
@@ -243,7 +299,7 @@ const Inventory = () => {
                                 <select
                                     value={categoryFilter}
                                     onChange={(e) => setCategoryFilter(e.target.value)}
-                                    className={`appearance-none px-3 py-1.5 rounded-xl text-sm font-bold inline-flex items-center transition-all border-2 ${categoryFilter !== 'All' ? 'bg-gray-900 dark:bg-gray-600 text-white border-gray-900 dark:border-gray-500' : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-200 dark:border-gray-600 hover:border-gray-400'}`}
+                                    className="appearance-none px-3 py-1.5 rounded-xl text-sm font-bold inline-flex items-center transition-all border-2 bg-gray-900 dark:bg-gray-600 text-white border-gray-900 dark:border-gray-500 hover:opacity-90"
                                 >
                                     {categories.map(c => (
                                         <option key={c} value={c}>{c}</option>
@@ -260,14 +316,13 @@ const Inventory = () => {
                                     <div className="text-[10px] font-black text-gray-400 dark:text-gray-500 uppercase tracking-wider">Status</div>
                                 </div>
                                 <div className="px-2 pb-2 flex flex-wrap gap-1">
-                                    {['All', 'In Stock', 'Low Stock', 'Critical', 'Out of Stock'].map(status => (
+                                    {['All', 'In Stock', 'Low Stock', 'Out of Stock'].map(status => (
                                         <button key={status} onClick={() => setStatusFilter(status)}
                                             className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all ${
                                                 statusFilter === status
                                                 ? 'bg-gray-900 dark:bg-gray-600 text-white shadow-sm'
-                                                : status === 'Critical' ? 'bg-rose-50 text-rose-600 hover:bg-rose-100 dark:bg-rose-900/20 dark:text-rose-400'
                                                 : status === 'Low Stock' ? 'bg-yellow-50 text-yellow-600 hover:bg-yellow-100 dark:bg-yellow-900/20 dark:text-yellow-400'
-                                                : status === 'Out of Stock' ? 'bg-gray-100 text-gray-500 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-400'
+                                                : status === 'Out of Stock' ? 'bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-900/20 dark:text-red-400'
                                                 : 'bg-gray-50 text-gray-600 hover:bg-gray-100 dark:bg-gray-700 dark:text-gray-300'
                                             }`}>
                                             {status === 'All' ? 'All Status' : status}
@@ -282,7 +337,7 @@ const Inventory = () => {
                                     <div className="text-[10px] font-black text-gray-400 dark:text-gray-500 uppercase tracking-wider">Sort By</div>
                                 </div>
                                 <div className="px-2 pb-2">
-                                    {[{key: 'stock-asc', label: 'Stock ↑ Lowest'}, {key: 'stock-desc', label: 'Stock ↓ Highest'}, {key: 'name-asc', label: 'Name A→Z'}, {key: 'name-desc', label: 'Name Z→A'}].map(opt => (
+                                    {[{key: 'off', label: 'OFF (No Sorting)'}, {key: 'stock-asc', label: 'Stock ↑ Lowest'}, {key: 'stock-desc', label: 'Stock ↓ Highest'}, {key: 'name-asc', label: 'Name A→Z'}, {key: 'name-desc', label: 'Name Z→A'}].map(opt => (
                                         <button key={opt.key} onClick={() => setSortBy(opt.key)}
                                             className={`w-full text-left px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center justify-between ${
                                                 sortBy === opt.key
@@ -300,7 +355,7 @@ const Inventory = () => {
                                     <>
                                         <div className="border-t border-gray-100 dark:border-gray-700 mx-3"></div>
                                         <div className="px-2 pt-2 pb-1">
-                                            <button onClick={() => { setStatusFilter('All'); setCategoryFilter('All'); }}
+                                            <button onClick={() => { setStatusFilter('All'); setCategoryFilter('All'); setSortBy('off'); }}
                                                 className="w-full text-center px-3 py-1.5 rounded-lg text-xs font-bold text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20 transition-all">
                                                 Clear All Filters
                                             </button>
@@ -356,8 +411,8 @@ const Inventory = () => {
                                     </td>
                                     <td className="py-2 px-3 text-center border border-gray-200 dark:border-gray-700">
                                         <div className="flex flex-col items-center">
-                                            <span className="font-bold text-gray-900 dark:text-white text-sm">{item.brand ? `${item.brand} ` : ''}{item.name}</span>
-                                            <span className="text-xs text-gray-500 dark:text-gray-400">{item.size || '-'} {item.color ? `• ${item.color}` : ''}</span>
+                                            <span className="font-bold text-gray-900 dark:text-white text-sm">{item.brand ? `${item.brand} ` : ''}{item._displayName || item.name}</span>
+                                            <span className="text-xs text-gray-500 dark:text-gray-400">{item._displaySize || item.size || '-'} {item.color ? `• ${item.color}` : ''}</span>
                                         </div>
                                     </td>
                                     <td className="py-2 px-3 text-center border border-gray-200 dark:border-gray-700">
@@ -367,8 +422,8 @@ const Inventory = () => {
                                         <span className="font-bold text-gray-900 dark:text-white text-base">{item.stock.toLocaleString()}</span>
                                     </td>
                                     <td className="py-2 px-3 text-center border border-gray-200 dark:border-gray-700">
-                                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${getStatusColor(item.status)}`}>
-                                            {item.status}
+                                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${getStatusColor(deriveStatus(item))}`}>
+                                            {deriveStatus(item)}
                                         </span>
                                     </td>
                                     <td className="py-2 px-3 text-center border border-gray-200 dark:border-gray-700">
@@ -404,7 +459,7 @@ const Inventory = () => {
             </div>
 
             {/* Pagination Controls */}
-            <div className="shrink-0 flex justify-between items-center p-4 border-t border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
+            <div className="shrink-0 flex justify-between items-center p-4 border-t border-gray-100 dark:border-gray-700 bg-slate-200/50 dark:bg-gray-800">
                     <div className="text-gray-500 dark:text-gray-400 text-xs font-medium">
                         Showing <span className="font-bold text-gray-900 dark:text-white">{filteredInventory.length === 0 ? 0 : indexOfFirstItem + 1}</span> to <span className="font-bold text-gray-900 dark:text-white">{Math.min(indexOfLastItem, filteredInventory.length)}</span> of <span className="font-bold text-gray-900 dark:text-white">{filteredInventory.length}</span> results
                     </div>
