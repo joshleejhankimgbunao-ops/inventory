@@ -32,8 +32,12 @@ const INVENTORY_FALLBACK = {
     syncQueue: [],
     addToSyncQueue: () => {},
     isOnline: true,
+    isInventoryLoading: false,
+    isCategoriesLoading: false,
     isTransactionsLoading: false,
     isInventoryLogsLoading: false,
+    isActivityLogsLoading: false,
+    isPageDataLoading: false,
 };
 
 const InventoryContext = createContext(INVENTORY_FALLBACK);
@@ -67,6 +71,7 @@ export const InventoryProvider = ({ children }) => {
 
     // 1. Inventory State (backend-first)
     const [inventory, setInventory] = useState([]);
+    const [isInventoryLoading, setIsInventoryLoading] = useState(true);
 
      useEffect(() => {
         let isMounted = true;
@@ -74,7 +79,14 @@ export const InventoryProvider = ({ children }) => {
         const loadRemoteInventory = async () => {
             const token = getAuthToken();
             if (!token) {
+                if (isMounted) {
+                    setIsInventoryLoading(false);
+                }
                 return;
+            }
+
+            if (isMounted) {
+                setIsInventoryLoading(true);
             }
 
             try {
@@ -84,6 +96,10 @@ export const InventoryProvider = ({ children }) => {
                 }
             } catch {
                 // Keep the latest in-memory inventory when backend is unavailable.
+            } finally {
+                if (isMounted) {
+                    setIsInventoryLoading(false);
+                }
             }
         };
 
@@ -96,6 +112,7 @@ export const InventoryProvider = ({ children }) => {
 
      // Categories State
          const [categories, setCategories] = useState([]);
+    const [isCategoriesLoading, setIsCategoriesLoading] = useState(true);
 
      const fetchCategories = async () => {
          const token = getAuthToken();
@@ -114,7 +131,14 @@ export const InventoryProvider = ({ children }) => {
         const loadRemoteCategories = async () => {
             const token = getAuthToken();
             if (!token) {
+                if (isMounted) {
+                    setIsCategoriesLoading(false);
+                }
                 return;
+            }
+
+            if (isMounted) {
+                setIsCategoriesLoading(true);
             }
 
             try {
@@ -124,6 +148,10 @@ export const InventoryProvider = ({ children }) => {
                 }
             } catch (error) {
                 console.error("Failed to fetch categories:", error);
+            } finally {
+                if (isMounted) {
+                    setIsCategoriesLoading(false);
+                }
             }
         };
 
@@ -136,7 +164,7 @@ export const InventoryProvider = ({ children }) => {
 
      // 2. Transactions State (backend-first)
      const [transactions, setTransactions] = useState([]);
-    const [isTransactionsLoading, setIsTransactionsLoading] = useState(false);
+    const [isTransactionsLoading, setIsTransactionsLoading] = useState(true);
 
      useEffect(() => {
         let isMounted = true;
@@ -177,7 +205,7 @@ export const InventoryProvider = ({ children }) => {
      
      // 3. Inventory Logs State (backend-first)
      const [inventoryLogs, setInventoryLogs] = useState([]);
-    const [isInventoryLogsLoading, setIsInventoryLogsLoading] = useState(false);
+    const [isInventoryLogsLoading, setIsInventoryLogsLoading] = useState(true);
 
      useEffect(() => {
         let isMounted = true;
@@ -306,6 +334,7 @@ export const InventoryProvider = ({ children }) => {
 
      // 4. Activity Logs (backend-first)
      const [activityLogs, setActivityLogs] = useState([]);
+    const [isActivityLogsLoading, setIsActivityLogsLoading] = useState(true);
 
      useEffect(() => {
         let isMounted = true;
@@ -313,7 +342,14 @@ export const InventoryProvider = ({ children }) => {
         const loadRemoteActivityLogs = async () => {
             const token = getAuthToken();
             if (!token) {
+                if (isMounted) {
+                    setIsActivityLogsLoading(false);
+                }
                 return;
+            }
+
+            if (isMounted) {
+                setIsActivityLogsLoading(true);
             }
 
             try {
@@ -323,6 +359,10 @@ export const InventoryProvider = ({ children }) => {
                 }
             } catch {
                 // Non-admin users may not have access to activity log endpoints.
+            } finally {
+                if (isMounted) {
+                    setIsActivityLogsLoading(false);
+                }
             }
         };
 
@@ -456,6 +496,22 @@ export const InventoryProvider = ({ children }) => {
         });
      }, [inventory, appSettings]);
 
+    const isPageDataLoading = useMemo(() => {
+        return (
+            isInventoryLoading
+            || isCategoriesLoading
+            || isTransactionsLoading
+            || isInventoryLogsLoading
+            || isActivityLogsLoading
+        );
+    }, [
+        isInventoryLoading,
+        isCategoriesLoading,
+        isTransactionsLoading,
+        isInventoryLogsLoading,
+        isActivityLogsLoading,
+    ]);
+
     return (
         <InventoryContext.Provider value={{
             inventory, setInventory,
@@ -474,8 +530,12 @@ export const InventoryProvider = ({ children }) => {
             syncQueue,
             addToSyncQueue,
             isOnline,
+            isInventoryLoading,
+            isCategoriesLoading,
             isTransactionsLoading,
-            isInventoryLogsLoading
+            isInventoryLogsLoading,
+            isActivityLogsLoading,
+            isPageDataLoading
         }}>
             {children}
         </InventoryContext.Provider>

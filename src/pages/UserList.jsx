@@ -104,6 +104,7 @@ const UserList = () => {
     const indexOfLastItem = currentPage * itemsPerPage;
     const indexOfFirstItem = indexOfLastItem - itemsPerPage;
     const paginatedUsers = currentFilteredUsers.slice(indexOfFirstItem, indexOfLastItem);
+    const skeletonRowCount = 8;
 
     // Reset page when filters change
     React.useEffect(() => { setCurrentPage(1); }, [searchTerm, showArchived]);
@@ -715,7 +716,42 @@ const UserList = () => {
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-50 dark:divide-gray-700">
-                            {currentFilteredUsers.length === 0 ? (
+                            {isUsersLoading ? (
+                                Array.from({ length: skeletonRowCount }).map((_, rowIndex) => (
+                                    <tr key={`users-skeleton-${rowIndex}`} className="animate-pulse">
+                                        <td className="px-6 py-3 border border-gray-200 dark:border-gray-700">
+                                            <div className="mx-auto h-3 w-10 rounded bg-gray-200 dark:bg-gray-700"></div>
+                                        </td>
+                                        <td className="px-6 py-3 border border-gray-200 dark:border-gray-700">
+                                            <div className="flex items-center gap-3">
+                                                <div className="h-8 w-8 rounded-full bg-gray-200 dark:bg-gray-700"></div>
+                                                <div className="space-y-2">
+                                                    <div className="h-3 w-28 rounded bg-gray-200 dark:bg-gray-700"></div>
+                                                    <div className="h-2.5 w-20 rounded bg-gray-200 dark:bg-gray-700"></div>
+                                                </div>
+                                            </div>
+                                        </td>
+                                        <td className="px-6 py-3 border border-gray-200 dark:border-gray-700">
+                                            <div className="space-y-2">
+                                                <div className="h-3 w-36 rounded bg-gray-200 dark:bg-gray-700"></div>
+                                                <div className="h-2.5 w-24 rounded bg-gray-200 dark:bg-gray-700"></div>
+                                            </div>
+                                        </td>
+                                        <td className="px-6 py-3 border border-gray-200 dark:border-gray-700">
+                                            <div className="mx-auto h-6 w-20 rounded-md bg-gray-200 dark:bg-gray-700"></div>
+                                        </td>
+                                        <td className="px-6 py-3 border border-gray-200 dark:border-gray-700">
+                                            <div className="mx-auto h-3 w-12 rounded bg-gray-200 dark:bg-gray-700"></div>
+                                        </td>
+                                        <td className="px-6 py-3 border border-gray-200 dark:border-gray-700">
+                                            <div className="mx-auto h-3 w-24 rounded bg-gray-200 dark:bg-gray-700"></div>
+                                        </td>
+                                        <td className="px-6 py-3 border border-gray-200 dark:border-gray-700">
+                                            <div className="mx-auto h-8 w-24 rounded-lg bg-gray-200 dark:bg-gray-700"></div>
+                                        </td>
+                                    </tr>
+                                ))
+                            ) : currentFilteredUsers.length === 0 ? (
                                 <tr>
                                     <td colSpan="7" className="px-6 py-12 text-center">
                                         <div className="mx-auto max-w-md rounded-2xl p-8">
@@ -727,14 +763,10 @@ const UserList = () => {
                                                 )}
                                             </div>
                                             <h3 className="text-sm font-black text-gray-900 dark:text-white">
-                                                {isUsersLoading
-                                                    ? 'Loading users...'
-                                                    : (showArchived ? 'No archived users yet' : (usersLoadError ? 'Unable to load users' : 'No active users found'))}
+                                                {showArchived ? 'No archived users yet' : (usersLoadError ? 'Unable to load users' : 'No active users found')}
                                             </h3>
                                             <p className="mt-1 text-xs font-medium text-gray-500 dark:text-gray-400">
-                                                                {isUsersLoading
-                                                                    ? 'Fetching user records from backend. Please wait a moment.'
-                                                                    : (showArchived ? 'Archived accounts will appear here once you archive a user.' : (usersLoadError || (users.some((u) => u.isArchived) ? 'No active users found. You may have archived users; click View Archive.' : 'Try changing your search keyword or add a new user account.')))}
+                                                                {showArchived ? 'Archived accounts will appear here once you archive a user.' : (usersLoadError || (users.some((u) => u.isArchived) ? 'No active users found. You may have archived users; click View Archive.' : 'Try changing your search keyword or add a new user account.'))}
                                             </p>
                                         </div>
                                     </td>

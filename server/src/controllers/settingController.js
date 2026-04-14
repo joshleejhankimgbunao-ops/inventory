@@ -1,4 +1,13 @@
 const Setting = require('../models/Setting');
+const Product = require('../models/Product');
+const Sale = require('../models/Sale');
+const User = require('../models/User');
+const Category = require('../models/Category');
+const Partner = require('../models/Partner');
+const ActivityLog = require('../models/ActivityLog');
+const InventoryLog = require('../models/InventoryLog');
+
+const BACKUP_SCHEMA_VERSION = '1.0.0';
 
 const EMAIL_RULE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -151,6 +160,33 @@ const ensureSettingsDocument = async () => {
   return Setting.create({ singletonKey: 'default' });
 };
 
+const BACKUP_COLLECTIONS = [
+  ['settings', Setting],
+  ['users', User],
+  ['products', Product],
+  ['sales', Sale],
+  ['categories', Category],
+  ['partners', Partner],
+  ['activityLogs', ActivityLog],
+  ['inventoryLogs', InventoryLog],
+];
+
+const ensureArrayPayload = (value) => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter((entry) => entry && typeof entry === 'object');
+};
+
+const toInsertableDocs = (docs = []) => {
+  return docs.map((doc) => {
+    const cloned = { ...doc };
+    delete cloned.__v;
+    return cloned;
+  });
+};
+
 const getSettings = async (req, res, next) => {
   try {
     const settings = await ensureSettingsDocument();
@@ -225,7 +261,111 @@ const updateSettings = async (req, res, next) => {
   }
 };
 
+const getSystemBackup = async (req, res, next) => {
+  try {
+    const [
+      settings,
+      users,
+      products,
+      sales,
+      categories,
+      partners,
+      activityLogs,
+      inventoryLogs,
+    ] = await Promise.all([
+      Setting.find({}).lean(),
+      User.find({})
+        .select('+password +pinHash +passwordResetTokenHash +pinResetTokenHash')
+        .lean(),
+      Product.find({}).lean(),
+      Sale.find({}).lean(),
+      Category.find({}).lean(),
+      Partner.find({}).lean(),
+      ActivityLog.find({}).lean(),
+      InventoryLog.find({}).lean(),
+    ]);
+
+    return res.json({
+      message: 'Backup generated.',
+      backup: {
+        schemaVersion: BACKUP_SCHEMA_VERSION,
+        generatedAt: new Date().toISOString(),
+        generatedBy: req.user?.username || req.user?.name || 'superadmin',
+        collections: {
+          settings,
+          users,
+          products,
+          sales,
+          categories,
+          partners,
+          activityLogs,
+          inventoryLogs,
+        },
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+const restoreSystemBackup = async (req, res, next) => {
+  try {
+    const incomingBackup = req.body?.backup || req.body || {};
+    const schemaVersion = String(incomingBackup.schemaVersion || '').trim();
+    const collections = incomingBackup.collections || {};
+
+    if (!schemaVersion) {
+      return res.status(400).json({ message: 'Invalid backup file: missing schemaVersion.' });
+    }
+
+    if (schemaVersion !== BACKUP_SCHEMA_VERSION) {
+      return res.status(400).json({
+        message: `Unsupported backup schemaVersion. Expected ${BACKUP_SCHEMA_VERSION}, received ${schemaVersion}.`,
+      });
+    }
+
+    if (!collections || typeof collections !== 'object') {
+      return res.status(400).json({ message: 'Invalid backup file: missing collections payload.' });
+    }
+
+    const usersPayload = ensureArrayPayload(collections.users);
+    const hasSuperAdmin = usersPayload.some((user) => user.role === 'superadmin');
+    if (!hasSuperAdmin) {
+      return res.status(400).json({ message: 'Restore rejected: backup must include at least one superadmin user.' });
+    }
+
+    for (const [, Model] of BACKUP_COLLECTIONS) {
+      await Model.deleteMany({});
+    }
+
+    const restoredCounts = {};
+
+    for (const [key, Model] of BACKUP_COLLECTIONS) {
+      const docs = toInsertableDocs(ensureArrayPayload(collections[key]));
+      restoredCounts[key] = docs.length;
+
+      if (docs.length > 0) {
+        await Model.insertMany(docs, { ordered: true });
+      }
+    }
+
+    if (restoredCounts.settings === 0) {
+      await ensureSettingsDocument();
+      restoredCounts.settings = 1;
+    }
+
+    return res.json({
+      message: 'Backup restored successfully.',
+      restoredCounts,
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
+
 module.exports = {
   getSettings,
   updateSettings,
+  getSystemBackup,
+  restoreSystemBackup,
 };

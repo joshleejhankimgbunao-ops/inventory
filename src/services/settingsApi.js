@@ -12,3 +12,15 @@ export const updateSettingsApi = async (payload) => {
 
   return response?.settings || null;
 };
+
+export const downloadSystemBackupApi = async () => {
+  const response = await apiRequest('/api/settings/backup');
+  return response?.backup || null;
+};
+
+export const restoreSystemBackupApi = async (backupPayload) => {
+  return apiRequest('/api/settings/restore', {
+    method: 'POST',
+    body: JSON.stringify({ backup: backupPayload }),
+  });
+};

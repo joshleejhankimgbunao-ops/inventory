@@ -27,3 +27,8 @@ dist-ssr
 .env
 .env.*
 !.env.example
+
+# Generated local tool artifacts
+tools/_vercel_live.html
+tools/_vercel_live.js
+tools/.copilot-*.log

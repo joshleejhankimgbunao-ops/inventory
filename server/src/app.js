@@ -40,7 +40,7 @@ app.use(cors({
     return callback(new Error('CORS origin not allowed.'));
   },
 }));
-app.use(express.json());
+app.use(express.json({ limit: '25mb' }));
 app.use(morgan('dev'));
 
 app.use('/api/health', healthRoutes);

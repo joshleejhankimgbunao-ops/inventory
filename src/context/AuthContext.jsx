@@ -52,6 +52,9 @@ const AUTH_FALLBACK = {
     setMustChangeCredentials: () => {},
     isDarkMode: false,
     setIsDarkMode: () => {},
+    isSettingsLoading: false,
+    isSessionHydrating: false,
+    isAuthBootstrapLoading: false,
     isSuperAdmin: () => true,
     isAdmin: () => false,
     isAdminOrAbove: () => true,
@@ -85,6 +88,8 @@ export const AuthProvider = ({ children }) => {
 
     // 2. App Settings (backend-first)
     const [appSettings, setAppSettings] = useState(DEFAULT_APP_SETTINGS);
+    const [isSettingsLoading, setIsSettingsLoading] = useState(true);
+    const [isSessionHydrating, setIsSessionHydrating] = useState(true);
 
     useEffect(() => {
         let isMounted = true;
@@ -97,6 +102,10 @@ export const AuthProvider = ({ children }) => {
                 }
             } catch {
                 // Keep defaults when backend is temporarily unavailable.
+            } finally {
+                if (isMounted) {
+                    setIsSettingsLoading(false);
+                }
             }
         };
 
@@ -270,6 +279,10 @@ export const AuthProvider = ({ children }) => {
                 }
             } catch {
                 // Keep session fallback values when user hydration is unavailable.
+            } finally {
+                if (isMounted) {
+                    setIsSessionHydrating(false);
+                }
             }
         };
 
@@ -351,6 +364,8 @@ export const AuthProvider = ({ children }) => {
         setMustChangeCredentials(false);
     };
 
+    const isAuthBootstrapLoading = isSettingsLoading || isSessionHydrating;
+
     return (
         <AuthContext.Provider value={{ 
             userRole, 
@@ -366,6 +381,9 @@ export const AuthProvider = ({ children }) => {
             setMustChangeCredentials,
             isDarkMode,
             setIsDarkMode,
+            isSettingsLoading,
+            isSessionHydrating,
+            isAuthBootstrapLoading,
             isSuperAdmin,
             isAdmin,
             isAdminOrAbove,

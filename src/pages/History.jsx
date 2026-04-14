@@ -314,7 +314,7 @@ const History = () => {
                             </div>
                             <div>
                                 <div className="flex items-center gap-2">
-                                    <h1 className="text-[8px] font-black text-gray-900 dark:text-white leading-tight ">History Logs</h1>
+                                    <h1 className="text-4xl md:text-5xl font-black text-gray-900 leading-tight">History Logs</h1>
                                 </div>
                                 <p className="text-gray-500 dark:text-gray-400 text-xs font-medium mt-1">Review past transactions and inventory movements</p>
                             </div>

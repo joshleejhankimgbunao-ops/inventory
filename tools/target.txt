@@ -1,0 +1,2 @@
+export default Settings;
+import React, { useState, useMemo, useEffect } from 'react';

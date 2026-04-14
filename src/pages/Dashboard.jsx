@@ -89,16 +89,18 @@ const Dashboard = ({ onLogout }) => {
       // We don't need to manually set activeMenu because it is derived from location.pathname
   };
 
-    const { userRole, appSettings, updateSettings, currentUserName, isDarkMode, setIsDarkMode, isAdminOrAbove, roleNames, currentUserAvatar, currentAuthUsername, mustChangeCredentials } = useAuth();
+    const { userRole, appSettings, updateSettings, currentUserName, isDarkMode, setIsDarkMode, isAdminOrAbove, roleNames, currentUserAvatar, currentAuthUsername, mustChangeCredentials, isAuthBootstrapLoading } = useAuth();
   // we rely on the context's currentUserAvatar which already handles
   // super‑admin/appSettings and any avatar stored on a user record.
   const { 
     activityLogs, setActivityLogs, logActivity,
     processedInventory, 
-    renameUserReferences
+        renameUserReferences,
+        isPageDataLoading
   } = useInventory();
 
     const [backendUsers, setBackendUsers] = useState([]);
+        const [isBackendUsersLoading, setIsBackendUsersLoading] = useState(true);
 
     const ACTIVITY_LOG_ONE_TIME_RESET_KEY = 'activityLogOneTimeResetDone';
 
@@ -106,6 +108,10 @@ const Dashboard = ({ onLogout }) => {
         let isMounted = true;
 
         const loadUsers = async () => {
+            if (isMounted) {
+                setIsBackendUsersLoading(true);
+            }
+
             try {
                 const users = await listUsersApi();
                 if (!isMounted) {
@@ -115,6 +121,10 @@ const Dashboard = ({ onLogout }) => {
             } catch {
                 if (isMounted) {
                     setBackendUsers([]);
+                }
+            } finally {
+                if (isMounted) {
+                    setIsBackendUsersLoading(false);
                 }
             }
         };
@@ -132,6 +142,8 @@ const Dashboard = ({ onLogout }) => {
     }
     updateSettings(newSettings);
   };
+
+    const isRouteContentLoading = isAuthBootstrapLoading || isPageDataLoading || isBackendUsersLoading;
   
   
   // Request Desktop Notification Permission (User-Interactive Toast)
@@ -1143,9 +1155,12 @@ const Dashboard = ({ onLogout }) => {
         <main className={`flex-1 bg-gray-50 ml-0 transition-[margin] duration-420 ease-[cubic-bezier(0.16,1,0.3,1)] ${isSidebarHovered ? 'md:ml-56' : 'md:ml-16'} ${isProfilePage ? 'p-2 overflow-hidden h-full' : isFixedLayout ? 'p-2 md:overflow-hidden h-full overflow-y-auto' : 'p-2 overflow-y-auto h-full'}`}>
            <div className={`w-full ${isFixedLayout ? 'md:h-full min-h-full' : ''}`}>
              
-             <Suspense fallback={<PageSkeleton />}>
-             <AnimatePresence mode="wait">
-             <Routes location={location} key={location.pathname}>
+                 {isRouteContentLoading ? (
+                     <PageSkeleton />
+                 ) : (
+                 <Suspense fallback={<PageSkeleton />}>
+                 <AnimatePresence mode="wait">
+                 <Routes location={location} key={location.pathname}>
                 {/* Public / Common Routes */}
                 <Route index element={<AnimatedPage><DashboardHome onViewAllProducts={() => handleNavigation('Product List', '/product-list')} onNavigate={(menu) => {
                     if (menu === 'Product List') handleNavigation('Product List', '/product-list');
@@ -1188,6 +1203,7 @@ const Dashboard = ({ onLogout }) => {
              </Routes>
              </AnimatePresence>
              </Suspense>
+                         )}
 
            </div>
         </main>

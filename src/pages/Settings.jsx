@@ -1,17 +1,29 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { showToast } from '../utils/toastHelper';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
 import { createCategoryApi, updateCategoryApi, deleteCategoryApi } from '../services/inventoryApi';
+import { downloadSystemBackupApi, restoreSystemBackupApi } from '../services/settingsApi';
 
 const Settings = () => {
     const { appSettings: initialSettings, updateSettings, currentUserName, userRole, ROLES } = useAuth();
     const { processedInventory: inventory, renameUserReferences, logActivity, categories: customCategories, fetchCategories } = useInventory();
 
     const isAdmin = userRole === ROLES.ADMIN;
+    const isSuperAdmin = userRole === ROLES.SUPER_ADMIN;
     const availableTabs = useMemo(
-        () => (isAdmin ? ['notifications', 'categories'] : ['general', 'notifications', 'stock rules', 'categories', 'backup']),
-        [isAdmin]
+        () => {
+            if (isAdmin) {
+                return ['notifications', 'categories'];
+            }
+
+            if (isSuperAdmin) {
+                return ['general', 'notifications', 'stock rules', 'categories', 'backup'];
+            }
+
+            return ['general', 'notifications', 'stock rules', 'categories'];
+        },
+        [isAdmin, isSuperAdmin]
     );
 
     const [activeTab, setActiveTab] = useState(availableTabs[0] || 'categories');
@@ -32,6 +44,9 @@ const Settings = () => {
     const [categorySearchTerm, setCategorySearchTerm] = useState('');
     const [isDeleteCategoryModalOpen, setIsDeleteCategoryModalOpen] = useState(false);
     const [categoryToDelete, setCategoryToDelete] = useState(null);
+    const [isBackupLoading, setIsBackupLoading] = useState(false);
+    const [isRestoreLoading, setIsRestoreLoading] = useState(false);
+    const restoreInputRef = useRef(null);
     
     const defaults = useMemo(() => ({
         storeName: 'Tableria La Confianza Co., Inc.',
@@ -339,6 +354,74 @@ const Settings = () => {
 
     const handleSave = () => {
         persistSettings(settings, { notify: true, log: true });
+    };
+
+    const handleDownloadBackup = async () => {
+        setIsBackupLoading(true);
+        try {
+            const backupPayload = await downloadSystemBackupApi();
+            if (!backupPayload) {
+                throw new Error('Backup payload is empty.');
+            }
+
+            const generatedAt = backupPayload.generatedAt || new Date().toISOString();
+            const safeTimestamp = generatedAt.replace(/[:.]/g, '-');
+            const fileName = `inventory-backup-${safeTimestamp}.json`;
+
+            const blob = new Blob([JSON.stringify(backupPayload, null, 2)], { type: 'application/json' });
+            const downloadUrl = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = downloadUrl;
+            link.download = fileName;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            window.URL.revokeObjectURL(downloadUrl);
+
+            showToast('Backup Ready', 'System backup file downloaded successfully.', 'success');
+        } catch (error) {
+            console.error(error);
+            showToast('Backup Failed', error.message || 'Unable to download backup.', 'error');
+        } finally {
+            setIsBackupLoading(false);
+        }
+    };
+
+    const openRestorePicker = () => {
+        if (isRestoreLoading) return;
+        restoreInputRef.current?.click();
+    };
+
+    const handleRestoreFile = async (event) => {
+        const file = event.target.files?.[0];
+        event.target.value = '';
+
+        if (!file) {
+            return;
+        }
+
+        const confirmRestore = window.confirm('This will replace current system data with the selected backup. Continue?');
+        if (!confirmRestore) {
+            return;
+        }
+
+        setIsRestoreLoading(true);
+        try {
+            const rawContent = await file.text();
+            const parsedBackup = JSON.parse(rawContent);
+            const response = await restoreSystemBackupApi(parsedBackup);
+            const restoredCount = Object.values(response?.restoredCounts || {}).reduce((sum, value) => sum + Number(value || 0), 0);
+
+            showToast('Restore Completed', `Restored ${restoredCount} records. Reloading app...`, 'success');
+            window.setTimeout(() => {
+                window.location.reload();
+            }, 1200);
+        } catch (error) {
+            console.error(error);
+            showToast('Restore Failed', error.message || 'Unable to restore backup file.', 'error');
+        } finally {
+            setIsRestoreLoading(false);
+        }
     };
 
     return (
@@ -1275,7 +1358,7 @@ const Settings = () => {
                        </div>
                    )}
 
-                    {activeTab === 'backup' && (
+                    {activeTab === 'backup' && isSuperAdmin && (
                         <div className="space-y-6 max-w-2xl animate-in fade-in slide-in-from-right-4 duration-300">
                              <div>
                                 <h3 className="text-lg font-black text-gray-900 dark:text-white mb-1">Data Management</h3>
@@ -1289,15 +1372,44 @@ const Settings = () => {
                                         <h4 className="font-bold text-gray-900 dark:text-white mb-1">Backup Data</h4>
                                         <p className="text-xs text-gray-500 mb-4">Download a JSON file of your entire inventory and transaction history.</p>
                                         <button 
+                                            onClick={handleDownloadBackup}
+                                            disabled={isBackupLoading || isRestoreLoading}
                                             className="w-full px-4 py-2 rounded-xl text-xs font-bold text-white focus:outline-none focus:ring-4 focus:ring-gray-200 cursor-pointer shadow-lg transition-all flex items-center justify-center gap-2 transform hover:scale-105 shadow-md"
                                             style={{ backgroundColor: '#111827', border: '2px solid #111827' }}
                                         >
                                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-                                            Download Backup
+                                            {isBackupLoading ? 'Preparing Backup...' : 'Download Backup'}
                                         </button>
                                     </div>
 
-                                    {/* Factory Reset removed for safety */}
+                                    <div className="p-5 border border-gray-200 dark:border-gray-700 rounded-xl hover:border-gray-300 transition-colors">
+                                        <div className="w-10 h-10 bg-amber-50 dark:bg-amber-900/20 rounded-lg flex items-center justify-center mb-3">
+                                            <svg className="w-6 h-6 text-amber-600 dark:text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 12a9 9 0 0 1 15.3-6.3L21 8" />
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 3v5h-5" />
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 12a9 9 0 0 1-15.3 6.3L3 16" />
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 21v-5h5" />
+                                            </svg>
+                                        </div>
+                                        <h4 className="font-bold text-gray-900 dark:text-white mb-1">Restore Backup</h4>
+                                        <p className="text-xs text-gray-500 mb-4">Upload a previously downloaded JSON backup to restore system data.</p>
+                                        <input
+                                            ref={restoreInputRef}
+                                            type="file"
+                                            accept="application/json,.json"
+                                            onChange={handleRestoreFile}
+                                            className="hidden"
+                                        />
+                                        <button
+                                            onClick={openRestorePicker}
+                                            disabled={isRestoreLoading || isBackupLoading}
+                                            className="w-full px-4 py-2 rounded-xl text-xs font-bold text-white focus:outline-none focus:ring-4 focus:ring-gray-200 cursor-pointer shadow-lg transition-all flex items-center justify-center gap-2 transform hover:scale-105 shadow-md"
+                                            style={{ backgroundColor: '#111827', border: '2px solid #111827' }}
+                                        >
+                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1M4 8l8-5 8 5M12 3v13"></path></svg>
+                                            {isRestoreLoading ? 'Restoring Backup...' : 'Upload & Restore'}
+                                        </button>
+                                    </div>
                                 </div>
                              </div>
                         </div>
