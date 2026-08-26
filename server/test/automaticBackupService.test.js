@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { execFileSync } = require('node:child_process');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
@@ -8,36 +9,54 @@ const {
   AUTOMATIC_BACKUP_R2_PREFIX,
   calculateFirstAutomaticBackupAt,
   calculateNextAutomaticBackupAt,
+  getAppTimeZone,
   pruneAutomaticBackupFiles,
   pruneAutomaticBackupObjects,
   runAutomaticBackup,
   storeAutomaticBackup,
 } = require('../src/services/automaticBackupService');
 
-test('calculates the first backup at the next server-local scheduled time', () => {
-  const now = new Date(2026, 7, 25, 22, 0, 0);
-  const next = calculateFirstAutomaticBackupAt({ now, time: '23:00' });
+test('schedules 12:41 AM using Asia/Manila rather than the server local timezone', () => {
+  const now = new Date('2026-08-25T16:00:00.000Z'); // 12:00 AM in Asia/Manila
+  const next = calculateFirstAutomaticBackupAt({ now, time: '00:41', timeZone: 'Asia/Manila' });
 
-  assert.equal(next.getFullYear(), 2026);
-  assert.equal(next.getMonth(), 7);
-  assert.equal(next.getDate(), 25);
-  assert.equal(next.getHours(), 23);
-  assert.equal(next.getMinutes(), 0);
+  assert.equal(next.toISOString(), '2026-08-25T16:41:00.000Z');
 });
 
-test('calculates the next every-five-days backup at the configured server-local time', () => {
-  const lastRun = new Date(2026, 7, 25, 23, 0, 0);
+test('rolls a passed Asia/Manila backup time into the next local calendar day', () => {
+  const now = new Date('2026-08-25T16:42:00.000Z'); // 12:42 AM in Asia/Manila
+  const next = calculateFirstAutomaticBackupAt({ now, time: '00:41', timeZone: 'Asia/Manila' });
+
+  assert.equal(next.toISOString(), '2026-08-26T16:41:00.000Z');
+});
+
+test('calculates the next daily backup using the configured Asia/Manila calendar day', () => {
+  const lastRun = new Date('2026-08-25T16:41:00.000Z');
   const next = calculateNextAutomaticBackupAt({
     from: lastRun,
-    intervalDays: 5,
-    time: '23:00',
+    intervalDays: 1,
+    time: '00:41',
+    timeZone: 'Asia/Manila',
   });
 
-  assert.equal(next.getFullYear(), 2026);
-  assert.equal(next.getMonth(), 7);
-  assert.equal(next.getDate(), 30);
-  assert.equal(next.getHours(), 23);
-  assert.equal(next.getMinutes(), 0);
+  assert.equal(next.toISOString(), '2026-08-26T16:41:00.000Z');
+});
+
+test('uses Asia/Manila by default and is independent of the server timezone', () => {
+  assert.equal(getAppTimeZone({}), 'Asia/Manila');
+
+  const servicePath = JSON.stringify(path.resolve(__dirname, '../src/services/automaticBackupService'));
+  const script = [
+    `const { calculateFirstAutomaticBackupAt } = require(${servicePath});`,
+    "process.stdout.write(calculateFirstAutomaticBackupAt({ now: new Date('2026-08-25T16:00:00.000Z'), time: '00:41' }).toISOString());",
+  ].join('');
+  const getScheduledTimeInServerZone = (timeZone) => execFileSync(process.execPath, ['-e', script], {
+    encoding: 'utf8',
+    env: { ...process.env, APP_TIME_ZONE: 'Asia/Manila', TZ: timeZone },
+  }).trim();
+
+  assert.equal(getScheduledTimeInServerZone('UTC'), '2026-08-25T16:41:00.000Z');
+  assert.equal(getScheduledTimeInServerZone('America/New_York'), '2026-08-25T16:41:00.000Z');
 });
 
 test('retention cleanup removes only old automatic backup files', async () => {

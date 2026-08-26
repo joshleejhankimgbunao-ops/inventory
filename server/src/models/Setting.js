@@ -124,6 +124,11 @@ const settingSchema = new mongoose.Schema(
       default: '23:00',
       trim: true,
     },
+    automaticBackupTimeZone: {
+      type: String,
+      default: '',
+      trim: true,
+    },
     lastAutomaticBackupAt: {
       type: Date,
       default: null,

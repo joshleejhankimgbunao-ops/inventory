@@ -462,7 +462,7 @@ const Settings = () => {
         const date = new Date(value);
         return Number.isNaN(date.getTime())
             ? fallback
-            : date.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+            : date.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Manila' });
     };
 
     const automaticBackupStatusLabel = !settings.automaticBackupEnabled
@@ -1646,7 +1646,7 @@ const Settings = () => {
                                     )}
 
                                     <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-                                        <p className="text-[11px] text-gray-500">Schedule uses the server&apos;s local deployment time. The browser does not need to remain open.</p>
+                                        <p className="text-[11px] text-gray-500">Schedule uses Philippine time (Asia/Manila). The browser does not need to remain open.</p>
                                         <button
                                             type="button"
                                             onClick={handleSaveAutomaticBackup}
