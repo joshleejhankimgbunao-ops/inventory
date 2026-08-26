@@ -129,6 +129,69 @@ const isLocalAutomaticBackupStorageAllowed = () => process.env.NODE_ENV !== 'pro
 
 const toAutomaticBackupObjectKey = (fileName) => `${AUTOMATIC_BACKUP_R2_PREFIX}${fileName}`;
 
+const isAutomaticBackupFileName = (fileName) => AUTOMATIC_BACKUP_FILE_PATTERN.test(String(fileName || ''));
+
+const toAutomaticBackupMetadata = (object = {}) => {
+  const key = String(object.key || '');
+  if (!key.startsWith(AUTOMATIC_BACKUP_R2_PREFIX)) return null;
+
+  const fileName = key.slice(AUTOMATIC_BACKUP_R2_PREFIX.length);
+  if (!isAutomaticBackupFileName(fileName) || key !== toAutomaticBackupObjectKey(fileName)) return null;
+
+  const createdAt = object.lastModified ? new Date(object.lastModified) : null;
+  return {
+    id: fileName,
+    fileName,
+    createdAt: createdAt && !Number.isNaN(createdAt.getTime()) ? createdAt : null,
+    size: Math.max(0, Number(object.size || 0)),
+    status: 'available',
+  };
+};
+
+const listAutomaticBackupHistory = async ({ storage = r2Storage } = {}) => {
+  if (!storage.isConfigured()) {
+    throw new R2StorageError('Cloud storage is required for automatic backup history.', {
+      code: 'R2_NOT_CONFIGURED',
+    });
+  }
+
+  const objects = await storage.listObjectsByPrefix(AUTOMATIC_BACKUP_R2_PREFIX);
+  return objects
+    .map(toAutomaticBackupMetadata)
+    .filter(Boolean)
+    .sort((left, right) => {
+      const rightTime = right.createdAt ? right.createdAt.getTime() : 0;
+      const leftTime = left.createdAt ? left.createdAt.getTime() : 0;
+      return rightTime - leftTime || right.fileName.localeCompare(left.fileName);
+    });
+};
+
+const getAutomaticBackupObject = async (fileName, { storage = r2Storage } = {}) => {
+  if (!isAutomaticBackupFileName(fileName)) {
+    throw new R2StorageError('Invalid automatic backup identifier.', {
+      code: 'R2_INVALID_KEY',
+      status: 400,
+    });
+  }
+
+  if (!storage.isConfigured()) {
+    throw new R2StorageError('Cloud storage is required for automatic backup downloads.', {
+      code: 'R2_NOT_CONFIGURED',
+    });
+  }
+
+  return {
+    fileName,
+    object: await storage.getObject(toAutomaticBackupObjectKey(fileName)),
+  };
+};
+
+const getLatestAutomaticBackupObject = async ({ storage = r2Storage } = {}) => {
+  const backups = await listAutomaticBackupHistory({ storage });
+  if (backups.length === 0) return null;
+  return getAutomaticBackupObject(backups[0].fileName, { storage });
+};
+
 const ensureSettingsDocument = async () => {
   const existing = await Setting.findOne({ singletonKey: 'default' });
   if (existing) return existing;
@@ -417,6 +480,7 @@ const initializeAutomaticBackupScheduler = async () => {
 module.exports = {
   AUTOMATIC_BACKUP_DIRECTORY,
   AUTOMATIC_BACKUP_FILE_PREFIX,
+  AUTOMATIC_BACKUP_FILE_PATTERN,
   AUTOMATIC_BACKUP_R2_PREFIX,
   AUTOMATIC_BACKUP_RETENTION_COUNT,
   DEFAULT_APP_TIME_ZONE,
@@ -426,6 +490,10 @@ module.exports = {
   getAppTimeZone,
   initializeAutomaticBackupScheduler,
   applyAutomaticBackupRetention,
+  getAutomaticBackupObject,
+  getLatestAutomaticBackupObject,
+  isAutomaticBackupFileName,
+  listAutomaticBackupHistory,
   pruneAutomaticBackupFiles,
   pruneAutomaticBackupObjects,
   reloadAutomaticBackupScheduler,

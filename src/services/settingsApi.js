@@ -1,4 +1,4 @@
-import { apiRequest } from './apiClient';
+import { apiBlobRequest, apiRequest } from './apiClient';
 
 export const getSettingsApi = async () => {
   return apiRequest('/api/settings');
@@ -23,4 +23,17 @@ export const restoreSystemBackupApi = async (backupPayload) => {
     method: 'POST',
     body: JSON.stringify({ backup: backupPayload }),
   });
+};
+
+export const listAutomaticBackupHistoryApi = async () => {
+  const response = await apiRequest('/api/settings/automatic-backups');
+  return Array.isArray(response?.backups) ? response.backups : [];
+};
+
+export const downloadAutomaticBackupApi = async (fileName) => {
+  return apiBlobRequest(`/api/settings/automatic-backups/${encodeURIComponent(fileName)}/download`);
+};
+
+export const downloadLatestAutomaticBackupApi = async () => {
+  return apiBlobRequest('/api/settings/automatic-backups/latest/download');
 };

@@ -5,7 +5,13 @@ import EditIcon from '../components/EditIcon';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
 import { createCategoryApi, updateCategoryApi } from '../services/inventoryApi';
-import { downloadSystemBackupApi, restoreSystemBackupApi } from '../services/settingsApi';
+import {
+    downloadAutomaticBackupApi,
+    downloadLatestAutomaticBackupApi,
+    downloadSystemBackupApi,
+    listAutomaticBackupHistoryApi,
+    restoreSystemBackupApi,
+} from '../services/settingsApi';
 import { clearAuthToken } from '../services/apiClient';
 import {
     isWholeNumberInput,
@@ -58,6 +64,10 @@ const Settings = () => {
     const [isBackupLoading, setIsBackupLoading] = useState(false);
     const [isRestoreLoading, setIsRestoreLoading] = useState(false);
     const [isAutomaticBackupSaving, setIsAutomaticBackupSaving] = useState(false);
+    const [automaticBackupHistory, setAutomaticBackupHistory] = useState([]);
+    const [automaticBackupHistoryDate, setAutomaticBackupHistoryDate] = useState('');
+    const [isAutomaticBackupHistoryLoading, setIsAutomaticBackupHistoryLoading] = useState(false);
+    const [automaticBackupDownloadId, setAutomaticBackupDownloadId] = useState('');
     const restoreInputRef = useRef(null);
     
     const defaults = useMemo(() => ({
@@ -177,6 +187,32 @@ const Settings = () => {
             setActiveTab(availableTabs[0] || 'categories');
         }
     }, [activeTab, availableTabs]);
+
+    useEffect(() => {
+        if (!isSuperAdmin || activeTab !== 'backup') {
+            return undefined;
+        }
+
+        let cancelled = false;
+        setIsAutomaticBackupHistoryLoading(true);
+        listAutomaticBackupHistoryApi()
+            .then((backups) => {
+                if (!cancelled) setAutomaticBackupHistory(backups);
+            })
+            .catch((error) => {
+                if (!cancelled) {
+                    setAutomaticBackupHistory([]);
+                    showToast('Automatic Backup History Failed', error.message || 'Unable to load automatic backup history.', 'error');
+                }
+            })
+            .finally(() => {
+                if (!cancelled) setIsAutomaticBackupHistoryLoading(false);
+            });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [activeTab, isSuperAdmin]);
 
     const resetNewCategoryForm = () => {
         setNewCategoryName('');
@@ -465,6 +501,50 @@ const Settings = () => {
             : date.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Manila' });
     };
 
+    const formatAutomaticBackupSize = (size) => {
+        const bytes = Math.max(0, Number(size || 0));
+        if (bytes < 1024) return `${bytes} B`;
+        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+        return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    };
+
+    const toPhilippineCalendarDate = (value) => {
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return '';
+
+        const parts = Object.fromEntries(
+            new Intl.DateTimeFormat('en-GB', {
+                timeZone: 'Asia/Manila',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+            })
+                .formatToParts(date)
+                .filter((part) => part.type !== 'literal')
+                .map((part) => [part.type, part.value])
+        );
+        return `${parts.year}-${parts.month}-${parts.day}`;
+    };
+
+    const filteredAutomaticBackupHistory = useMemo(() => (
+        automaticBackupHistoryDate
+            ? automaticBackupHistory.filter((backup) => toPhilippineCalendarDate(backup.createdAt) === automaticBackupHistoryDate)
+            : automaticBackupHistory
+    ), [automaticBackupHistory, automaticBackupHistoryDate]);
+
+    const selectedDateAutomaticBackup = automaticBackupHistoryDate
+        ? filteredAutomaticBackupHistory[0] || null
+        : null;
+
+    const selectedAutomaticBackupDateLabel = automaticBackupHistoryDate
+        ? new Date(`${automaticBackupHistoryDate}T00:00:00+08:00`).toLocaleDateString([], {
+            timeZone: 'Asia/Manila',
+            month: 'short',
+            day: 'numeric',
+            year: 'numeric',
+        })
+        : '';
+
     const automaticBackupStatusLabel = !settings.automaticBackupEnabled
         ? 'Disabled'
         : {
@@ -502,6 +582,63 @@ const Settings = () => {
         } finally {
             setIsBackupLoading(false);
         }
+    };
+
+    const downloadAutomaticBackupFile = (blob, fileName) => {
+        const downloadUrl = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = downloadUrl;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(downloadUrl);
+    };
+
+    const handleDownloadAutomaticBackup = async (backup) => {
+        const fileName = String(backup?.fileName || '');
+        if (!fileName) return;
+
+        setAutomaticBackupDownloadId(fileName);
+        try {
+            const blob = await downloadAutomaticBackupApi(fileName);
+            downloadAutomaticBackupFile(blob, fileName);
+            showToast('Automatic Backup Ready', 'Automatic backup downloaded successfully.', 'success');
+        } catch (error) {
+            showToast('Automatic Backup Download Failed', error.message || 'Unable to download automatic backup.', 'error');
+        } finally {
+            setAutomaticBackupDownloadId('');
+        }
+    };
+
+    const handleDownloadLatestAutomaticBackup = async () => {
+        const latestBackup = automaticBackupHistory[0];
+        if (!latestBackup?.fileName) {
+            showToast('No Automatic Backups', 'No automatic backups are available to download.', 'error');
+            return;
+        }
+
+        setAutomaticBackupDownloadId('latest');
+        try {
+            const blob = await downloadLatestAutomaticBackupApi();
+            downloadAutomaticBackupFile(blob, latestBackup.fileName);
+            showToast('Automatic Backup Ready', 'Latest automatic backup downloaded successfully.', 'success');
+        } catch (error) {
+            showToast('Automatic Backup Download Failed', error.message || 'Unable to download the latest automatic backup.', 'error');
+        } finally {
+            setAutomaticBackupDownloadId('');
+        }
+    };
+
+    const handlePrimaryAutomaticBackupDownload = async () => {
+        if (automaticBackupHistoryDate) {
+            if (selectedDateAutomaticBackup) {
+                await handleDownloadAutomaticBackup(selectedDateAutomaticBackup);
+            }
+            return;
+        }
+
+        await handleDownloadLatestAutomaticBackup();
     };
 
     const openRestorePicker = () => {
@@ -583,23 +720,18 @@ const Settings = () => {
             <div className="flex-1 flex flex-col md:flex-row gap-4 md:overflow-hidden min-h-0">
                 
                 {/* Sidebar Navigation */}
-                <div className="w-full md:w-64 bg-white rounded-xl shadow-sm border border-gray-100 p-3 h-auto md:h-full md:overflow-y-auto shrink-0">
-                    <p className="px-4 py-2 text-[10px] uppercase font-semibold text-gray-400 tracking-wider hidden md:block">Preferences</p>
+                <div className="w-full md:w-52 bg-[#111827] rounded-xl border border-transparent p-2 h-auto md:h-full md:overflow-y-auto shrink-0">
+                    <p className="px-3 py-2 text-[10px] uppercase font-semibold text-gray-300 tracking-wider hidden md:block">Preferences</p>
                     <nav className="flex md:flex-col gap-1 overflow-x-auto md:overflow-visible pb-2 md:pb-0">
                         {availableTabs.map(tab => (
                             <button
                                 key={tab}
                                 onClick={() => setActiveTab(tab)}
-                                className={`flex-shrink-0 md:w-full flex items-center gap-3 px-4 py-3 text-sm font-medium rounded-lg transition-all ${
+                                className={`relative flex-shrink-0 md:w-full flex items-center gap-3 px-3 py-2.5 text-sm font-medium rounded-lg border outline-none transition-[background-color,border-color,color] duration-200 ease-in-out ${
                                     activeTab === tab 
-                                    ? 'shadow-md transform scale-105 text-white' 
-                                    : 'text-gray-600 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-gray-700'
+                                    ? 'bg-slate-800/70 border-slate-700 text-white before:absolute before:inset-y-1 before:left-0 before:w-1 before:rounded-r-sm before:bg-[#FC0D2C]'
+                                    : 'border-transparent text-gray-200 hover:bg-slate-800/70 hover:border-slate-700 hover:text-white active:scale-95'
                                 }`}
-                                style={
-                                    activeTab === tab 
-                                    ? { backgroundColor: '#111827', border: '2px solid #111827' }
-                                    : {}
-                                }
                             >
                                 {tab === 'general' && <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg>}
                                 {tab === 'notifications' && <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg>}
@@ -1655,6 +1787,86 @@ const Settings = () => {
                                         >
                                             {isAutomaticBackupSaving ? 'Saving...' : 'Save Automatic Backup'}
                                         </button>
+                                    </div>
+                                </div>
+
+                                <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+                                    <div className="flex flex-wrap items-start justify-between gap-3">
+                                        <div>
+                                            <h4 className="text-sm font-semibold text-gray-900 dark:text-white">Automatic Backup History</h4>
+                                            <p className="mt-1 text-xs text-gray-500">Download retained automatic backups stored securely in cloud storage.</p>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={handlePrimaryAutomaticBackupDownload}
+                                            disabled={
+                                                isAutomaticBackupHistoryLoading
+                                                || Boolean(automaticBackupDownloadId)
+                                                || (Boolean(automaticBackupHistoryDate) && !selectedDateAutomaticBackup)
+                                            }
+                                            className="inline-flex items-center gap-2 rounded-lg bg-gray-900 px-3 py-2 text-xs font-semibold text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
+                                        >
+                                            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v10m0 0 4-4m-4 4-4-4m-3 6v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2" /></svg>
+                                            {automaticBackupDownloadId
+                                                ? 'Downloading...'
+                                                : automaticBackupHistoryDate
+                                                    ? selectedDateAutomaticBackup
+                                                        ? `Download Backup for ${selectedAutomaticBackupDateLabel}`
+                                                        : 'No Backup Available for Selected Date'
+                                                    : 'Download Latest Automatic Backup'}
+                                        </button>
+                                    </div>
+
+                                    <div className="mt-4 flex flex-wrap items-end gap-2 border-t border-gray-100 pt-3 dark:border-gray-700">
+                                        <label className="block">
+                                            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-gray-500">Backup Date</span>
+                                            <input
+                                                type="date"
+                                                value={automaticBackupHistoryDate}
+                                                onChange={(event) => setAutomaticBackupHistoryDate(event.target.value)}
+                                                className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm font-medium text-gray-900 outline-none transition focus:ring-2 focus:ring-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                                            />
+                                        </label>
+                                        {automaticBackupHistoryDate && (
+                                            <button
+                                                type="button"
+                                                onClick={() => setAutomaticBackupHistoryDate('')}
+                                                className="rounded-lg border border-gray-200 px-3 py-2 text-xs font-semibold text-gray-700 transition hover:bg-gray-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
+                                            >
+                                                Clear
+                                            </button>
+                                        )}
+                                    </div>
+
+                                    <div className="mt-3 overflow-hidden rounded-lg border border-gray-100 dark:border-gray-700">
+                                        {isAutomaticBackupHistoryLoading ? (
+                                            <p className="px-3 py-4 text-center text-xs text-gray-500">Loading automatic backups...</p>
+                                        ) : filteredAutomaticBackupHistory.length === 0 ? (
+                                            <p className="px-3 py-4 text-center text-xs text-gray-500">
+                                                {automaticBackupHistoryDate ? 'No automatic backups were created on this Philippine calendar date.' : 'No automatic backups are available yet.'}
+                                            </p>
+                                        ) : (
+                                            <div className="divide-y divide-gray-100 dark:divide-gray-700">
+                                                {filteredAutomaticBackupHistory.map((backup) => (
+                                                    <div key={backup.id} className="flex flex-wrap items-center justify-between gap-3 px-3 py-3">
+                                                        <div className="min-w-0">
+                                                            <p className="text-xs font-semibold text-gray-800 dark:text-gray-100">{formatAutomaticBackupDate(backup.createdAt, 'Unknown backup time')}</p>
+                                                            <p className="mt-0.5 text-[11px] text-gray-500">{backup.fileName} · {formatAutomaticBackupSize(backup.size)} · Available</p>
+                                                        </div>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleDownloadAutomaticBackup(backup)}
+                                                            disabled={Boolean(automaticBackupDownloadId)}
+                                                            aria-label={`Download ${backup.fileName}`}
+                                                            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs font-semibold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
+                                                        >
+                                                            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v10m0 0 4-4m-4 4-4-4m-3 6v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2" /></svg>
+                                                            {automaticBackupDownloadId === backup.id ? 'Downloading...' : 'Download'}
+                                                        </button>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                              </div>

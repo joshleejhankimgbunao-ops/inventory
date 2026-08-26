@@ -4,7 +4,14 @@ const { publishSettingsUpdated } = require('../services/realtimeService');
 const { parseStrictDecimal, parseStrictWholeNumber } = require('../utils/numericValidation');
 const { toPublicSettings } = require('../config/publicSettings');
 const { BACKUP_SCHEMA_VERSION, BACKUP_COLLECTIONS, generateSystemBackup } = require('../services/systemBackupService');
-const { reloadAutomaticBackupScheduler } = require('../services/automaticBackupService');
+const {
+  getAutomaticBackupObject,
+  getLatestAutomaticBackupObject,
+  isAutomaticBackupFileName,
+  listAutomaticBackupHistory,
+  reloadAutomaticBackupScheduler,
+} = require('../services/automaticBackupService');
+const { isObjectNotFoundError } = require('../services/r2StorageService');
 
 const EMAIL_RULE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const BACKUP_TIME_RULE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
@@ -337,6 +344,96 @@ const getSystemBackup = async (req, res, next) => {
   }
 };
 
+const requireAutomaticBackupAccess = (req, res) => {
+  if (!req.user) {
+    res.status(401).json({ message: 'Unauthorized.' });
+    return false;
+  }
+
+  if (req.user.role !== 'superadmin') {
+    res.status(403).json({ message: 'Forbidden: insufficient role.' });
+    return false;
+  }
+
+  return true;
+};
+
+const streamAutomaticBackupDownload = async ({ backup, res, next }) => {
+  const fileName = String(backup?.fileName || '');
+  const body = backup?.object?.Body;
+
+  if (!isAutomaticBackupFileName(fileName) || !body) {
+    return res.status(404).json({ message: 'Automatic backup is not available.' });
+  }
+
+  res.set('Cache-Control', 'private, no-store');
+  res.set('Content-Disposition', `attachment; filename="${fileName}"`);
+  res.type('application/json');
+
+  if (typeof body.pipe === 'function') {
+    body.on('error', (error) => next(error));
+    body.pipe(res);
+    return undefined;
+  }
+
+  if (typeof body.transformToByteArray === 'function') {
+    const bytes = await body.transformToByteArray();
+    return res.send(Buffer.from(bytes));
+  }
+
+  return res.status(404).json({ message: 'Automatic backup is not available.' });
+};
+
+const getAutomaticBackupHistory = async (req, res, next, dependencies = {}) => {
+  if (!requireAutomaticBackupAccess(req, res)) return undefined;
+
+  try {
+    const listBackups = dependencies.listBackups || listAutomaticBackupHistory;
+    const backups = await listBackups();
+    return res.json({ backups });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+const downloadAutomaticBackup = async (req, res, next, dependencies = {}) => {
+  if (!requireAutomaticBackupAccess(req, res)) return undefined;
+
+  const fileName = String(req.params?.fileName || '');
+  if (!isAutomaticBackupFileName(fileName)) {
+    return res.status(400).json({ message: 'Invalid automatic backup identifier.' });
+  }
+
+  try {
+    const getBackup = dependencies.getBackup || getAutomaticBackupObject;
+    const backup = await getBackup(fileName);
+    return streamAutomaticBackupDownload({ backup, res, next });
+  } catch (error) {
+    if (isObjectNotFoundError(error)) {
+      return res.status(404).json({ message: 'Automatic backup is not available.' });
+    }
+    return next(error);
+  }
+};
+
+const downloadLatestAutomaticBackup = async (req, res, next, dependencies = {}) => {
+  if (!requireAutomaticBackupAccess(req, res)) return undefined;
+
+  try {
+    const getLatestBackup = dependencies.getLatestBackup || getLatestAutomaticBackupObject;
+    const backup = await getLatestBackup();
+    if (!backup) {
+      return res.status(404).json({ message: 'No automatic backups are available.' });
+    }
+    return streamAutomaticBackupDownload({ backup, res, next });
+  } catch (error) {
+    if (isObjectNotFoundError(error)) {
+      return res.status(404).json({ message: 'Automatic backup is not available.' });
+    }
+    return next(error);
+  }
+};
+
 const restoreSystemBackup = async (req, res, next) => {
   try {
     const incomingBackup = req.body?.backup || req.body || {};
@@ -417,4 +514,11 @@ module.exports = {
   updateSettings,
   getSystemBackup,
   restoreSystemBackup,
+  getAutomaticBackupHistory,
+  downloadAutomaticBackup,
+  downloadLatestAutomaticBackup,
+  __test: {
+    requireAutomaticBackupAccess,
+    streamAutomaticBackupDownload,
+  },
 };
