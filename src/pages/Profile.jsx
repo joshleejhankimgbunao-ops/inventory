@@ -173,11 +173,12 @@ const Profile = () => {
             };
             return cachedProfileSnapshot ? { ...baseProfile, ...cachedProfileSnapshot } : baseProfile;
         }
-        // super admin default from settings
+        // The authenticated profile remains authoritative; settings are only a
+        // temporary fallback before the profile hydration request completes.
         const baseProfile = {
-            adminUser: settings.adminUser || 'Admin User',
-            fullName: settings.adminFullName || settings.adminDisplayName || settings.adminUser || 'Admin User',
-            adminDisplayName: settings.adminDisplayName || settings.adminUser || 'Admin User',
+            adminUser: authUsername || settings.adminUser || 'superadmin',
+            fullName: sessionName || settings.adminFullName || settings.adminDisplayName || settings.adminUser || 'Super Admin',
+            adminDisplayName: sessionName || settings.adminDisplayName || settings.adminUser || 'Super Admin',
             adminPassword: '',
             role: roleNames[userRole] || 'Super Admin',
             email: settings.storePrimaryEmail || 'admin@example.com',
@@ -267,9 +268,10 @@ const Profile = () => {
 
                 setProfileData((prev) => {
                     const backendDisplayName = (user.displayName || '').trim();
-                    const preferredDisplayName = userRole === ROLES.SUPER_ADMIN
-                        ? (settings.adminDisplayName || user.name || prev.adminDisplayName)
-                        : (backendDisplayName || user.name || prev.adminDisplayName || settings.adminDisplayName);
+                    const preferredDisplayName = backendDisplayName
+                        || user.name
+                        || user.username
+                        || prev.adminDisplayName;
 
                     const hydratedProfile = {
                         ...prev,
@@ -301,7 +303,7 @@ const Profile = () => {
         return () => {
             isMounted = false;
         };
-    }, [userRole, roleNames, settings.adminContactNumber, settings.adminDisplayName, setCurrentUserAvatar]);
+    }, [userRole, roleNames, settings.adminContactNumber, settings.avatar, setCurrentUserAvatar]);
 
     const formatLastLogin = (value) => {
         if (!value) {

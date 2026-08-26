@@ -61,7 +61,7 @@ const AUTH_FALLBACK = {
     updateSettings: () => {},
     userPreferences: DEFAULT_USER_PREFERENCES,
     updateUserPreferences: async () => DEFAULT_USER_PREFERENCES,
-    currentUserName: 'Admin User',
+    currentUserName: 'User',
     setCurrentUserName: () => {},
     currentUserAvatar: null,
     setCurrentUserAvatar: () => {},
@@ -188,51 +188,20 @@ export const AuthProvider = ({ children }) => {
         }
     }, [appSettings.adminUser, currentAuthUsername]);
 
-    const resolveNonCashierName = () => {
-        const authUsername = (currentAuthUsername || '').trim().toLowerCase();
-        const configuredAdminUser = (appSettings.adminUser || '').trim().toLowerCase();
-        const preferredDisplayName = (appSettings.adminDisplayName || '').trim();
-
-        const isPrimaryAdminAccount = authUsername && configuredAdminUser && authUsername === configuredAdminUser;
-        if (isPrimaryAdminAccount && preferredDisplayName) {
-            return preferredDisplayName;
-        }
-
-        return preferredDisplayName || 'Admin User';
-    };
-
     // 3. Current User Name Logic
-    // store as state so updates propagate even when role remains constant
+    // The authenticated User record is the source of truth. Until it hydrates,
+    // retain only the session value rather than a mutable global admin setting.
     const [currentUserName, setCurrentUserName] = useState(() => {
-        if (userRole === ROLES.CASHIER) {
-            return 'Cashier';
-        }
-        return resolveNonCashierName();
+        const storedName = String(sessionStorage.getItem('userName') || '').trim();
+        return storedName || (userRole === ROLES.CASHIER ? 'Cashier' : 'User');
     });
 
-    // keep the name in sync whenever the underlying role or settings change
+    // Preserve a usable fallback while the authenticated user is loading.
     useEffect(() => {
-        if (userRole === ROLES.CASHIER) {
-            if (!currentUserName) {
-                setCurrentUserName('Cashier');
-            }
-            return;
-        }
-
-        const authUsername = (currentAuthUsername || '').trim().toLowerCase();
-        const configuredAdminUser = (appSettings.adminUser || '').trim().toLowerCase();
-        const preferredDisplayName = (appSettings.adminDisplayName || '').trim();
-        const isPrimaryAdminAccount = authUsername && configuredAdminUser && authUsername === configuredAdminUser;
-
-        if (isPrimaryAdminAccount && preferredDisplayName && currentUserName !== preferredDisplayName) {
-            setCurrentUserName(preferredDisplayName);
-            return;
-        }
-
         if (!currentUserName) {
-            setCurrentUserName(preferredDisplayName || 'Admin User');
+            setCurrentUserName(userRole === ROLES.CASHIER ? 'Cashier' : 'User');
         }
-    }, [userRole, currentAuthUsername, appSettings.adminUser, appSettings.adminDisplayName, currentUserName]);
+    }, [userRole, currentUserName]);
 
     // 4. Update Settings Helper
     const updateSettings = async (newSettings, { partial = false, throwOnError = false } = {}) => {
@@ -343,10 +312,7 @@ export const AuthProvider = ({ children }) => {
                 const backendName = String(user.name || '').trim();
                 const backendDisplayName = String(user.displayName || '').trim();
                 const isSuperAdminAccount = backendRole === ROLES.SUPER_ADMIN;
-                const preferredSuperAdminName = String(appSettings.adminDisplayName || '').trim();
-                const canonicalName = isSuperAdminAccount
-                    ? (preferredSuperAdminName || backendName || 'Super Admin')
-                    : (backendDisplayName || backendName || username || 'User');
+                const canonicalName = backendDisplayName || backendName || username || 'User';
                 const backendAvatar = user.avatarUrl || user.avatar || '';
                 const mustRotateCredentials = Boolean(user.mustChangeCredentials);
                 setUserPreferences(mergeUserPreferences(user.preferences));
@@ -391,7 +357,7 @@ export const AuthProvider = ({ children }) => {
         return () => {
             isMounted = false;
         };
-    }, [appSettings.adminDisplayName, appSettings.avatar]);
+    }, [appSettings.avatar]);
 
     const resolveAvatarForSession = (roleOverride) => {
         const sessionAvatar = sessionStorage.getItem('userAvatar');
@@ -466,7 +432,7 @@ export const AuthProvider = ({ children }) => {
         sessionStorage.removeItem('authUserId');
         sessionStorage.removeItem('mustChangeCredentials');
         setUserRole(ROLES.SUPER_ADMIN);
-        setCurrentUserName('Admin User');
+        setCurrentUserName('User');
         setCurrentUserAvatar(null);
         setCurrentAuthUsername('');
         setCurrentAuthUserId('');

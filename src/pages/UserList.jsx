@@ -55,7 +55,7 @@ const getFieldErrorsFromMessage = (message = '') => {
 const UserList = () => {
     const isMountedRef = useRef(true);
     const tableContainerRef = useRef(null);
-    const { currentUserName, currentAuthUsername, currentAuthUserId, userRole, appSettings, applyAuthenticatedSession } = useAuth();
+    const { currentUserName, currentAuthUsername, currentAuthUserId, userRole, applyAuthenticatedSession } = useAuth();
     const { logActivity, renameUserReferences, syncUserIdentityReferences } = useInventory();
 
     const [users, setUsers] = useState([]);
@@ -872,11 +872,7 @@ const UserList = () => {
                                         <td className="px-6 py-3 border border-gray-200 dark:border-gray-700">
                                             <div className="flex items-center gap-3">
                                                 {(() => {
-                                                    const preferredName = (
-                                                        user.role === ROLES.SUPER_ADMIN
-                                                            ? (appSettings?.adminDisplayName || user.displayName || user.name || 'Unknown User')
-                                                            : (user.displayName || user.name || 'Unknown User')
-                                                    ).trim();
+                                                    const preferredName = (user.displayName || user.name || user.username || 'Unknown User').trim();
                                                     return (
                                                         <>
                                                 <div className={`h-8 w-8 rounded-full flex items-center justify-center font-semibold text-xs uppercase ${showArchived ? 'bg-gray-200 text-gray-400 dark:bg-gray-700 dark:text-gray-500' : 'bg-gray-100 text-gray-600 dark:bg-gray-600 dark:text-gray-300'}`}>

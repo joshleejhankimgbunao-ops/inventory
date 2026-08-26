@@ -173,13 +173,9 @@ const Login = ({ onLogin }) => {
         }
 
         const backendRole = response.user.role || ROLES.CASHIER;
-        const isSuperAdminSession = backendRole === ROLES.SUPER_ADMIN;
         const backendFullName = response.user.name || response.user.username || 'User';
         const backendDisplayName = (response.user.displayName || '').trim();
-        const normalizedBackendFullName = String(backendFullName).trim().toLowerCase();
-        const hasGenericAdminName = normalizedBackendFullName === 'admin' || normalizedBackendFullName === 'admin user';
-        const backendName = backendDisplayName
-          || (isSuperAdminSession && hasGenericAdminName ? 'Super Admin' : backendFullName);
+        const backendName = backendDisplayName || backendFullName;
 
         const backendAvatar = response.user.avatarUrl || response.user.avatar || '';
         // Keep avatar undefined when unavailable so AuthContext can resolve fallback immediately.
