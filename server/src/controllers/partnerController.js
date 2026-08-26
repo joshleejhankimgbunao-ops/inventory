@@ -1,4 +1,5 @@
 const Partner = require('../models/Partner');
+const { publishPartnersUpdated } = require('../services/realtimeService');
 
 const EMAIL_RULE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -9,6 +10,14 @@ const normalizeString = (value) => {
 
 const normalizeEmail = (value) => normalizeString(value).toLowerCase();
 
+const normalizeCustomerType = (value) => {
+  const normalized = normalizeString(value).toLowerCase();
+  if (['regular', 'walk-in', 'vip'].includes(normalized)) {
+    return normalized;
+  }
+  return 'regular';
+};
+
 const parseBool = (value, fallback) => {
   if (value === undefined || value === null || value === '') return fallback;
   if (typeof value === 'boolean') return value;
@@ -17,6 +26,27 @@ const parseBool = (value, fallback) => {
     if (value.toLowerCase() === 'false') return false;
   }
   return fallback;
+};
+
+const normalizeSupplierCapabilities = (value) => {
+  if (!Array.isArray(value)) return [];
+
+  const seen = new Set();
+  const normalized = [];
+
+  for (const entry of value) {
+    const category = normalizeString(entry?.category);
+    const brand = normalizeString(entry?.brand);
+    if (!category) continue;
+
+    const key = `${category.toLowerCase()}::${brand.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    normalized.push({ category, brand });
+  }
+
+  return normalized;
 };
 
 const isValidType = (value) => ['supplier', 'customer'].includes(value);
@@ -65,6 +95,9 @@ const createPartner = async (req, res, next) => {
     const email = normalizeEmail(req.body?.email);
     const address = normalizeString(req.body?.address);
     const note = normalizeString(req.body?.note);
+    const supplierCapabilities = normalizeSupplierCapabilities(req.body?.supplierCapabilities);
+    const customerType = normalizeCustomerType(req.body?.customerType);
+    const isVerifiedCustomer = parseBool(req.body?.isVerifiedCustomer, true);
 
     if (!isValidType(type)) {
       return res.status(400).json({ message: "type is required and must be 'supplier' or 'customer'." });
@@ -85,6 +118,16 @@ const createPartner = async (req, res, next) => {
       email,
       address,
       note,
+      supplierCapabilities: type === 'supplier' ? supplierCapabilities : [],
+      customerType: type === 'customer' ? customerType : 'regular',
+      isVerifiedCustomer: type === 'customer' ? isVerifiedCustomer : true,
+      isVatExempt: false,
+    });
+
+    publishPartnersUpdated({
+      reason: 'partner.created',
+      partnerId: partner._id,
+      partnerType: partner.type,
     });
 
     return res.status(201).json(partner);
@@ -96,6 +139,20 @@ const createPartner = async (req, res, next) => {
 const updatePartner = async (req, res, next) => {
   try {
     const { id } = req.params;
+    const existing = await Partner.findById(id);
+    if (!existing) {
+      return res.status(404).json({ message: 'Partner not found.' });
+    }
+
+    const expectedUpdatedAtRaw = normalizeString(req.body?.expectedUpdatedAt);
+    if (expectedUpdatedAtRaw) {
+      const expectedUpdatedAt = new Date(expectedUpdatedAtRaw);
+      if (!Number.isNaN(expectedUpdatedAt.getTime()) && existing.updatedAt) {
+        if (existing.updatedAt.getTime() !== expectedUpdatedAt.getTime()) {
+          return res.status(409).json({ message: 'This partner was updated by another user. Please refresh and try again.' });
+        }
+      }
+    }
 
     const payload = {};
 
@@ -104,6 +161,15 @@ const updatePartner = async (req, res, next) => {
     if (req.body?.email !== undefined) payload.email = normalizeEmail(req.body.email);
     if (req.body?.address !== undefined) payload.address = normalizeString(req.body.address);
     if (req.body?.note !== undefined) payload.note = normalizeString(req.body.note);
+    if (req.body?.supplierCapabilities !== undefined) {
+      payload.supplierCapabilities = normalizeSupplierCapabilities(req.body.supplierCapabilities);
+    }
+    if (req.body?.customerType !== undefined) {
+      payload.customerType = normalizeCustomerType(req.body.customerType);
+    }
+    if (req.body?.isVerifiedCustomer !== undefined) {
+      payload.isVerifiedCustomer = parseBool(req.body.isVerifiedCustomer, true);
+    }
 
     if (req.body?.type !== undefined) {
       const nextType = normalizeString(req.body.type).toLowerCase();
@@ -121,16 +187,26 @@ const updatePartner = async (req, res, next) => {
       return res.status(400).json({ message: 'name cannot be empty.' });
     }
 
-    const updated = await Partner.findByIdAndUpdate(id, payload, {
-      new: true,
-      runValidators: true,
-    });
-
-    if (!updated) {
-      return res.status(404).json({ message: 'Partner not found.' });
+    const nextType = payload.type || existing.type;
+    if (nextType !== 'supplier') {
+      payload.supplierCapabilities = [];
+    }
+    if (nextType !== 'customer') {
+      payload.customerType = 'regular';
+      payload.isVerifiedCustomer = true;
+      payload.isVatExempt = false;
     }
 
-    return res.json(updated);
+    existing.set(payload);
+    await existing.save();
+
+    publishPartnersUpdated({
+      reason: 'partner.updated',
+      partnerId: existing._id,
+      partnerType: existing.type,
+    });
+
+    return res.json(existing);
   } catch (error) {
     return next(error);
   }
@@ -149,6 +225,12 @@ const archivePartner = async (req, res, next) => {
     partner.archivedAt = new Date();
     partner.archivedBy = req.user?._id || null;
     await partner.save();
+
+    publishPartnersUpdated({
+      reason: 'partner.archived',
+      partnerId: partner._id,
+      partnerType: partner.type,
+    });
 
     return res.json({ message: 'Partner archived.', partner });
   } catch (error) {
@@ -169,6 +251,12 @@ const restorePartner = async (req, res, next) => {
     partner.archivedAt = null;
     partner.archivedBy = null;
     await partner.save();
+
+    publishPartnersUpdated({
+      reason: 'partner.restored',
+      partnerId: partner._id,
+      partnerType: partner.type,
+    });
 
     return res.json({ message: 'Partner restored.', partner });
   } catch (error) {

@@ -34,3 +34,4 @@ Start-Service MongoDB
 
 Write-Host 'MongoDB 7 installation complete and service started.' -ForegroundColor Green
 Write-Host 'Verify with: Get-Service MongoDB'
+Write-Host 'Before starting this application, run server\scripts\powershell\enable-local-replica-set.ps1 in an Administrator PowerShell window.' -ForegroundColor Yellow

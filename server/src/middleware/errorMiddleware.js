@@ -3,7 +3,7 @@ const notFound = (req, res) => {
 };
 
 const errorHandler = (error, req, res, next) => {
-  const status = res.statusCode && res.statusCode !== 200 ? res.statusCode : 500;
+  const status = error?.status || (res.statusCode && res.statusCode !== 200 ? res.statusCode : 500);
   res.status(status).json({
     message: error.message || 'Internal server error.',
   });

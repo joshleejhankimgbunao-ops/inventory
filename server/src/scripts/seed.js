@@ -6,18 +6,20 @@ const connectDB = require('../config/db');
 const User = require('../models/User');
 const Product = require('../models/Product');
 const Sale = require('../models/Sale');
+const { requireExplicitEnv, requireExplicitPinEnv } = require('../config/security');
 
-const usersSeed = [
+const buildUsersSeed = () => ([
   {
     name: process.env.SEED_SUPERADMIN_NAME || 'JJ Bunao',
-    username: process.env.SEED_SUPERADMIN_USERNAME || 'joshlee',
+    username: requireExplicitEnv('SEED_SUPERADMIN_USERNAME').trim().toLowerCase(),
     email: process.env.SEED_SUPERADMIN_EMAIL || 'jjbunao1@gmail.com',
-    password: process.env.SEED_SUPERADMIN_PASSWORD || 'Bunao123.',
-    pin: process.env.SEED_SUPERADMIN_PIN || '111111',
+    password: requireExplicitEnv('SEED_SUPERADMIN_PASSWORD'),
+    pin: requireExplicitPinEnv('SEED_SUPERADMIN_PIN'),
     role: 'superadmin',
+    isPrimarySuperAdmin: true,
     isActive: true,
   },
-];
+]);
 
 const productsSeed = [
   { name: 'Coco Lumber 2x4x8 ft', sku: 'LBR-001', category: 'Lumbers', stock: 150, price: 180 },
@@ -32,7 +34,7 @@ const shouldReset = process.argv.includes('--reset');
 const hashPassword = async (plainText) => bcrypt.hash(plainText, 10);
 const hashPin = async (plainText) => bcrypt.hash(plainText, 10);
 
-const seedUsers = async () => {
+const seedUsers = async (usersSeed) => {
   if (shouldReset) {
     await User.deleteMany({});
   }
@@ -144,9 +146,10 @@ const seedSampleSale = async (products, users) => {
 
 const runSeed = async () => {
   try {
+    const usersSeed = buildUsersSeed();
     await connectDB();
 
-    const users = await seedUsers();
+    const users = await seedUsers(usersSeed);
     const products = await seedProducts();
     const sale = await seedSampleSale(products, users);
 

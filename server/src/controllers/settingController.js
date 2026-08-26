@@ -1,15 +1,13 @@
 const Setting = require('../models/Setting');
-const Product = require('../models/Product');
-const Sale = require('../models/Sale');
-const User = require('../models/User');
-const Category = require('../models/Category');
-const Partner = require('../models/Partner');
-const ActivityLog = require('../models/ActivityLog');
-const InventoryLog = require('../models/InventoryLog');
-
-const BACKUP_SCHEMA_VERSION = '1.0.0';
+const mongoose = require('mongoose');
+const { publishSettingsUpdated } = require('../services/realtimeService');
+const { parseStrictDecimal, parseStrictWholeNumber } = require('../utils/numericValidation');
+const { toPublicSettings } = require('../config/publicSettings');
+const { BACKUP_SCHEMA_VERSION, BACKUP_COLLECTIONS, generateSystemBackup } = require('../services/systemBackupService');
+const { reloadAutomaticBackupScheduler } = require('../services/automaticBackupService');
 
 const EMAIL_RULE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const BACKUP_TIME_RULE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 
 const ALLOWED_UPDATE_FIELDS = new Set([
   'storeName',
@@ -21,8 +19,10 @@ const ALLOWED_UPDATE_FIELDS = new Set([
   'storeMapLink',
   'currency',
   'darkMode',
-  'autoPrintReceipts',
   'autoSync',
+  'automaticBackupEnabled',
+  'automaticBackupIntervalDays',
+  'automaticBackupTime',
   'lowStockAlert',
   'desktopNotifications',
   'maxStockLimit',
@@ -52,8 +52,7 @@ const normalizeEmail = (value) => {
 };
 
 const toNumberOrNull = (value) => {
-  const num = Number(value);
-  return Number.isFinite(num) ? num : null;
+  return parseStrictDecimal(value);
 };
 
 const sanitizeRulesMap = (source = {}) => {
@@ -61,10 +60,12 @@ const sanitizeRulesMap = (source = {}) => {
 
   for (const [key, rawValue] of Object.entries(source || {})) {
     const normalizedKey = normalizeString(key);
-    const numericValue = toNumberOrNull(rawValue);
+    const numericValue = parseStrictWholeNumber(rawValue, { min: 1 });
 
-    if (!normalizedKey || numericValue === null || numericValue < 0) {
-      continue;
+    if (!normalizedKey || numericValue === null) {
+      const error = new Error('Stock rule limits must be whole numbers greater than 0.');
+      error.status = 400;
+      throw error;
     }
 
     sanitized[normalizedKey] = numericValue;
@@ -74,19 +75,27 @@ const sanitizeRulesMap = (source = {}) => {
 };
 
 const sanitizeBudgetBand = (band = {}, fallback = {}) => {
-  const min = toNumberOrNull(band.min);
-  const max = toNumberOrNull(band.max);
+  const minSource = band.min ?? fallback.min ?? 0;
+  const maxSource = band.max ?? fallback.max ?? 0;
+  const min = parseStrictDecimal(minSource);
+  const max = parseStrictDecimal(maxSource);
+
+  if (min === null || max === null) {
+    const error = new Error('Budget range values must be non-negative numbers with up to 2 decimal places.');
+    error.status = 400;
+    throw error;
+  }
 
   return {
-    min: min === null || min < 0 ? Number(fallback.min || 0) : min,
-    max: max === null || max < 0 ? Number(fallback.max || 0) : max,
+    min,
+    max,
   };
 };
 
 const sanitizeBudgetRanges = (source = {}) => {
   const low = sanitizeBudgetBand(source.low || {}, { min: 0, max: 500 });
   const moderate = sanitizeBudgetBand(source.moderate || {}, { min: low.max, max: 2000 });
-  const high = sanitizeBudgetBand(source.high || {}, { min: moderate.max, max: 1000000 });
+  const high = sanitizeBudgetBand(source.high || {}, { min: moderate.max, max: Number.MAX_SAFE_INTEGER });
 
   low.max = Math.max(low.min, low.max);
   moderate.min = Math.max(low.max, moderate.min);
@@ -98,6 +107,21 @@ const sanitizeBudgetRanges = (source = {}) => {
 };
 
 const validatePayload = (payload) => {
+  if ('automaticBackupEnabled' in payload && typeof payload.automaticBackupEnabled !== 'boolean') {
+    return 'automaticBackupEnabled must be a boolean.';
+  }
+
+  if ('automaticBackupIntervalDays' in payload) {
+    const intervalDays = parseStrictWholeNumber(payload.automaticBackupIntervalDays, { min: 1, max: 30 });
+    if (intervalDays === null) {
+      return 'automaticBackupIntervalDays must be a whole number from 1 to 30.';
+    }
+  }
+
+  if ('automaticBackupTime' in payload && !BACKUP_TIME_RULE.test(String(payload.automaticBackupTime || ''))) {
+    return 'automaticBackupTime must use HH:mm 24-hour format.';
+  }
+
   if ('storePrimaryEmail' in payload && payload.storePrimaryEmail && !EMAIL_RULE.test(payload.storePrimaryEmail)) {
     return 'storePrimaryEmail must be a valid email.';
   }
@@ -151,25 +175,23 @@ const validatePayload = (payload) => {
   return null;
 };
 
-const ensureSettingsDocument = async () => {
-  const existing = await Setting.findOne({ singletonKey: 'default' });
+const ensureSettingsDocument = async ({ session = null } = {}) => {
+  const existingQuery = Setting.findOne({ singletonKey: 'default' });
+  if (session) {
+    existingQuery.session(session);
+  }
+
+  const existing = await existingQuery;
   if (existing) {
     return existing;
   }
 
-  return Setting.create({ singletonKey: 'default' });
+  const settings = new Setting({ singletonKey: 'default' });
+  await settings.save(session ? { session } : undefined);
+  return settings;
 };
 
-const BACKUP_COLLECTIONS = [
-  ['settings', Setting],
-  ['users', User],
-  ['products', Product],
-  ['sales', Sale],
-  ['categories', Category],
-  ['partners', Partner],
-  ['activityLogs', ActivityLog],
-  ['inventoryLogs', InventoryLog],
-];
+const BACKUP_COLLECTION_KEYS = BACKUP_COLLECTIONS.map(([key]) => key);
 
 const ensureArrayPayload = (value) => {
   if (!Array.isArray(value)) {
@@ -190,7 +212,7 @@ const toInsertableDocs = (docs = []) => {
 const getSettings = async (req, res, next) => {
   try {
     const settings = await ensureSettingsDocument();
-    return res.json(settings);
+    return res.json(req.user ? settings : toPublicSettings(settings));
   } catch (error) {
     return next(error);
   }
@@ -211,6 +233,16 @@ const updateSettings = async (req, res, next) => {
       return res.status(400).json({ message: 'No valid settings fields provided.' });
     }
 
+    let settings = await ensureSettingsDocument();
+    const changesAutomaticBackup = (
+      ('automaticBackupEnabled' in payload && Boolean(payload.automaticBackupEnabled) !== Boolean(settings.automaticBackupEnabled))
+      || ('automaticBackupIntervalDays' in payload && Number(payload.automaticBackupIntervalDays) !== Number(settings.automaticBackupIntervalDays))
+      || ('automaticBackupTime' in payload && String(payload.automaticBackupTime || '').trim() !== String(settings.automaticBackupTime || ''))
+    );
+    if (changesAutomaticBackup && req.user?.role !== 'superadmin') {
+      return res.status(403).json({ message: 'Only Super Admin can change automatic backup settings.' });
+    }
+
     if ('storeName' in payload) payload.storeName = normalizeString(payload.storeName);
     if ('storeAddress' in payload) payload.storeAddress = normalizeString(payload.storeAddress);
     if ('contactPhone' in payload) payload.contactPhone = normalizeString(payload.contactPhone);
@@ -225,8 +257,30 @@ const updateSettings = async (req, res, next) => {
     if ('adminContactNumber' in payload && typeof payload.adminContactNumber === 'string') payload.adminContactNumber = payload.adminContactNumber.replace(/\D/g, '').slice(0, 11);
     if ('avatar' in payload) payload.avatar = normalizeString(payload.avatar);
 
-    if ('lowStockAlert' in payload) payload.lowStockAlert = toNumberOrNull(payload.lowStockAlert);
-    if ('maxStockLimit' in payload) payload.maxStockLimit = toNumberOrNull(payload.maxStockLimit);
+    if ('lowStockAlert' in payload) {
+      const lowStockAlert = parseStrictWholeNumber(payload.lowStockAlert, { max: 100 });
+      if (lowStockAlert === null) {
+        return res.status(400).json({ message: 'lowStockAlert must be a whole number from 0 to 100.' });
+      }
+      payload.lowStockAlert = lowStockAlert;
+    }
+    if ('maxStockLimit' in payload) {
+      const maxStockLimit = parseStrictWholeNumber(payload.maxStockLimit, { min: 1 });
+      if (maxStockLimit === null) {
+        return res.status(400).json({ message: 'maxStockLimit must be a whole number greater than 0.' });
+      }
+      payload.maxStockLimit = maxStockLimit;
+    }
+    if ('automaticBackupIntervalDays' in payload) {
+      const automaticBackupIntervalDays = parseStrictWholeNumber(payload.automaticBackupIntervalDays, { min: 1, max: 30 });
+      if (automaticBackupIntervalDays === null) {
+        return res.status(400).json({ message: 'automaticBackupIntervalDays must be a whole number from 1 to 30.' });
+      }
+      payload.automaticBackupIntervalDays = automaticBackupIntervalDays;
+    }
+    if ('automaticBackupTime' in payload) {
+      payload.automaticBackupTime = String(payload.automaticBackupTime || '').trim();
+    }
 
     if ('stockRules' in payload) {
       payload.stockRules = {
@@ -244,13 +298,20 @@ const updateSettings = async (req, res, next) => {
       return res.status(400).json({ message: validationError });
     }
 
-    const settings = await ensureSettingsDocument();
-
     for (const [key, value] of Object.entries(payload)) {
       settings[key] = value;
     }
 
     await settings.save();
+
+    if (changesAutomaticBackup) {
+      settings = await reloadAutomaticBackupScheduler({ reschedule: true });
+    }
+
+    publishSettingsUpdated({
+      keys: Object.keys(payload),
+      changedBy: req.user?.username || req.user?.name || '',
+    });
 
     return res.json({
       message: 'Settings updated.',
@@ -263,45 +324,13 @@ const updateSettings = async (req, res, next) => {
 
 const getSystemBackup = async (req, res, next) => {
   try {
-    const [
-      settings,
-      users,
-      products,
-      sales,
-      categories,
-      partners,
-      activityLogs,
-      inventoryLogs,
-    ] = await Promise.all([
-      Setting.find({}).lean(),
-      User.find({})
-        .select('+password +pinHash +passwordResetTokenHash +pinResetTokenHash')
-        .lean(),
-      Product.find({}).lean(),
-      Sale.find({}).lean(),
-      Category.find({}).lean(),
-      Partner.find({}).lean(),
-      ActivityLog.find({}).lean(),
-      InventoryLog.find({}).lean(),
-    ]);
+    const backup = await generateSystemBackup({
+      generatedBy: req.user?.username || req.user?.name || 'superadmin',
+    });
 
     return res.json({
       message: 'Backup generated.',
-      backup: {
-        schemaVersion: BACKUP_SCHEMA_VERSION,
-        generatedAt: new Date().toISOString(),
-        generatedBy: req.user?.username || req.user?.name || 'superadmin',
-        collections: {
-          settings,
-          users,
-          products,
-          sales,
-          categories,
-          partners,
-          activityLogs,
-          inventoryLogs,
-        },
-      },
+      backup,
     });
   } catch (error) {
     return next(error);
@@ -319,13 +348,24 @@ const restoreSystemBackup = async (req, res, next) => {
     }
 
     if (schemaVersion !== BACKUP_SCHEMA_VERSION) {
+      const legacyMessage = schemaVersion === '1.0.0'
+        ? 'Legacy backup schemaVersion 1.0.0 is incomplete because it does not include Special Orders and Credit Transactions. Restore was not started.'
+        : `Unsupported backup schemaVersion. Expected ${BACKUP_SCHEMA_VERSION}, received ${schemaVersion}.`;
+
       return res.status(400).json({
-        message: `Unsupported backup schemaVersion. Expected ${BACKUP_SCHEMA_VERSION}, received ${schemaVersion}.`,
+        message: legacyMessage,
       });
     }
 
     if (!collections || typeof collections !== 'object') {
       return res.status(400).json({ message: 'Invalid backup file: missing collections payload.' });
+    }
+
+    const missingCollections = BACKUP_COLLECTION_KEYS.filter((key) => !Array.isArray(collections[key]));
+    if (missingCollections.length > 0) {
+      return res.status(400).json({
+        message: `Restore rejected: current backup is incomplete. Missing collection arrays: ${missingCollections.join(', ')}. Restore was not started.`,
+      });
     }
 
     const usersPayload = ensureArrayPayload(collections.users);
@@ -334,25 +374,34 @@ const restoreSystemBackup = async (req, res, next) => {
       return res.status(400).json({ message: 'Restore rejected: backup must include at least one superadmin user.' });
     }
 
-    for (const [, Model] of BACKUP_COLLECTIONS) {
-      await Model.deleteMany({});
-    }
-
     const restoredCounts = {};
+    const session = await mongoose.startSession();
 
-    for (const [key, Model] of BACKUP_COLLECTIONS) {
-      const docs = toInsertableDocs(ensureArrayPayload(collections[key]));
-      restoredCounts[key] = docs.length;
+    try {
+      await session.withTransaction(async () => {
+        for (const [, Model] of BACKUP_COLLECTIONS) {
+          await Model.deleteMany({}, { session });
+        }
 
-      if (docs.length > 0) {
-        await Model.insertMany(docs, { ordered: true });
-      }
+        for (const [key, Model] of BACKUP_COLLECTIONS) {
+          const docs = toInsertableDocs(collections[key]);
+          restoredCounts[key] = docs.length;
+
+          if (docs.length > 0) {
+            await Model.insertMany(docs, { ordered: true, session });
+          }
+        }
+
+        if (restoredCounts.settings === 0) {
+          await ensureSettingsDocument({ session });
+          restoredCounts.settings = 1;
+        }
+      });
+    } finally {
+      await session.endSession();
     }
 
-    if (restoredCounts.settings === 0) {
-      await ensureSettingsDocument();
-      restoredCounts.settings = 1;
-    }
+    await reloadAutomaticBackupScheduler();
 
     return res.json({
       message: 'Backup restored successfully.',

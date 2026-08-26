@@ -7,6 +7,12 @@ export const loginApi = async (username, password, pin) => {
   });
 };
 
+export const logoutApi = async () => {
+  return apiRequest('/api/auth/logout', {
+    method: 'POST',
+  });
+};
+
 export const registerApi = async ({ name, username, email, phone, password, pin, role }) => {
   return apiRequest('/api/auth/register', {
     method: 'POST',

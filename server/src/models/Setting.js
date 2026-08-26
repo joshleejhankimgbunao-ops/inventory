@@ -44,7 +44,7 @@ const budgetRangesSchema = new mongoose.Schema(
     },
     high: {
       type: budgetRangeBandSchema,
-      default: () => ({ min: 2000, max: 1000000 }),
+      default: () => ({ min: 2000, max: Number.MAX_SAFE_INTEGER }),
     },
   },
   { _id: false }
@@ -105,13 +105,42 @@ const settingSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
-    autoPrintReceipts: {
-      type: Boolean,
-      default: false,
-    },
     autoSync: {
       type: Boolean,
       default: true,
+    },
+    automaticBackupEnabled: {
+      type: Boolean,
+      default: false,
+    },
+    automaticBackupIntervalDays: {
+      type: Number,
+      default: 1,
+      min: 1,
+      max: 30,
+    },
+    automaticBackupTime: {
+      type: String,
+      default: '23:00',
+      trim: true,
+    },
+    lastAutomaticBackupAt: {
+      type: Date,
+      default: null,
+    },
+    lastAutomaticBackupStatus: {
+      type: String,
+      enum: ['not_run', 'successful', 'failed'],
+      default: 'not_run',
+    },
+    lastAutomaticBackupError: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    nextAutomaticBackupAt: {
+      type: Date,
+      default: null,
     },
     lowStockAlert: {
       type: Number,
@@ -136,7 +165,7 @@ const settingSchema = new mongoose.Schema(
       default: () => ({
         low: { min: 0, max: 500 },
         moderate: { min: 500, max: 2000 },
-        high: { min: 2000, max: 1000000 },
+        high: { min: 2000, max: Number.MAX_SAFE_INTEGER },
       }),
     },
     adminUser: {

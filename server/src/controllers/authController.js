@@ -4,6 +4,8 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { sendResetEmail, sendAccountCredentialsEmail } = require('../services/emailService');
 const { writeActivityLog } = require('../services/logService');
+const { revokeRealtimeSession } = require('../services/realtimeService');
+const { getJwtSecret } = require('../config/security');
 
 const RESET_RESPONSE_MESSAGE = 'If the account exists, a reset link has been sent.';
 
@@ -11,10 +13,14 @@ const PASSWORD_RESET_TTL_MINUTES = Number(process.env.PASSWORD_RESET_TTL_MINUTES
 const PIN_RESET_TTL_MINUTES = Number(process.env.PIN_RESET_TTL_MINUTES || 30);
 const PASSWORD_MIN_LENGTH = Number(process.env.PASSWORD_MIN_LENGTH || 8);
 const PIN_LENGTH = Number(process.env.PIN_LENGTH || 6);
+const passwordRequirementsMessage = (fieldName = 'password') => (
+  `${fieldName} must be at least ${PASSWORD_MIN_LENGTH} characters and include uppercase, lowercase, number, and special character.`
+);
 
 const signToken = (userId) => {
-  return jwt.sign({ id: userId }, process.env.JWT_SECRET, {
+  return jwt.sign({ id: userId }, getJwtSecret(), {
     expiresIn: process.env.JWT_EXPIRES_IN || '1d',
+    algorithm: 'HS256',
   });
 };
 
@@ -29,14 +35,20 @@ const sanitizeUser = (user) => ({
   preferences: {
     darkMode: Boolean(user.preferences?.darkMode),
     desktopNotifications: user.preferences?.desktopNotifications !== false,
+    autoPrintReceipts: Boolean(user.preferences?.autoPrintReceipts),
     hasViewedLogs: Boolean(user.preferences?.hasViewedLogs),
     readLogCount: Number(user.preferences?.readLogCount || 0),
   },
   role: user.role,
+  isPrimarySuperAdmin: Boolean(user.isPrimarySuperAdmin),
   isActive: user.isActive,
   lastLogin: user.lastLogin,
   mustChangeCredentials: Boolean(user.mustChangeCredentials),
 });
+
+const isPrimarySuperAdmin = (user) => (
+  user?.role === 'superadmin' && user?.isPrimarySuperAdmin === true
+);
 
 const normalizeValue = (value) => {
   if (typeof value !== 'string') {
@@ -52,6 +64,25 @@ const normalizeTrimmed = (value) => {
   }
 
   return value.trim();
+};
+
+const extractBearerToken = (req) => {
+  const authHeader = String(req.get('authorization') || '').trim();
+  if (!authHeader.toLowerCase().startsWith('bearer ')) {
+    return '';
+  }
+
+  return authHeader.slice(7).trim();
+};
+
+const buildSessionIdentifier = (req) => {
+  const bearerToken = extractBearerToken(req);
+  if (bearerToken) {
+    return hashToken(bearerToken).slice(0, 12);
+  }
+
+  const fallbackSeed = `${req.user?._id || 'anon'}|${req.get('user-agent') || ''}|${req.ip || ''}`;
+  return crypto.createHash('sha256').update(fallbackSeed).digest('hex').slice(0, 12);
 };
 
 const hashToken = (rawToken) => {
@@ -87,7 +118,10 @@ const isValidPassword = (password) => {
     return false;
   }
 
-  return /[A-Za-z]/.test(password) && /\d/.test(password);
+  return /[a-z]/.test(password)
+    && /[A-Z]/.test(password)
+    && /\d/.test(password)
+    && /[^A-Za-z\d]/.test(password);
 };
 
 const isValidPin = (pin) => {
@@ -125,6 +159,10 @@ const sanitizePreferencesPayload = (raw = {}) => {
 
   if (raw.desktopNotifications !== undefined) {
     output.desktopNotifications = Boolean(raw.desktopNotifications);
+  }
+
+  if (raw.autoPrintReceipts !== undefined) {
+    output.autoPrintReceipts = Boolean(raw.autoPrintReceipts);
   }
 
   if (raw.hasViewedLogs !== undefined) {
@@ -219,7 +257,7 @@ const updateMyProfile = async (req, res, next) => {
     if (hasNewPassword) {
       if (!isValidPassword(req.body.newPassword)) {
         return res.status(400).json({
-          message: `newPassword must be at least ${PASSWORD_MIN_LENGTH} characters and include letters and numbers.`,
+          message: passwordRequirementsMessage('newPassword'),
         });
       }
 
@@ -337,8 +375,12 @@ const updateUserByUsername = async (req, res, next) => {
       return res.status(404).json({ message: 'User not found.' });
     }
 
-    if (user.role === 'superadmin') {
-      return res.status(403).json({ message: 'Superadmin accounts cannot be modified from this endpoint.' });
+    if (user.isPrimarySuperAdmin) {
+      return res.status(403).json({ message: 'The Primary Super Admin account cannot be modified from User Management.' });
+    }
+
+    if (user.role === 'superadmin' && !isPrimarySuperAdmin(req.user)) {
+      return res.status(403).json({ message: 'Additional Super Admin accounts can only be modified by the Primary Super Admin.' });
     }
 
     const nextUsername = req.body?.username ? normalizeValue(req.body.username) : user.username;
@@ -399,13 +441,12 @@ const updateUserByUsername = async (req, res, next) => {
 
     if (req.body?.role !== undefined) {
       const requestedRole = normalizeValue(req.body.role);
-      if (!['admin', 'cashier'].includes(requestedRole)) {
-        return res.status(400).json({ message: 'role must be admin or cashier.' });
+      if (!['superadmin', 'admin', 'cashier'].includes(requestedRole)) {
+        return res.status(400).json({ message: 'role must be superadmin, admin, or cashier.' });
       }
 
-      const actorRole = normalizeValue(req.user?.role || '');
-      if (actorRole !== 'superadmin' && requestedRole === 'admin') {
-        return res.status(403).json({ message: 'Only superadmin can assign admin role.' });
+      if (requestedRole !== user.role && !isPrimarySuperAdmin(req.user)) {
+        return res.status(403).json({ message: 'Only the Primary Super Admin can change user roles.' });
       }
 
       user.role = requestedRole;
@@ -418,7 +459,7 @@ const updateUserByUsername = async (req, res, next) => {
     if (req.body?.password) {
       if (!isValidPassword(req.body.password)) {
         return res.status(400).json({
-          message: `password must be at least ${PASSWORD_MIN_LENGTH} characters and include letters and numbers.`,
+          message: passwordRequirementsMessage(),
         });
       }
       user.password = await bcrypt.hash(req.body.password, 10);
@@ -582,7 +623,7 @@ const register = async (req, res, next) => {
 
     if (!isValidPassword(password)) {
       return res.status(400).json({
-        message: `password must be at least ${PASSWORD_MIN_LENGTH} characters and include letters and numbers.`,
+        message: passwordRequirementsMessage(),
       });
     }
 
@@ -613,9 +654,14 @@ const register = async (req, res, next) => {
 
     const requestedRole = normalizeValue(role);
     const isSuperadminCreator = req.user?.role === 'superadmin';
+    const isPrimarySuperAdminCreator = isPrimarySuperAdmin(req.user);
     let assignedRole = 'cashier';
 
-    if (isSuperadminCreator && ['admin', 'cashier'].includes(requestedRole)) {
+    if (isSuperadminCreator && !isPrimarySuperAdminCreator && requestedRole && requestedRole !== 'cashier') {
+      return res.status(403).json({ message: 'Only the Primary Super Admin can assign user roles.' });
+    }
+
+    if (isPrimarySuperAdminCreator && ['superadmin', 'admin', 'cashier'].includes(requestedRole)) {
       assignedRole = requestedRole;
     }
 
@@ -732,6 +778,27 @@ const login = async (req, res, next) => {
   }
 };
 
+const logout = async (req, res, next) => {
+  try {
+    const sessionId = buildSessionIdentifier(req);
+
+    // A logout immediately closes the matching protected SSE stream.
+    revokeRealtimeSession(sessionId);
+
+    await writeActivityLog({
+      user: req.user,
+      action: 'Logged Out',
+      details: `User signed out from the active session. Session: ${sessionId}.`,
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent') || '',
+    });
+
+    return res.json({ message: 'Logged out.' });
+  } catch (error) {
+    return next(error);
+  }
+};
+
 const me = async (req, res) => {
   return res.json({ user: sanitizeUser(req.user) });
 };
@@ -787,7 +854,7 @@ const resetPassword = async (req, res, next) => {
 
     if (!isValidPassword(newPassword)) {
       return res.status(400).json({
-        message: `newPassword must be at least ${PASSWORD_MIN_LENGTH} characters and include letters and numbers.`,
+        message: passwordRequirementsMessage('newPassword'),
       });
     }
 
@@ -858,6 +925,7 @@ const resetPin = async (req, res, next) => {
 module.exports = {
   register,
   login,
+  logout,
   me,
   updateMyPreferences,
   verifyMyCurrentPassword,

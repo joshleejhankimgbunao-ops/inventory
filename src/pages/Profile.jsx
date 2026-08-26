@@ -5,8 +5,8 @@ import { showToast } from '../utils/toastHelper';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
 import { meApi, updateMyProfileApi, verifyCurrentPasswordApi, verifyCurrentPinApi } from '../services/authApi';
+import { getPasswordChecks, isValidPassword } from '../utils/passwordPolicy';
 
-const PASSWORD_RULE = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{8,}$/;
 const normalizePhoneDigits = (value) => (value || '').replace(/\D/g, '').slice(0, 11);
 const PROFILE_CACHE_KEY = 'profile.cache.v1';
 
@@ -102,6 +102,8 @@ const Profile = () => {
     const {
         appSettings: settings,
         updateSettings,
+        userPreferences,
+        updateUserPreferences,
         userRole,
         ROLES,
         roleNames,
@@ -114,7 +116,7 @@ const Profile = () => {
         setMustChangeCredentials,
     } = useAuth();
     const location = useLocation();
-    const { renameUserReferences } = useInventory();
+    const { renameUserReferences, syncUserIdentityReferences } = useInventory();
 
     // Internal handler to replace onSave prop
     const handleSaveInternal = (newSettings) => {
@@ -127,8 +129,8 @@ const Profile = () => {
 
     const handleAutoPrintToggle = () => {
         const nextAutoPrint = !autoPrint;
-        setAutoPrint(nextAutoPrint);
-        handleSaveInternal({ ...settings, autoPrintReceipts: nextAutoPrint });
+        void updateUserPreferences({ autoPrintReceipts: nextAutoPrint })
+            .catch((error) => showToast('Update Failed', error?.message || 'Unable to save Auto Print preference.', 'error'));
     };
 
     const cachedProfileSnapshot = React.useMemo(() => readCachedProfileSnapshot(), []);
@@ -320,22 +322,12 @@ const Profile = () => {
     const validCurrentPassword = !isPasswordChangeAttempt || passwordVerifyState === 'valid';
     const canEnterNewPassword = passwordVerifyState === 'valid';
     const canEnterNewPin = pinVerifyState === 'valid';
-    const passwordChecks = {
-        length: profileData.adminPassword.length >= 8,
-        lowercase: /[a-z]/.test(profileData.adminPassword),
-        uppercase: /[A-Z]/.test(profileData.adminPassword),
-        number: /\d/.test(profileData.adminPassword),
-        special: /[^A-Za-z\d]/.test(profileData.adminPassword),
-    };
+    const passwordChecks = getPasswordChecks(profileData.adminPassword);
     const allPasswordChecksMet = Object.values(passwordChecks).every(Boolean);
 
-    const [autoPrint, setAutoPrint] = useState(settings.autoPrintReceipts || false);
+    const autoPrint = Boolean(userPreferences.autoPrintReceipts);
     const isDragging = useRef(false);
     const lastMousePos = useRef({ x: 0, y: 0 });
-
-    React.useEffect(() => {
-        setAutoPrint(Boolean(settings.autoPrintReceipts));
-    }, [settings.autoPrintReceipts]);
 
     const isModified = React.useMemo(() => {
         if (!profileData.adminUser || !profileData.fullName || !profileData.adminDisplayName || !profileData.email) {
@@ -546,7 +538,7 @@ const Profile = () => {
                 return;
             }
 
-            if (!PASSWORD_RULE.test(profileData.adminPassword)) {
+            if (!isValidPassword(profileData.adminPassword)) {
                 showToast('Weak Password', 'Password must be at least 8 characters and include uppercase, lowercase, number, and special character.', 'error');
                 return;
             }
@@ -578,7 +570,7 @@ const Profile = () => {
         try {
             response = await updateMyProfileApi({
                 name: profileData.fullName.trim(),
-                ...(userRole !== ROLES.SUPER_ADMIN ? { displayName: nextDisplayName } : {}),
+                displayName: nextDisplayName,
                 username: profileData.adminUser,
                 email: normalizedEmail,
                 phone: normalizedContactNumber,
@@ -616,6 +608,7 @@ const Profile = () => {
         }
         setCurrentUserName(canonicalDisplayName);
         setCurrentUserAvatar(updatedAvatar || null);
+        syncUserIdentityReferences(updatedUser);
 
         if (previousDisplayName !== canonicalDisplayName) {
             renameUserReferences(previousDisplayName, canonicalDisplayName);
@@ -630,7 +623,6 @@ const Profile = () => {
                 adminContactNumber: normalizedContactNumber,
                 storePrimaryEmail: updatedUser.email,
                 avatar: updatedAvatar || null,
-                autoPrintReceipts: autoPrint,
             });
         }
 
@@ -818,7 +810,7 @@ const Profile = () => {
 
     return (
         <div className="w-full min-h-screen bg-slate-200/50">
-            <div className="w-full min-h-screen max-w-[1180px] mx-auto flex flex-col p-2 md:p-3 relative text-[12px] md:text-[13px]">
+            <div className="w-full min-h-screen max-w-[1180px] mx-auto flex flex-col relative text-[12px] md:text-[13px]">
             {mustChangeCredentials && showSecurityRequirementModal && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
                     <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm md:max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
@@ -826,13 +818,13 @@ const Profile = () => {
                             <div className="mx-auto flex items-center justify-center mb-4 text-amber-600">
                                 <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v3m0 4h.01m-7.938 4h15.876c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L2.34 17c-.77 1.333.192 3 1.732 3Z" /></svg>
                             </div>
-                            <h3 className="text-xl font-black text-gray-900 mb-2">Security Update Required</h3>
+                            <h3 className="text-xl font-semibold text-gray-900 mb-2">Security Update Required</h3>
                             <p className="text-gray-500 text-sm mb-6">For first login safety, update your password or PIN now before continuing.</p>
                             <button
                                 type="button"
                                 onClick={() => setShowSecurityRequirementModal(false)}
                                 style={{ backgroundColor: '#111827' }}
-                                className="w-full py-2.5 text-white rounded-xl font-bold text-sm shadow-md hover:opacity-90 transition-all transform hover:-translate-y-0.5"
+                                className="w-full py-2.5 text-white rounded-xl font-semibold text-sm shadow-md hover:opacity-90 transition-all transform hover:-translate-y-0.5"
                             >
                                 Okay
                             </button>
@@ -848,8 +840,8 @@ const Profile = () => {
                     onMouseUp={handleMouseUp}
                     onMouseLeave={handleMouseUp}
                 >
-                    <h3 className="text-xl font-black text-gray-900 mb-2">Adjust Profile Picture</h3>
-                    <p className="text-xs text-gray-500 font-bold mb-6 uppercase tracking-wider">Drag to Move • Slider to Zoom</p>
+                    <h3 className="text-xl font-semibold text-gray-900 mb-2">Adjust Profile Picture</h3>
+                    <p className="text-xs text-gray-500 font-semibold mb-6 uppercase tracking-wider">Drag to Move • Slider to Zoom</p>
                     
                     <div 
                         className="w-64 h-64 rounded-full border-4 border-gray-900 shadow-2xl overflow-hidden mb-6 relative bg-gray-100 cursor-move"
@@ -884,14 +876,14 @@ const Profile = () => {
                     <div className="flex gap-4">
                         <button 
                             onClick={() => setPreviewImage(null)}
-                            className="px-6 py-2 rounded-xl font-bold uppercase tracking-wider text-xs text-black shadow-lg transition-all hover:opacity-90 transform hover:-translate-y-0.5"
+                            className="px-6 py-2 rounded-xl font-semibold tracking-wider text-xs text-black shadow-lg transition-all hover:opacity-90 transform hover:-translate-y-0.5"
                             style={{ backgroundColor: 'transparent', border: '2px solid #000000' }}
                         >
                             Cancel
                         </button>
                         <button 
                             onClick={confirmImage}
-                            className="px-6 py-2 rounded-xl font-bold uppercase tracking-wider text-xs text-white shadow-lg transition-all hover:opacity-90 transform hover:-translate-y-0.5"
+                            className="px-6 py-2 rounded-xl font-semibold tracking-wider text-xs text-white shadow-lg transition-all hover:opacity-90 transform hover:-translate-y-0.5"
                             style={{ backgroundColor: '#111827', border: '2px solid #111827' }}
                         >
                             Save & Apply
@@ -901,14 +893,9 @@ const Profile = () => {
             )}
             
             {/* Header */}
-            <div className="mb-4 flex items-center gap-3">
-                <div className="bg-gray-900 text-white p-3 rounded-2xl shadow-lg hidden sm:block">
-                    <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
-                </div>
-                <div>
-                    <h1 className="text-xl md:text-2xl font-black text-gray-900 leading-tight">My Profile</h1>
-                    <p className="text-gray-500 text-xs md:text-sm font-medium mt-1">Manage your personal information and security.</p>
-                </div>
+            <div className="mb-4">
+                <p className="text-3xl md:text-4xl font-bold text-gray-900 leading-tight">My Profile</p>
+                <p className="text-gray-500 font-medium text-[11px] md:text-xs mt-1">Manage your personal information and security.</p>
             </div>
 
             <div className="flex flex-col md:flex-row gap-4 flex-1 min-h-0">
@@ -924,7 +911,7 @@ const Profile = () => {
                                         {profileData.avatar ? (
                                             <img src={profileData.avatar} alt="Profile" className="w-full h-full object-cover" />
                                         ) : (
-                                            <div className="w-full h-full flex items-center justify-center bg-gray-800 text-white text-4xl font-bold">
+                                            <div className="w-full h-full flex items-center justify-center bg-gray-800 text-white text-4xl font-semibold">
                                                 {profileData.adminDisplayName ? profileData.adminDisplayName.charAt(0).toUpperCase() : 'U'}
                                             </div>
                                         )}
@@ -948,14 +935,14 @@ const Profile = () => {
                         </div>
                         <p className="text-[10px] font-semibold tracking-wide uppercase text-gray-500">Click photo to update</p>
                         
-                        <span className="text-xs font-bold text-blue-600 bg-blue-50 px-3 py-1 rounded-full mt-2">
+                        <span className="text-xs font-semibold text-blue-600 bg-blue-50 px-3 py-1 rounded-full mt-2">
                             {profileData.role || (roleNames[userRole] || (userRole === ROLES.CASHIER ? 'Staff' : 'Super Admin'))}
                         </span>
                     </div>
 
                     {/* Desktop Section Navigation */}
                     <div className="hidden md:block bg-white rounded-2xl shadow-sm border border-gray-100 p-3">
-                        <p className="px-2 pb-2 text-[10px] font-bold tracking-widest text-gray-500 uppercase">Profile Sections</p>
+                        <p className="px-2 pb-2 text-[10px] font-semibold tracking-widest text-gray-500 uppercase">Profile Sections</p>
                         <div className="space-y-1">
                             {profileSections.map((section) => {
                                 const isActive = activeSection === section.id;
@@ -969,7 +956,7 @@ const Profile = () => {
                                             }
                                             setActiveSection(section.id);
                                         }}
-                                        className={`w-full text-left px-3 py-2.5 rounded-xl text-xs font-bold transition-all ${
+                                        className={`w-full text-left px-3 py-2.5 rounded-xl text-xs font-semibold transition-all ${
                                             isActive
                                                 ? 'bg-gray-900 text-white shadow-md'
                                                 : 'text-gray-600 hover:bg-gray-100'
@@ -1002,7 +989,7 @@ const Profile = () => {
                                                 }
                                                 setActiveSection(section.id);
                                             }}
-                                            className={`px-2.5 py-1.5 rounded-xl text-[10px] font-bold whitespace-nowrap transition-all ${
+                                            className={`px-2.5 py-1.5 rounded-xl text-[10px] font-semibold whitespace-nowrap transition-all ${
                                                 isActive
                                                     ? 'bg-gray-900 text-white shadow-md'
                                                     : 'bg-gray-100 text-gray-600'
@@ -1019,7 +1006,7 @@ const Profile = () => {
                         {activeSection === 'personal' && (
                             <div className="overflow-y-auto no-scrollbar pr-1 pb-2 max-h-[calc(100vh-340px)] md:max-h-[calc(100vh-300px)]">
                                 <div className="border-b border-gray-100 pb-4 mb-4">
-                                    <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wider flex items-center gap-2">
+                                    <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wider flex items-center gap-2">
                                         <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5.121 17.804A13.937 13.937 0 0112 15c2.761 0 5.303.896 7.379 2.404M15 10a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
                                         Personal Details
                                     </h3>
@@ -1027,7 +1014,7 @@ const Profile = () => {
 
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                     <div>
-                                        <label className="block text-xs font-bold text-gray-900 uppercase tracking-wide mb-2">Full Name</label>
+                                        <label className="block text-xs font-semibold text-gray-900 uppercase tracking-wide mb-2">Full Name</label>
                                         <div className="flex items-center bg-gray-50 border border-gray-200 rounded-xl focus-within:ring-2 focus-within:ring-gray-900 focus-within:border-transparent transition-all">
                                             <div className="pl-3 pr-2 flex items-center pointer-events-none">
                                                 <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
@@ -1043,7 +1030,7 @@ const Profile = () => {
                                     </div>
 
                                     <div>
-                                        <label className="block text-xs font-bold text-gray-900 uppercase tracking-wide mb-2">Display Name</label>
+                                        <label className="block text-xs font-semibold text-gray-900 uppercase tracking-wide mb-2">Display Name</label>
                                         <div className="flex items-center bg-gray-50 border border-gray-200 rounded-xl focus-within:ring-2 focus-within:ring-gray-900 focus-within:border-transparent transition-all">
                                             <div className="pl-3 pr-2 flex items-center pointer-events-none">
                                                 <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 11c1.657 0 3-1.343 3-3S13.657 5 12 5s-3 1.343-3 3 1.343 3 3 3zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"></path></svg>
@@ -1064,7 +1051,7 @@ const Profile = () => {
                                     </div>
 
                                     <div>
-                                        <label className="block text-xs font-bold text-gray-900 uppercase tracking-wide mb-2">Email Address</label>
+                                        <label className="block text-xs font-semibold text-gray-900 uppercase tracking-wide mb-2">Email Address</label>
                                         <div className="flex items-center bg-gray-50 border border-gray-200 rounded-xl focus-within:ring-2 focus-within:ring-gray-900 focus-within:border-transparent transition-all">
                                             <div className="pl-3 pr-2 flex items-center pointer-events-none">
                                                 <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
@@ -1080,7 +1067,7 @@ const Profile = () => {
                                     </div>
 
                                     <div>
-                                        <label className="block text-xs font-bold text-gray-900 uppercase tracking-wide mb-2">Contact Number</label>
+                                        <label className="block text-xs font-semibold text-gray-900 uppercase tracking-wide mb-2">Contact Number</label>
                                         <div className="flex items-center bg-gray-50 border border-gray-200 rounded-xl focus-within:ring-2 focus-within:ring-gray-900 focus-within:border-transparent transition-all">
                                             <div className="pl-3 pr-2 flex items-center pointer-events-none">
                                                 <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 5a2 2 0 012-2h2.28a2 2 0 011.894 1.368l.69 2.071a2 2 0 01-.457 2.043l-1.35 1.35a16 16 0 006.586 6.586l1.35-1.35a2 2 0 012.043-.457l2.071.69A2 2 0 0121 18.72V21a2 2 0 01-2 2h-1C9.716 23 1 14.284 1 4V3a2 2 0 012-2z"></path></svg>
@@ -1102,7 +1089,7 @@ const Profile = () => {
                                     </div>
 
                                     <div>
-                                        <label className="block text-xs font-bold text-gray-900 uppercase tracking-wide mb-2">Position</label>
+                                        <label className="block text-xs font-semibold text-gray-900 uppercase tracking-wide mb-2">Position</label>
                                         <input
                                             type="text"
                                             value={profileData.role || (roleNames[userRole] || 'Staff')}
@@ -1113,7 +1100,7 @@ const Profile = () => {
                                     </div>
 
                                     <div>
-                                        <label className="block text-xs font-bold text-gray-900 uppercase tracking-wide mb-2">Last Login</label>
+                                        <label className="block text-xs font-semibold text-gray-900 uppercase tracking-wide mb-2">Last Login</label>
                                         <input
                                             type="text"
                                             value={formatLastLogin(profileData.lastLogin)}
@@ -1125,10 +1112,10 @@ const Profile = () => {
                                 </div>
 
                                 <div className="mt-4 border-t border-gray-100 pt-4">
-                                    <h4 className="text-xs font-bold text-gray-900 uppercase tracking-wide mb-3">Preferences</h4>
+                                    <h4 className="text-xs font-semibold text-gray-900 uppercase tracking-wide mb-3">Preferences</h4>
                                     <div className="flex items-center justify-between bg-gray-50 p-4 rounded-xl border border-gray-200">
                                         <div>
-                                            <h5 className="text-sm font-bold text-gray-900">Automatic Printing</h5>
+                                            <h5 className="text-sm font-semibold text-gray-900">Automatic Printing</h5>
                                             <p className="text-xs text-gray-500 font-medium">Automatically print receipt after transaction completes</p>
                                         </div>
                                         <button
@@ -1148,7 +1135,7 @@ const Profile = () => {
                             <div className="overflow-y-auto no-scrollbar pr-1 pb-2 max-h-[calc(100vh-340px)] md:max-h-[calc(100vh-300px)] space-y-4">
                                 <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
                                     <div className="border-b border-gray-200 pb-3 mb-4">
-                                        <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wider flex items-center gap-2">
+                                        <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wider flex items-center gap-2">
                                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
                                             Security & Login
                                         </h3>
@@ -1156,7 +1143,7 @@ const Profile = () => {
 
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                         <div className="md:col-span-2">
-                                            <label className="block text-xs font-bold text-gray-900 uppercase tracking-wide mb-2">Username (Login)</label>
+                                            <label className="block text-xs font-semibold text-gray-900 uppercase tracking-wide mb-2">Username (Login)</label>
                                             <div className="relative">
                                                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                                                     <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
@@ -1172,7 +1159,7 @@ const Profile = () => {
                                         </div>
 
                                         <div>
-                                            <label className="block text-xs font-bold text-gray-900 uppercase tracking-wide mb-2">Current Password</label>
+                                            <label className="block text-xs font-semibold text-gray-900 uppercase tracking-wide mb-2">Current Password</label>
                                             <div className="relative">
                                                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                                                     <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
@@ -1212,7 +1199,7 @@ const Profile = () => {
                                         </div>
 
                                         <div>
-                                            <label className="block text-xs font-bold text-gray-900 uppercase tracking-wide mb-2">New Password</label>
+                                            <label className="block text-xs font-semibold text-gray-900 uppercase tracking-wide mb-2">New Password</label>
                                             <div className="relative group">
                                                 <FieldLockTooltip
                                                     show={!canEnterNewPassword}
@@ -1249,7 +1236,7 @@ const Profile = () => {
 
                                             {profileData.adminPassword && !allPasswordChecksMet && (
                                                 <div className="mt-2 rounded-lg border border-gray-200 bg-white p-2">
-                                                    <p className="text-[10px] font-bold uppercase tracking-wide text-gray-600 mb-1.5">Password Requirements</p>
+                                                    <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-600 mb-1.5">Password Requirements</p>
                                                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
                                                         <div className={`text-[10px] flex items-center gap-1.5 ${passwordChecks.length ? 'text-green-700' : 'text-gray-500'}`}>
                                                             <span className={`inline-flex h-3.5 w-3.5 items-center justify-center rounded-full ${passwordChecks.length ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-500'}`}>{passwordChecks.length ? '✓' : '•'}</span>
@@ -1277,7 +1264,7 @@ const Profile = () => {
                                         </div>
 
                                         <div className="md:col-start-2">
-                                            <label className="block text-xs font-bold text-gray-900 uppercase tracking-wide mb-2">Confirm Password</label>
+                                            <label className="block text-xs font-semibold text-gray-900 uppercase tracking-wide mb-2">Confirm Password</label>
                                             <div className="relative group">
                                                 <FieldLockTooltip
                                                     show={!canEnterNewPassword}
@@ -1310,7 +1297,7 @@ const Profile = () => {
 
                                 <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
                                     <div className="border-b border-gray-200 pb-3 mb-4">
-                                        <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wider flex items-center gap-2">
+                                        <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wider flex items-center gap-2">
                                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>
                                             Change Security PIN
                                         </h3>
@@ -1318,7 +1305,7 @@ const Profile = () => {
 
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div>
-                            <label className="block text-xs font-bold text-gray-900 uppercase tracking-wide mb-2">Current PIN</label>
+                            <label className="block text-xs font-semibold text-gray-900 uppercase tracking-wide mb-2">Current PIN</label>
                             <div className="relative">
                                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                                     <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z" /></svg>
@@ -1337,7 +1324,7 @@ const Profile = () => {
                                         pinVerifyState === 'valid'
                                             ? 'border-green-300 focus:ring-green-200'
                                             : 'border-gray-200 focus:ring-gray-900'
-                                    } rounded-xl text-sm font-bold text-gray-900 focus:ring-2 outline-none`}
+                                    } rounded-xl text-sm font-semibold text-gray-900 focus:ring-2 outline-none`}
                                 />
                                 <button
                                     type="button"
@@ -1357,7 +1344,7 @@ const Profile = () => {
                         </div>
 
                         <div>
-                            <label className="block text-xs font-bold text-gray-900 uppercase tracking-wide mb-2">New PIN</label>
+                            <label className="block text-xs font-semibold text-gray-900 uppercase tracking-wide mb-2">New PIN</label>
                             <div className="relative group">
                                 <FieldLockTooltip
                                     show={!canEnterNewPin}
@@ -1373,7 +1360,7 @@ const Profile = () => {
                                     disabled={!canEnterNewPin}
                                     placeholder={canEnterNewPin ? 'Enter new PIN' : 'Verify current PIN first'}
                                     maxLength={6}
-                                    className={`w-full pl-10 pr-10 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-bold text-gray-900 focus:ring-2 focus:ring-gray-900 outline-none ${!canEnterNewPin ? 'opacity-60 cursor-not-allowed' : ''}`}
+                                    className={`w-full pl-10 pr-10 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-semibold text-gray-900 focus:ring-2 focus:ring-gray-900 outline-none ${!canEnterNewPin ? 'opacity-60 cursor-not-allowed' : ''}`}
                                 />
                                 <button
                                     type="button"
@@ -1387,7 +1374,7 @@ const Profile = () => {
                         </div>
 
                         <div className="md:col-start-2">
-                            <label className="block text-xs font-bold text-gray-900 uppercase tracking-wide mb-2">Confirm PIN</label>
+                            <label className="block text-xs font-semibold text-gray-900 uppercase tracking-wide mb-2">Confirm PIN</label>
                             <div className="relative group">
                                 <FieldLockTooltip
                                     show={!canEnterNewPin}
@@ -1409,7 +1396,7 @@ const Profile = () => {
                                                 ? 'border-green-300 focus:ring-green-200'
                                                 : 'border-red-300 focus:ring-red-200'
                                             : 'border-gray-200 focus:ring-gray-900'
-                                    } rounded-xl text-sm font-bold text-gray-900 focus:ring-2 outline-none ${!canEnterNewPin ? 'opacity-60 cursor-not-allowed' : ''}`}
+                                    } rounded-xl text-sm font-semibold text-gray-900 focus:ring-2 outline-none ${!canEnterNewPin ? 'opacity-60 cursor-not-allowed' : ''}`}
                                 />
                             </div>
                             <p className="text-[10px] text-gray-500 mt-1">Re-type the new PIN for verification.</p>
@@ -1433,7 +1420,7 @@ const Profile = () => {
                                             type="button"
                                             onClick={handleSave}
                                             disabled={!isModified}
-                                            className={`px-5 py-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-all ${
+                                            className={`px-5 py-2 rounded-xl text-xs font-semibold uppercase tracking-wider transition-all ${
                                                 isModified
                                                     ? 'bg-gray-900 text-white hover:bg-gray-800 shadow-sm'
                                                     : 'bg-gray-900 text-white/70 cursor-not-allowed'

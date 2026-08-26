@@ -1,9 +1,11 @@
 require('dotenv').config({ quiet: true });
+const { requireFirstExplicitEnv, requireFirstExplicitPinEnv } = require('../src/config/security');
+
 
 const baseUrl = process.env.TEST_BASE_URL || process.env.SMOKE_BASE_URL || 'http://127.0.0.1:5000';
-const username = process.env.TEST_USERNAME || process.env.SMOKE_USERNAME || 'owner';
-const password = process.env.TEST_PASSWORD || process.env.SMOKE_PASSWORD || 'owner123';
-const pin = process.env.TEST_PIN || process.env.SMOKE_PIN || '111111';
+const username = requireFirstExplicitEnv(['TEST_USERNAME', 'SMOKE_USERNAME']);
+const password = requireFirstExplicitEnv(['TEST_PASSWORD', 'SMOKE_PASSWORD']);
+const pin = requireFirstExplicitPinEnv(['TEST_PIN', 'SMOKE_PIN']);
 
 const fail = (message, details) => {
   console.error(`FAILED: ${message}`);

@@ -10,6 +10,10 @@ const preferencesSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    autoPrintReceipts: {
+      type: Boolean,
+      default: false,
+    },
     hasViewedLogs: {
       type: Boolean,
       default: false,
@@ -74,6 +78,10 @@ const userSchema = new mongoose.Schema(
       enum: ['superadmin', 'admin', 'cashier'],
       default: 'cashier',
     },
+    isPrimarySuperAdmin: {
+      type: Boolean,
+      default: false,
+    },
     isActive: {
       type: Boolean,
       default: true,
@@ -113,6 +121,7 @@ const userSchema = new mongoose.Schema(
       default: () => ({
         darkMode: false,
         desktopNotifications: true,
+        autoPrintReceipts: false,
         hasViewedLogs: false,
         readLogCount: 0,
       }),
@@ -120,6 +129,15 @@ const userSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
+  }
+);
+
+userSchema.index(
+  { isPrimarySuperAdmin: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { isPrimarySuperAdmin: true },
+    name: 'one_primary_super_admin',
   }
 );
 

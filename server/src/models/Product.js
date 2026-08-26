@@ -34,6 +34,11 @@ const productSchema = new mongoose.Schema(
       default: '',
       trim: true,
     },
+    imageUrl: {
+      type: String,
+      default: '',
+      trim: true,
+    },
     category: {
       type: String,
       default: 'General',
@@ -61,6 +66,14 @@ const productSchema = new mongoose.Schema(
       default: '',
       trim: true,
       lowercase: true,
+    },
+    manualAlternatives: {
+      type: [String],
+      default: [],
+    },
+    excludedAlternatives: {
+      type: [String],
+      default: [],
     },
     isActive: {
       type: Boolean,

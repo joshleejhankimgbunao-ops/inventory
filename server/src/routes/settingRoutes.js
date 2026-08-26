@@ -5,11 +5,11 @@ const {
 	getSystemBackup,
 	restoreSystemBackup,
 } = require('../controllers/settingController');
-const { requireAuth, authorizeRoles } = require('../middleware/authMiddleware');
+const { requireAuth, optionalAuth, authorizeRoles } = require('../middleware/authMiddleware');
 
 const router = express.Router();
 
-router.get('/', getSettings);
+router.get('/', optionalAuth, getSettings);
 router.patch('/', requireAuth, authorizeRoles('superadmin', 'admin'), updateSettings);
 router.get('/backup', requireAuth, authorizeRoles('superadmin'), getSystemBackup);
 router.post('/restore', requireAuth, authorizeRoles('superadmin'), restoreSystemBackup);

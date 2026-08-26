@@ -17,6 +17,12 @@ dist-ssr
 !.vscode/extensions.json
 .idea
 .DS_Store
+src/pages/Untitled-1.ipynb
+# Local one-off data maintenance scripts
+/server/scripts/backfillSaleCashierNames.js
+/server/scripts/deleteSuppliersExceptKeepList.js
+/server/scripts/designatePrimarySuperAdmin.js
+/server/scripts/ensureRequiredSuppliers.js
 *.suo
 *.ntvs*
 *.njsproj
@@ -32,3 +38,9 @@ dist-ssr
 tools/_vercel_live.html
 tools/_vercel_live.js
 tools/.copilot-*.log
+
+# Generated database backups may contain credentials and business data
+/server/backups/
+
+# Authenticated Proof of Payment image uploads
+/server/uploads/payment-proofs/

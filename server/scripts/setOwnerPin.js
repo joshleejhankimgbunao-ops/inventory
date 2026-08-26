@@ -3,12 +3,12 @@ require('dotenv').config({ quiet: true });
 const connectDB = require('../src/config/db');
 const User = require('../src/models/User');
 const bcrypt = require('bcryptjs');
-
-const username = 'joshlee';
-const pin = '111111'; // default PIN to set; change if you prefer
+const { requireExplicitEnv, requireExplicitPinEnv } = require('../src/config/security');
 
 (async () => {
   try {
+    const username = requireExplicitEnv('SEED_SUPERADMIN_USERNAME').trim().toLowerCase();
+    const pin = requireExplicitPinEnv('SEED_SUPERADMIN_PIN');
     await connectDB();
 
     const user = await User.findOne({ username }).select('+pinHash');
@@ -17,10 +17,15 @@ const pin = '111111'; // default PIN to set; change if you prefer
       return process.exit(1);
     }
 
+    if (user.role !== 'superadmin') {
+      console.error('REFUSED: the selected account is not a Super Admin.');
+      return process.exit(1);
+    }
+
     user.pinHash = await bcrypt.hash(pin, 10);
     await user.save({ validateBeforeSave: false });
 
-    console.log(`PIN_SET: username='${username}' pin='${pin}'`);
+    console.log('PIN updated successfully.');
     process.exit(0);
   } catch (err) {
     console.error('ERROR:', err.message || err);

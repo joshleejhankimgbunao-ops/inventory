@@ -1,7 +1,9 @@
-import React, { createContext, useState, useEffect, useMemo, useContext } from 'react';
+import React, { createContext, useState, useEffect, useMemo, useContext, useRef } from 'react';
 import { getStockStatus } from '../utils/recommendationLogic';
+import { showToast } from '../utils/toastHelper';
 import { useAuth } from './AuthContext';
-import { getAuthToken } from '../services/apiClient';
+import { getAuthToken, isApiConnectionFailure } from '../services/apiClient';
+import { subscribeRealtimeEvent } from '../services/realtimeClient';
 import {
     listProductsApi,
     createSaleApi,
@@ -28,6 +30,7 @@ const INVENTORY_FALLBACK = {
     logAction: () => {},
     handleResetHistory: () => {},
     renameUserReferences: () => {},
+    syncUserIdentityReferences: () => {},
     removeUserReferences: () => {},
     syncQueue: [],
     addToSyncQueue: () => {},
@@ -42,6 +45,35 @@ const INVENTORY_FALLBACK = {
 
 const InventoryContext = createContext(INVENTORY_FALLBACK);
 
+const TRANSACTIONS_CACHE_PREFIX = 'transactionsCache:';
+
+const getTransactionsCacheScope = (userId, username) => {
+    const normalizedUserId = String(userId || '').trim();
+    if (normalizedUserId) return `user:${normalizedUserId}`;
+
+    // Compatibility only for sessions created before authUserId was stored.
+    // Usernames are unique and are never display names.
+    const normalizedUsername = String(username || '').trim().toLowerCase();
+    return normalizedUsername ? `username:${normalizedUsername}` : '';
+};
+
+const getTransactionsCacheKey = (scope) => (
+    scope ? `${TRANSACTIONS_CACHE_PREFIX}${scope}` : ''
+);
+
+const readTransactionsCache = (scope) => {
+    const cacheKey = getTransactionsCacheKey(scope);
+    if (!cacheKey) return [];
+
+    try {
+        const raw = localStorage.getItem(cacheKey);
+        const parsed = raw ? JSON.parse(raw) : [];
+        return Array.isArray(parsed) ? parsed : [];
+    } catch {
+        return [];
+    }
+};
+
 export const useInventory = () => {
     const context = useContext(InventoryContext);
     if (!context) {
@@ -51,7 +83,8 @@ export const useInventory = () => {
 };
 
 export const InventoryProvider = ({ children }) => {
-    const { appSettings, userRole, currentUserName, currentAuthUsername } = useAuth(); // Depend on Auth Context for settings and auth session changes
+    const { appSettings, userRole, currentUserName, currentAuthUsername, currentAuthUserId, ROLES } = useAuth(); // Depend on Auth Context for settings and auth session changes
+    const transactionsCacheScope = getTransactionsCacheScope(currentAuthUserId, currentAuthUsername);
 
     const normalizeName = (value) => String(value || '').trim().toLowerCase();
     const preferredSuperAdminName = useMemo(() => {
@@ -72,6 +105,11 @@ export const InventoryProvider = ({ children }) => {
     // 1. Inventory State (backend-first)
     const [inventory, setInventory] = useState([]);
     const [isInventoryLoading, setIsInventoryLoading] = useState(true);
+    const inventoryRef = useRef([]);
+
+    useEffect(() => {
+        inventoryRef.current = inventory;
+    }, [inventory]);
 
      useEffect(() => {
         let isMounted = true;
@@ -108,7 +146,7 @@ export const InventoryProvider = ({ children }) => {
         return () => {
             isMounted = false;
         };
-    }, [userRole, currentUserName, currentAuthUsername]);
+    }, [userRole, currentAuthUsername]);
 
      // Categories State
          const [categories, setCategories] = useState([]);
@@ -160,10 +198,11 @@ export const InventoryProvider = ({ children }) => {
         return () => {
             isMounted = false;
         };
-    }, [userRole, currentUserName, currentAuthUsername]);
+    }, [userRole, currentAuthUsername]);
 
      // 2. Transactions State (backend-first)
-     const [transactions, setTransactions] = useState([]);
+    const [transactions, setTransactions] = useState([]);
+    const [transactionsCacheOwner, setTransactionsCacheOwner] = useState('');
     const [isTransactionsLoading, setIsTransactionsLoading] = useState(true);
 
      useEffect(() => {
@@ -171,24 +210,37 @@ export const InventoryProvider = ({ children }) => {
 
         const loadRemoteTransactions = async () => {
             const token = getAuthToken();
-            if (!token) {
+            if (!token || !transactionsCacheScope) {
                 if (isMounted) {
+                    setTransactions([]);
+                    setTransactionsCacheOwner('');
                     setIsTransactionsLoading(false);
                 }
                 return;
             }
 
             if (isMounted) {
+                // Clear the prior account's in-memory data before exposing this
+                // account's cache or authoritative API result.
+                setTransactions([]);
+                setTransactionsCacheOwner('');
                 setIsTransactionsLoading(true);
+                setTransactions(readTransactionsCache(transactionsCacheScope));
+                setTransactionsCacheOwner(transactionsCacheScope);
             }
 
             try {
                 const remoteTransactions = await listSalesHistoryViewApi(true);
                 if (isMounted && Array.isArray(remoteTransactions)) {
                     setTransactions(remoteTransactions);
+                    setTransactionsCacheOwner(transactionsCacheScope);
                 }
             } catch {
-                // Cashier role cannot list sales history in backend; keep in-memory values.
+                // Keep last known cached values when history API is temporarily unavailable.
+                if (isMounted) {
+                    setTransactions(readTransactionsCache(transactionsCacheScope));
+                    setTransactionsCacheOwner(transactionsCacheScope);
+                }
             } finally {
                 if (isMounted) {
                     setIsTransactionsLoading(false);
@@ -201,7 +253,191 @@ export const InventoryProvider = ({ children }) => {
         return () => {
             isMounted = false;
         };
-    }, [userRole, currentUserName, currentAuthUsername]);
+    }, [userRole, currentAuthUsername, currentAuthUserId, transactionsCacheScope]);
+
+    useEffect(() => {
+        if (!transactionsCacheScope || transactionsCacheOwner !== transactionsCacheScope || !getAuthToken()) {
+            return;
+        }
+
+        try {
+            localStorage.setItem(getTransactionsCacheKey(transactionsCacheScope), JSON.stringify(transactions));
+        } catch {
+            // Ignore storage errors (private mode/quota exceeded).
+        }
+    }, [transactions, transactionsCacheOwner, transactionsCacheScope]);
+
+    useEffect(() => {
+        const token = getAuthToken();
+        if (!token) {
+            return undefined;
+        }
+
+        let disposed = false;
+        let isRefreshInFlight = false;
+        let isInventoryRefreshInFlight = false;
+        let isActivityLogsRefreshInFlight = false;
+        let isInventoryLogsRefreshInFlight = false;
+
+        const shouldShowStockAlerts = () => {
+            return userRole === ROLES.SUPER_ADMIN || userRole === ROLES.ADMIN;
+        };
+
+        const showStockTransitionAlerts = (previousInventory, latestInventory) => {
+            if (!shouldShowStockAlerts()) {
+                return;
+            }
+
+            const previousByCode = new Map(
+                (previousInventory || []).map((item) => [String(item?.code || ''), item])
+            );
+
+            (latestInventory || []).forEach((currentItem) => {
+                const code = String(currentItem?.code || '');
+                if (!code) {
+                    return;
+                }
+
+                const previousItem = previousByCode.get(code);
+                if (!previousItem) {
+                    return;
+                }
+
+                const previousStatus = getStockStatus(previousItem, appSettings);
+                const nextStatus = getStockStatus(currentItem, appSettings);
+
+                if (previousStatus === nextStatus) {
+                    return;
+                }
+
+                if (nextStatus === 'Out of Stock') {
+                    showToast(
+                        'Out of Stock',
+                        `${currentItem.name || code} (${code}) is now out of stock.`,
+                        'warning',
+                        `rt-stock-${code}-out-${Number(currentItem.stock || 0)}`
+                    );
+                    return;
+                }
+
+                if (nextStatus === 'Low Stock') {
+                    showToast(
+                        'Low Stock Alert',
+                        `${currentItem.name || code} (${code}) dropped to low stock (${Number(currentItem.stock || 0)} left).`,
+                        'warning',
+                        `rt-stock-${code}-low-${Number(currentItem.stock || 0)}`
+                    );
+                }
+            });
+        };
+
+        const refreshTransactions = async () => {
+            if (isRefreshInFlight || disposed) {
+                return;
+            }
+
+            isRefreshInFlight = true;
+            try {
+                const remoteTransactions = await listSalesHistoryViewApi(true);
+                if (!disposed && Array.isArray(remoteTransactions)) {
+                    setTransactions(remoteTransactions);
+                    setTransactionsCacheOwner(transactionsCacheScope);
+                }
+            } catch {
+                // Ignore transient failures; reconnection/fallback handles eventual consistency.
+            } finally {
+                isRefreshInFlight = false;
+            }
+        };
+
+        const onSaleCreated = () => {
+            void refreshTransactions();
+        };
+
+        const refreshInventory = async ({ notifyTransitions = false } = {}) => {
+            if (isInventoryRefreshInFlight || disposed) {
+                return;
+            }
+
+            isInventoryRefreshInFlight = true;
+
+            try {
+                const previousInventory = inventoryRef.current;
+                const remoteProducts = await listProductsApi();
+                if (!disposed && Array.isArray(remoteProducts)) {
+                    setInventory(remoteProducts);
+                    if (notifyTransitions) {
+                        showStockTransitionAlerts(previousInventory, remoteProducts);
+                    }
+                }
+            } catch {
+                // Ignore transient failures; client will retry on next realtime event.
+            } finally {
+                isInventoryRefreshInFlight = false;
+            }
+        };
+
+        const onInventoryUpdated = () => {
+            void refreshInventory({ notifyTransitions: true });
+        };
+
+        const refreshActivityLogs = async () => {
+            if (isActivityLogsRefreshInFlight || disposed) {
+                return;
+            }
+
+            isActivityLogsRefreshInFlight = true;
+            try {
+                const remoteLogs = await listActivityLogsApi(200);
+                if (!disposed && Array.isArray(remoteLogs)) {
+                    setActivityLogs(remoteLogs);
+                }
+            } catch {
+                // Ignore transient failures for realtime log refresh.
+            } finally {
+                isActivityLogsRefreshInFlight = false;
+            }
+        };
+
+        const refreshInventoryLogs = async () => {
+            if (isInventoryLogsRefreshInFlight || disposed) {
+                return;
+            }
+
+            isInventoryLogsRefreshInFlight = true;
+            try {
+                const remoteLogs = await listInventoryLogsApi(200);
+                if (!disposed && Array.isArray(remoteLogs)) {
+                    setInventoryLogs(remoteLogs);
+                }
+            } catch {
+                // Ignore transient failures for realtime log refresh.
+            } finally {
+                isInventoryLogsRefreshInFlight = false;
+            }
+        };
+
+        const onActivityLogged = () => {
+            void refreshActivityLogs();
+        };
+
+        const onInventoryLogged = () => {
+            void refreshInventoryLogs();
+        };
+
+        const unsubscribeSaleCreated = subscribeRealtimeEvent('sale.created', onSaleCreated);
+        const unsubscribeInventoryUpdated = subscribeRealtimeEvent('inventory.updated', onInventoryUpdated);
+        const unsubscribeActivityLogged = subscribeRealtimeEvent('activity.logged', onActivityLogged);
+        const unsubscribeInventoryLogged = subscribeRealtimeEvent('inventory.logged', onInventoryLogged);
+
+        return () => {
+            disposed = true;
+            unsubscribeSaleCreated();
+            unsubscribeInventoryUpdated();
+            unsubscribeActivityLogged();
+            unsubscribeInventoryLogged();
+        };
+    }, [appSettings, userRole, currentAuthUsername, currentAuthUserId, transactionsCacheScope, ROLES]);
      
      // 3. Inventory Logs State (backend-first)
      const [inventoryLogs, setInventoryLogs] = useState([]);
@@ -242,7 +478,7 @@ export const InventoryProvider = ({ children }) => {
         return () => {
             isMounted = false;
         };
-    }, [userRole, currentUserName, currentAuthUsername]);
+    }, [userRole, currentAuthUsername]);
 
      // 3.1 Sync Queue State (Offline Config)
      const [syncQueue, setSyncQueue] = useState(() => {
@@ -298,21 +534,66 @@ export const InventoryProvider = ({ children }) => {
                     quantity: item.qty
                 }));
 
-                await createSaleApi(apiItems, queueItem.paymentMethod || 'cash', queueItem.id);
+                await createSaleApi(
+                    apiItems,
+                    queueItem.paymentMethod || 'cash',
+                    queueItem.clientRequestId || queueItem.id,
+                    {
+                        vatMode: queueItem.vatMode,
+                        ...(queueItem.paymentMethod === 'Cash' || String(queueItem.paymentMethod || '').toLowerCase() === 'cash'
+                            ? { cashTendered: queueItem.cashTendered ?? queueItem.cash }
+                            : {}),
+                    }
+                );
                 
                 // If successful, remove from queue
                 setSyncQueue(prev => prev.slice(1));
                 
-                // Refresh inventory from server to ensure consistency
-                const remoteProducts = await listProductsApi();
-                if (Array.isArray(remoteProducts) && remoteProducts.length > 0) {
-                    setInventory(remoteProducts);
+                // The queued sale is already accepted. A follow-up refresh failure
+                // must not restore/retry that successfully synchronized sale.
+                try {
+                    const remoteProducts = await listProductsApi();
+                    if (Array.isArray(remoteProducts) && remoteProducts.length > 0) {
+                        setInventory(remoteProducts);
+                    }
+                } catch (refreshError) {
+                    console.warn('Offline sale synchronized, but inventory refresh failed:', refreshError);
                 }
                 
                 console.log("Sync successful for:", queueItem.id);
             } catch (error) {
+                const status = Number(error?.status || 0);
+                const connectionFailed = isApiConnectionFailure(error);
+
                 console.error("Sync failed for transaction:", queueItem.id, error);
-                // We leave it in the queue to retry later
+
+                // Preserve the original sale and request identity for retry/recovery.
+                // Rotate a failed item behind later entries so one rejection does not
+                // permanently block the rest of the offline queue.
+                setSyncQueue((prev) => {
+                    if (prev.length === 0 || prev[0]?.id !== queueItem.id) return prev;
+
+                    const failedItem = {
+                        ...prev[0],
+                        syncStatus: 'failed',
+                        syncError: error?.message || 'Unable to synchronize transaction.',
+                        syncErrorStatus: status || null,
+                        lastSyncAttemptAt: new Date().toISOString(),
+                    };
+
+                    return prev.length === 1
+                        ? [failedItem]
+                        : [...prev.slice(1), failedItem];
+                });
+
+                showToast(
+                    'Offline Sale Pending',
+                    connectionFailed
+                        ? `Transaction ${queueItem.id} remains queued until the backend is reachable.`
+                        : `Transaction ${queueItem.id} was not accepted (${status || 'unknown error'}) and remains queued for recovery.`,
+                    'warning',
+                    `offline-sync-${queueItem.id}`
+                );
             }
         };
 
@@ -329,7 +610,16 @@ export const InventoryProvider = ({ children }) => {
      }, [syncQueue, appSettings]);
 
      const addToSyncQueue = (transaction) => {
-        setSyncQueue(prev => [...prev, transaction]);
+        const requestId = transaction?.clientRequestId || transaction?.id;
+        setSyncQueue((prev) => {
+            const alreadyQueued = requestId && prev.some((entry) => (
+                (entry?.clientRequestId || entry?.id) === requestId
+            ));
+
+            return alreadyQueued
+                ? prev
+                : [...prev, { ...transaction, clientRequestId: requestId }];
+        });
      };
 
      // 4. Activity Logs (backend-first)
@@ -371,7 +661,7 @@ export const InventoryProvider = ({ children }) => {
         return () => {
             isMounted = false;
         };
-    }, [userRole, currentUserName, currentAuthUsername]);
+    }, [userRole, currentAuthUsername]);
 
      useEffect(() => {
         if (!preferredSuperAdminName || normalizeName(preferredSuperAdminName) === 'admin user') {
@@ -465,6 +755,49 @@ export const InventoryProvider = ({ children }) => {
         ));
     };
 
+    const syncUserIdentityReferences = (user) => {
+        const userId = String(user?.id || user?._id || '').trim();
+        if (!userId) {
+            return;
+        }
+
+        const userReference = {
+            _id: userId,
+            id: userId,
+            displayName: String(user?.displayName || '').trim(),
+            name: String(user?.name || '').trim(),
+            username: String(user?.username || '').trim(),
+            role: String(user?.role || '').trim(),
+        };
+        const referenceId = (reference) => String(
+            reference && typeof reference === 'object'
+                ? (reference._id || reference.id || '')
+                : reference || ''
+        ).trim();
+        const mergeReference = (reference) => ({
+            ...(reference && typeof reference === 'object' ? reference : {}),
+            ...userReference,
+        });
+
+        setActivityLogs((prev) => prev.map((log) => (
+            referenceId(log?.userRef) === userId
+                ? { ...log, userRef: mergeReference(log.userRef) }
+                : log
+        )));
+
+        setInventoryLogs((prev) => prev.map((log) => (
+            referenceId(log?.userRef) === userId
+                ? { ...log, userRef: mergeReference(log.userRef) }
+                : log
+        )));
+
+        setTransactions((prev) => prev.map((transaction) => (
+            referenceId(transaction?.cashierUser) === userId || String(transaction?.cashierId || '').trim() === userId
+                ? { ...transaction, cashierUser: mergeReference(transaction.cashierUser) }
+                : transaction
+        )));
+    };
+
     // 6.1 Remove All User References (for hard account deletion)
     const removeUserReferences = (targetName) => {
         if (!targetName) {
@@ -515,7 +848,7 @@ export const InventoryProvider = ({ children }) => {
     return (
         <InventoryContext.Provider value={{
             inventory, setInventory,
-            transactions, setTransactions,
+            transactions: transactionsCacheOwner === transactionsCacheScope && Boolean(getAuthToken()) ? transactions : [], setTransactions,
             inventoryLogs, setInventoryLogs,
             activityLogs, setActivityLogs,
             logActivity,
@@ -526,6 +859,7 @@ export const InventoryProvider = ({ children }) => {
             setCategories,
             fetchCategories,
             renameUserReferences,
+            syncUserIdentityReferences,
             removeUserReferences,
             syncQueue,
             addToSyncQueue,

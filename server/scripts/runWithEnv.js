@@ -26,10 +26,11 @@ if (!fs.existsSync(sourceEnvPath)) {
 }
 
 fs.copyFileSync(sourceEnvPath, targetEnvPath);
-console.log(`Loaded ${path.basename(sourceEnvPath)} -> .env`);
 
 const command = runType === 'dev' ? 'npx' : 'node';
-const args = runType === 'dev' ? ['nodemon', 'src/server.js'] : ['src/server.js'];
+const args = runType === 'dev'
+  ? ['nodemon', 'src/server.js']
+  : ['src/server.js'];
 
 const child = spawn(command, args, {
   stdio: 'inherit',

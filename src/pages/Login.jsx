@@ -27,12 +27,13 @@ const EyeOffIcon = () => (
 );
 
 const Login = ({ onLogin }) => {
-  const { appSettings, setUserRole, setCurrentUserName, setCurrentUserAvatar, applyAuthenticatedSession } = useAuth();
+  const { appSettings, applyAuthenticatedSession } = useAuth();
   const { logActivity } = useInventory();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [pin, setPin] = useState(''); // 6-digit security PIN stored as string
   const inputsRef = useRef([]); // refs for PIN digit inputs
+  const usernameInputRef = useRef(null);
   const [showPassword, setShowPassword] = useState(false);
   // pin visibility toggle removed; input will always mask
   const [isLoading, setIsLoading] = useState(false);
@@ -177,17 +178,8 @@ const Login = ({ onLogin }) => {
         const backendDisplayName = (response.user.displayName || '').trim();
         const normalizedBackendFullName = String(backendFullName).trim().toLowerCase();
         const hasGenericAdminName = normalizedBackendFullName === 'admin' || normalizedBackendFullName === 'admin user';
-        const backendUsername = (response.user.username || '').trim().toLowerCase();
-        let preferredDisplayName = '';
-        let configuredAdminUser = '';
-
-        preferredDisplayName = (appSettings.adminDisplayName || '').trim();
-        configuredAdminUser = (appSettings.adminUser || '').trim().toLowerCase();
-
-        const isPrimaryAdminAccount = backendUsername && configuredAdminUser && backendUsername === configuredAdminUser;
-        const backendName = isSuperAdminSession
-          ? (preferredDisplayName || (hasGenericAdminName ? 'Super Admin' : backendFullName))
-          : (backendDisplayName || (isPrimaryAdminAccount && preferredDisplayName ? preferredDisplayName : backendFullName));
+        const backendName = backendDisplayName
+          || (isSuperAdminSession && hasGenericAdminName ? 'Super Admin' : backendFullName);
 
         const backendAvatar = response.user.avatarUrl || response.user.avatar || '';
         // Keep avatar undefined when unavailable so AuthContext can resolve fallback immediately.
@@ -200,6 +192,8 @@ const Login = ({ onLogin }) => {
           name: backendName,
           avatar: resolvedAvatar,
           username: response.user.username || '',
+          userId: String(response.user.id || ''),
+          preferences: response.user.preferences,
           mustChangeCredentials: Boolean(response.user.mustChangeCredentials),
         });
 
@@ -216,6 +210,18 @@ const Login = ({ onLogin }) => {
         onLogin();
         showToast('Access Granted', `Welcome back, ${backendName}!`, 'success', 'login-result');
       } catch (error) {
+        const isInvalidPrimaryCredentials = !needsPin
+          && Number(error?.status) === 401
+          && String(error?.message || '').trim().toLowerCase() === 'invalid credentials.';
+
+        if (isInvalidPrimaryCredentials) {
+          setEmail('');
+          setPassword('');
+          setTimeout(() => {
+            usernameInputRef.current?.focus();
+          }, 0);
+        }
+
         if (needsPin) {
           setPin('');
           setTimeout(() => {
@@ -226,7 +232,12 @@ const Login = ({ onLogin }) => {
         setCooldown(true);
         cooldownTimer.current = setTimeout(() => setCooldown(false), 2000);
         setTimeout(() => setErrorShake(false), 500);
-        showToast('Access Denied', error.message || 'Invalid username, password, or PIN.', 'error', 'login-result');
+        showToast(
+          'Access Denied',
+          isInvalidPrimaryCredentials ? 'Invalid username or password.' : (error.message || 'Invalid username, password, or PIN.'),
+          'error',
+          'login-result'
+        );
       } finally {
         setIsLoading(false);
       }
@@ -238,7 +249,7 @@ const Login = ({ onLogin }) => {
     if (needsPin && pin.length === 6 && !isLoading && !cooldown) {
       handleSubmit({ preventDefault: () => {} });
     }
-  }, [pin, needsPin, isLoading, cooldown, appSettings.adminDisplayName, appSettings.adminUser]);
+  }, [pin, needsPin, isLoading, cooldown]);
 
   useEffect(() => {
     if (needsPin && !isLoading) {
@@ -247,7 +258,7 @@ const Login = ({ onLogin }) => {
   }, [needsPin, isLoading]);
    
   return (
-    <div className="relative flex min-h-screen items-center justify-center bg-[#111827] p-4 overflow-hidden">
+    <div className="relative flex min-h-screen items-center justify-center bg-gradient-to-br from-[#111827] via-slate-900 to-[#0f1419] p-4 overflow-hidden">
       {/* Header Date Time Display */}
       <div className="absolute top-6 left-0 right-0 z-20 flex justify-center">
          <div className="bg-white/10 backdrop-blur-md border border-white/10 px-6 py-2 rounded-full shadow-lg">
@@ -269,7 +280,7 @@ const Login = ({ onLogin }) => {
             <div className="mx-auto mb-2 h-14 w-14 hover:scale-105 transition-transform duration-500 cursor-pointer">
                 <img src={logo} alt="Logo" className="h-full w-full object-contain drop-shadow-sm rounded-full" />
             </div>
-            <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Welcome Back</h2>
+            <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Welcome Back</h2>
             <p className="text-xs font-medium text-gray-500 mt-1 mb-3">Inventory & Point of Sale Management System</p>
           </div>
 
@@ -282,6 +293,7 @@ const Login = ({ onLogin }) => {
               <input
                 type="text"
                 id="username"
+                ref={usernameInputRef}
                 value={email}
                 autoComplete="off"
                 onChange={(e) => setEmail(e.target.value)}
@@ -401,7 +413,7 @@ const Login = ({ onLogin }) => {
                     }
                   }}
                   ref={el => inputsRef.current[i] = el}
-                  className="w-10 h-10 text-center border border-gray-400 rounded-md text-base font-bold text-gray-900 bg-white focus:border-gray-900 focus:outline-none"
+                  className="w-10 h-10 text-center border border-gray-400 rounded-md text-base font-semibold text-gray-900 bg-white focus:border-gray-900 focus:outline-none"
                   required
                 />
               ))}
@@ -436,7 +448,7 @@ const Login = ({ onLogin }) => {
                             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                         </svg>
-                        <span className="text-white font-bold animate-pulse">Verifying PIN...</span>
+                        <span className="text-white font-semibold animate-pulse">Verifying PIN...</span>
                         </>
                       ) : (
                         // Standard Loading State (for normal login)
@@ -486,7 +498,7 @@ const Login = ({ onLogin }) => {
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8"></path></svg>
                   </div>
                   <div>
-                    <h2 className="text-sm font-bold text-gray-900">Reset {forgotType === 'password' ? 'Password' : 'PIN'}</h2>
+                    <h2 className="text-sm font-semibold text-gray-900">Reset {forgotType === 'password' ? 'Password' : 'PIN'}</h2>
                     <p className="text-xs text-gray-600 mt-0.5">
                       {forgotType === 'password'
                         ? 'Enter your registered account email. A reset link will be sent to that same email.'
@@ -606,7 +618,7 @@ const Login = ({ onLogin }) => {
       {/* Footer */}
       <div className="absolute bottom-4 w-full text-center z-0 pointer-events-none">
         <div className="flex flex-col items-center justify-center space-y-1 opacity-60">
-             <p className="text-[10px] font-bold text-gray-100 tracking-[0.2em] ">
+             <p className="text-[10px] font-semibold text-gray-100 tracking-[0.2em] ">
                 &copy; 2026 Tableria La Confianza Co., Inc.
             </p>
             <p className="text-[9px] font-medium text-gray-300 tracking-widest">

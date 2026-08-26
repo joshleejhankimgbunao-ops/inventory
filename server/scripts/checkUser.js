@@ -3,12 +3,12 @@ require('dotenv').config({ quiet: true });
 const connectDB = require('../src/config/db');
 const User = require('../src/models/User');
 const bcrypt = require('bcryptjs');
-
-const usernameToCheck = 'owner';
-const passwordToCheck = 'owner123';
+const { requireExplicitEnv } = require('../src/config/security');
 
 const run = async () => {
   try {
+    const usernameToCheck = requireExplicitEnv('CHECK_USERNAME').trim().toLowerCase();
+    const passwordToCheck = requireExplicitEnv('CHECK_PASSWORD');
     await connectDB();
     const user = await User.findOne({ username: usernameToCheck }).select('+password');
 

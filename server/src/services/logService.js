@@ -1,9 +1,10 @@
 const ActivityLog = require('../models/ActivityLog');
 const InventoryLog = require('../models/InventoryLog');
+const { publishActivityLogged, publishInventoryLogged } = require('./realtimeService');
 
 const normalizeUserName = (user, fallback = 'System') => {
   if (!user) return fallback;
-  return user.name || user.username || fallback;
+  return user.displayName || user.name || user.username || fallback;
 };
 
 const writeActivityLog = async ({
@@ -27,6 +28,16 @@ const writeActivityLog = async ({
       ipAddress,
       userAgent,
     }], session ? { session } : undefined);
+
+    if (created) {
+      publishActivityLogged({
+        id: created._id,
+        action: created.action,
+        user: created.user,
+        occurredAt: created.createdAt,
+      });
+    }
+
     return created || null;
   } catch (error) {
     console.warn('[LOGGING] Failed to write activity log:', error.message);
@@ -61,6 +72,17 @@ const writeInventoryLog = async ({
       stockBefore,
       stockAfter,
     }], session ? { session } : undefined);
+
+    if (created) {
+      publishInventoryLogged({
+        id: created._id,
+        action: created.action,
+        code: created.code,
+        user: created.user,
+        occurredAt: created.createdAt,
+      });
+    }
+
     return created || null;
   } catch (error) {
     console.warn('[LOGGING] Failed to write inventory log:', error.message);

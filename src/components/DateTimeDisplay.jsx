@@ -13,7 +13,7 @@ const DateTimeDisplay = ({ className = "text-right hidden md:block", dateClassNa
   if (oneLine) {
     return (
       <div className={className}>
-         <p className={`text-xs font-bold tracking-wide ${dateClassName}`}>
+         <p className={`text-xs font-semibold tracking-wide ${dateClassName}`}>
             {currentDateTime.toLocaleDateString(undefined, { weekday: 'long' })} | {currentDateTime.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })} <span className={`ml-2 ${timeClassName}`}>{currentDateTime.toLocaleTimeString()}</span>
          </p>
       </div>
@@ -22,7 +22,7 @@ const DateTimeDisplay = ({ className = "text-right hidden md:block", dateClassNa
 
   return (
     <div className={className}>
-      <p className={`text-xs font-bold ${dateClassName}`}>
+      <p className={`text-xs font-semibold ${dateClassName}`}>
         {currentDateTime.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
       </p>
       <p className={`text-[10px] font-semibold uppercase tracking-wide ${timeClassName}`}>

@@ -11,8 +11,8 @@ const StatCard = ({ title, value, icon, color, onClick, titleClassName = '', val
             <div className={`absolute top-0 left-0 right-0 h-1.5 bg-linear-to-r from-gray-700 to-black`}></div>
             <div className="flex items-center justify-between">
                 <div>
-                    <h3 className={`text-gray-500 ${titleClassName || 'text-xs'} font-bold uppercase tracking-wider mb-1 group-hover:text-gray-900 transition-colors`}>{title}</h3>
-                    <div className={`${valueClassName || 'text-2xl'} font-black text-gray-900 tracking-tight`}>{value}</div>
+                    <h3 className={`text-gray-500 ${titleClassName || 'text-xs'} font-semibold uppercase tracking-wider mb-1 group-hover:text-gray-900 transition-colors`}>{title}</h3>
+                    <div className={`${valueClassName || 'text-2xl'} font-semibold text-gray-900 tracking-tight`}>{value}</div>
                 </div>
                 <div className="p-3 rounded-xl bg-gray-900 text-white shadow-sm group-hover:scale-110 transition-transform duration-300">
                     {icon}

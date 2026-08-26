@@ -23,8 +23,8 @@ jobs:
 
     env:
       PORT: 5000
+      API_HOST: 127.0.0.1
       MONGO_URI: mongodb://127.0.0.1:27017/inventory-ci
-      JWT_SECRET: ci-secret-change-me
       JWT_EXPIRES_IN: 1d
       CLIENT_ORIGIN: http://localhost:5173
       RESET_URL_BASE: http://localhost:5173
@@ -36,9 +36,6 @@ jobs:
       MAIL_PASS: placeholder
       MAIL_FROM: Inventory App <no-reply@example.com>
       SMOKE_BASE_URL: http://127.0.0.1:5000
-      SMOKE_USERNAME: joshlee
-      SMOKE_PASSWORD: Bunao123.
-      SMOKE_PIN: 111111
 
     steps:
       - name: Checkout
@@ -52,6 +49,11 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             server/package-lock.json
+
+      - name: Generate ephemeral security inputs
+        shell: bash
+        run: |
+          node -e "const c=require('crypto');const f=require('fs');const p='Ci!'+c.randomBytes(18).toString('base64url');const n=String(c.randomInt(100000,1000000));const j=c.randomBytes(32).toString('base64url');const u='ci-superadmin';f.appendFileSync(process.env.GITHUB_ENV,['JWT_SECRET='+j,'SEED_SUPERADMIN_USERNAME='+u,'SEED_SUPERADMIN_PASSWORD='+p,'SEED_SUPERADMIN_PIN='+n,'SMOKE_USERNAME='+u,'SMOKE_PASSWORD='+p,'SMOKE_PIN='+n,'TEST_USERNAME='+u,'TEST_PASSWORD='+p,'TEST_PIN='+n,''].join('\n'))"
 
       - name: Install frontend dependencies
         run: npm ci

@@ -22,16 +22,26 @@ API base URL: `http://localhost:5000`
 Required values in `.env`:
 
 - `PORT=5000`
+- `API_HOST=127.0.0.1` for this local single-laptop deployment
 - `MONGO_URI=mongodb://127.0.0.1:27017/inventory-dev`
-- `JWT_SECRET=replace-with-a-long-random-secret`
+- `JWT_SECRET=replace-with-random-32-byte-or-longer-secret` (fake example; startup rejects it)
 - `JWT_EXPIRES_IN=1d`
 - `CLIENT_ORIGIN=http://localhost:5173`
 
 ## 3) Seed Credentials (Dev Only)
 
-- Superadmin: `owner` / `Owner123!`
-- Admin: `admin1` / `Admin123!`
-- Cashier: `cashier1` / `Cashier123!`
+Privileged maintenance commands have no default credentials. Set all three values explicitly:
+
+- `SEED_SUPERADMIN_USERNAME`
+- `SEED_SUPERADMIN_PASSWORD`
+- `SEED_SUPERADMIN_PIN`
+
+If you need to restore the superadmin account without losing linked data, run:
+
+```bash
+node scripts/createOwner.js
+node scripts/setOwnerPin.js
+```
 
 ## 4) API Endpoints
 
@@ -62,7 +72,7 @@ Required values in `.env`:
 - `PATCH /api/sales/:id/restore` (superadmin/admin)
 
 ### Settings
-- `GET /api/settings` (public)
+- `GET /api/settings` (sanitized anonymous projection; full response when authenticated)
 - `PATCH /api/settings` (superadmin/admin)
 
 ### Partners
@@ -145,3 +155,10 @@ Phase 8 adds hardening around backend-first behavior and contract checks:
 
 Run Phase 8 smoke validation:
 - `npm run smoke`
+
+## 10) Plan Change: VAT Per Order/Customer
+
+VAT is no longer stored per product. VAT mode is now selected per customer or per order
+at the POS transaction level (cash and credit). The POS flow should capture VAT mode
+as either 12% or zero-rated and persist it with the transaction for totals, receipts,
+and reporting.

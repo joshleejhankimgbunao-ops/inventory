@@ -58,7 +58,7 @@ $mongoDumpCommand = Resolve-MongoDumpPath
 
 Write-Host "Creating MongoDB backup..." -ForegroundColor Cyan
 Write-Host "Database: $DbName"
-Write-Host "Mongo URI: $MongoUri"
+Write-Host "Mongo URI: configured"
 Write-Host "Output: $backupDir"
 Write-Host "Dump path: $dumpDir"
 Write-Host "mongodump: $mongoDumpCommand"
@@ -71,7 +71,7 @@ if ($LASTEXITCODE -ne 0) {
 $meta = @{
     timestamp = (Get-Date).ToString('o')
     dbName = $DbName
-    mongoUri = $MongoUri
+    mongoUri = '[redacted]'
     backupDir = $backupDir
 } | ConvertTo-Json -Depth 5
 

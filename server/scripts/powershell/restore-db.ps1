@@ -71,7 +71,7 @@ $mongoRestoreCommand = Resolve-MongoRestorePath
 
 Write-Host "Restoring MongoDB backup..." -ForegroundColor Yellow
 Write-Host "Database: $DbName"
-Write-Host "Mongo URI: $MongoUri"
+Write-Host "Mongo URI: configured"
 Write-Host "Backup path: $BackupPath"
 Write-Host "mongorestore: $mongoRestoreCommand"
 

@@ -1,0 +1,663 @@
+const CreditTransaction = require('../models/CreditTransaction');
+const Sale = require('../models/Sale');
+const fs = require('fs/promises');
+const path = require('path');
+const { randomUUID } = require('crypto');
+const { writeActivityLog } = require('../services/logService');
+const { publishCreditTransactionsUpdated } = require('../services/realtimeService');
+const { parseStrictWholeNumber } = require('../utils/numericValidation');
+const { isMoneyInputTooLarge, parseSafeMoney } = require('../utils/moneyValidation');
+
+const normalizeString = (value) => String(value || '').trim();
+const MAX_CREDIT_TERM_DAYS = 60;
+const PROOF_OF_PAYMENT_DIRECTORY = path.resolve(__dirname, '../../uploads/payment-proofs');
+const JPEG_SIGNATURE = [0xff, 0xd8, 0xff];
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+const hasSignature = (buffer, signature) => Buffer.isBuffer(buffer)
+  && buffer.length >= signature.length
+  && signature.every((value, index) => buffer[index] === value);
+
+const getProofImageMetadata = (file) => {
+  if (!file?.buffer?.length) {
+    const error = new Error('Proof of Payment is required.');
+    error.status = 400;
+    throw error;
+  }
+
+  const mimeType = String(file.mimetype || '').toLowerCase();
+  const isJpeg = mimeType === 'image/jpeg' && hasSignature(file.buffer, JPEG_SIGNATURE);
+  const isPng = mimeType === 'image/png' && hasSignature(file.buffer, PNG_SIGNATURE);
+  if (!isJpeg && !isPng) {
+    const error = new Error('Proof of Payment must be a valid JPG, JPEG, or PNG image.');
+    error.status = 400;
+    throw error;
+  }
+
+  return {
+    extension: isPng ? 'png' : 'jpg',
+    mimeType: isPng ? 'image/png' : 'image/jpeg',
+  };
+};
+
+const persistProofOfPayment = async ({ file, user }) => {
+  const { extension, mimeType } = getProofImageMetadata(file);
+  await fs.mkdir(PROOF_OF_PAYMENT_DIRECTORY, { recursive: true });
+
+  const storageKey = `${randomUUID()}.${extension}`;
+  await fs.writeFile(path.join(PROOF_OF_PAYMENT_DIRECTORY, storageKey), file.buffer, { flag: 'wx' });
+
+  return {
+    storageKey,
+    fileName: path.basename(String(file.originalname || `proof.${extension}`)),
+    mimeType,
+    uploadedAt: new Date(),
+    uploadedBy: user?._id || null,
+  };
+};
+
+const removeStoredProof = async (storageKey) => {
+  if (!/^[a-f0-9-]+\.(jpg|png)$/i.test(String(storageKey || ''))) return;
+
+  try {
+    await fs.unlink(path.join(PROOF_OF_PAYMENT_DIRECTORY, storageKey));
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+};
+
+const ensureCashierOwnsCreditTransaction = async ({ transaction, user }) => {
+  if (user?.role !== 'cashier') return;
+
+  const sale = await Sale.findById(transaction.orderId).select('cashier');
+  if (!sale || String(sale.cashier) !== String(user._id)) {
+    const error = new Error('You can only modify your own credit transactions.');
+    error.status = 403;
+    throw error;
+  }
+};
+
+const parseBool = (value, fallback = false) => {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    if (value.toLowerCase() === 'true') return true;
+    if (value.toLowerCase() === 'false') return false;
+  }
+  return fallback;
+};
+
+const resolveStatus = ({ remainingBalance, amountPaid, dueDate, status, now = new Date() }) => {
+  if (String(status || '').toLowerCase() === 'cancelled') return 'Cancelled';
+  const remaining = Number(remainingBalance || 0);
+  const paid = Number(amountPaid || 0);
+  const effectiveDueDate = new Date(dueDate);
+  const currentDate = new Date(now);
+  effectiveDueDate.setHours(0, 0, 0, 0);
+  currentDate.setHours(0, 0, 0, 0);
+  const isOverdue = !Number.isNaN(effectiveDueDate.getTime()) && effectiveDueDate.getTime() < currentDate.getTime();
+
+  if (remaining <= 0) return 'Paid';
+  if (paid <= 0) return isOverdue ? 'Overdue' : 'Unpaid';
+  return isOverdue ? 'Overdue' : 'Partially Paid';
+};
+
+const applyCreditTermExtension = async ({ transaction, extensionDays }) => {
+  const extensionValue = parseStrictWholeNumber(extensionDays, { min: 1 });
+  if (extensionValue === null) {
+    const error = new Error('Extension day must be a whole number greater than 0.');
+    error.status = 400;
+    throw error;
+  }
+
+  const currentTermDays = Number(transaction.termDays || 0);
+  const maxAllowedExtension = Math.max(0, MAX_CREDIT_TERM_DAYS - currentTermDays);
+  if (extensionValue > maxAllowedExtension) {
+    const error = new Error(`Extension exceeds maximum allowed. You can only extend by up to ${maxAllowedExtension} day(s).`);
+    error.status = 400;
+    throw error;
+  }
+
+  const dueDateBase = new Date(transaction.dueDate);
+  if (!transaction.originalDueDate) {
+    transaction.originalDueDate = dueDateBase;
+  }
+  dueDateBase.setDate(dueDateBase.getDate() + extensionValue);
+  transaction.termDays = currentTermDays + extensionValue;
+  transaction.dueDate = dueDateBase;
+
+  return {
+    extensionDays: extensionValue,
+    maxAllowedExtension,
+  };
+};
+
+const refreshOverdueRecords = async () => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  await CreditTransaction.updateMany(
+    {
+      status: { $in: ['Unpaid', 'Partially Paid'] },
+      dueDate: { $lt: today },
+      remainingBalance: { $gt: 0 },
+      isArchived: false,
+    },
+    { $set: { status: 'Overdue' } }
+  );
+};
+
+const listCreditTransactions = async (req, res, next) => {
+  try {
+    await refreshOverdueRecords();
+
+    const status = normalizeString(req.query?.status);
+    const search = normalizeString(req.query?.search);
+    const includeArchived = parseBool(req.query?.includeArchived, false);
+
+    const query = {};
+
+    if (!includeArchived) {
+      query.isArchived = false;
+    }
+
+    if (status && status.toLowerCase() !== 'all') {
+      query.status = status;
+    }
+
+    if (search) {
+      query.$or = [
+        { creditTransactionId: { $regex: search, $options: 'i' } },
+        { customerName: { $regex: search, $options: 'i' } },
+      ];
+    }
+
+    if (req.user?.role === 'cashier') {
+      const cashierSales = await Sale.find({ cashier: req.user._id }, '_id');
+      const saleIds = cashierSales.map((sale) => sale._id);
+      query.orderId = { $in: saleIds };
+    }
+
+    const rows = await CreditTransaction.find(query)
+      .populate('orderId', 'createdAt paymentMethod notes cashier cashierName')
+      .sort({ createdAt: -1 });
+
+    const records = rows.map((row) => {
+      const statusValue = resolveStatus({
+        remainingBalance: row.remainingBalance,
+        amountPaid: row.amountPaid,
+        dueDate: row.dueDate,
+        status: row.status,
+      });
+
+      const notes = String(row.orderId?.notes || '').trim();
+      const modeMatch = notes.match(/preferred mode of payment:\s*(.+)$/i);
+      const creditPaymentMode = modeMatch ? String(modeMatch[1] || '').trim() : '';
+
+      return {
+        _id: row._id,
+        creditTransactionId: row.creditTransactionId,
+        orderId: row.orderId?._id || row.orderId,
+        orderReference: row.orderId?._id ? `TRX-${String(row.orderId._id).slice(-8).toUpperCase()}` : '',
+        paymentMethod: row.orderId?.paymentMethod || 'cash',
+        creditPaymentMode,
+        customerId: row.customerId,
+        customerName: row.customerName,
+        totalAmount: Number(row.totalAmount || 0),
+        netAmount: Number(row.netAmount || row.totalAmount || 0),
+        vatAmount: Number(row.vatAmount || 0),
+        grossAmount: Number(row.grossAmount || row.totalAmount || 0),
+        pricingMode: row.pricingMode || 'inclusive',
+        vatMode: row.vatMode || 'vatable',
+        customerIsVatExempt: false,
+        hasVatApplicableItems: Boolean(row.hasVatApplicableItems),
+        hasVatableItems: Boolean(row.hasVatableItems),
+        hasZeroRatedItems: Boolean(row.hasZeroRatedItems),
+        vatRatesUsed: Array.isArray(row.vatRatesUsed) ? row.vatRatesUsed : [],
+        amountPaid: Number(row.amountPaid || 0),
+        remainingBalance: Number(row.remainingBalance || 0),
+        termDays: Number(row.termDays || 0),
+        dueDate: row.dueDate,
+        status: statusValue,
+        paymentHistory: Array.isArray(row.paymentHistory) ? row.paymentHistory : [],
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+        originalDueDate: row.originalDueDate,
+        cashierId: row.orderId?.cashier || null,
+        cashierName: row.orderId?.cashierName || '',
+        isArchived: Boolean(row.isArchived),
+      };
+    });
+
+    return res.json(records);
+  } catch (error) {
+    return next(error);
+  }
+};
+
+const getCreditTransactionsSummary = async (req, res, next) => {
+  try {
+    await refreshOverdueRecords();
+
+    const summaryQuery = { isArchived: false };
+
+    if (req.user?.role === 'cashier') {
+      const cashierSales = await Sale.find({ cashier: req.user._id }, '_id');
+      const saleIds = cashierSales.map((sale) => sale._id);
+      summaryQuery.orderId = { $in: saleIds };
+    }
+
+    const rows = await CreditTransaction.find(summaryQuery);
+    const summary = rows.reduce((acc, row) => {
+      const status = resolveStatus({
+        remainingBalance: row.remainingBalance,
+        amountPaid: row.amountPaid,
+        dueDate: row.dueDate,
+        status: row.status,
+      });
+
+      if (status === 'Cancelled') {
+        return acc;
+      }
+
+      acc.totalCreditReceivables += Number(row.remainingBalance || 0);
+      acc.totalVatAmount += Number(row.vatAmount || 0);
+      acc.totalNetAmount += Number(row.netAmount || row.totalAmount || 0);
+      acc.totalGrossAmount += Number(row.grossAmount || row.totalAmount || 0);
+      if (status === 'Unpaid') acc.unpaidAccounts += 1;
+      if (status === 'Partially Paid') acc.partiallyPaidAccounts += 1;
+      if (status === 'Paid') acc.paidAccounts += 1;
+      if (status === 'Overdue') acc.overdueAccounts += 1;
+      return acc;
+    }, {
+      totalCreditReceivables: 0,
+      totalVatAmount: 0,
+      totalNetAmount: 0,
+      totalGrossAmount: 0,
+      unpaidAccounts: 0,
+      partiallyPaidAccounts: 0,
+      paidAccounts: 0,
+      overdueAccounts: 0,
+      totalAccounts: rows.length,
+    });
+
+    return res.json(summary);
+  } catch (error) {
+    return next(error);
+  }
+};
+
+const getCreditTransactionById = async (req, res, next) => {
+  try {
+    await refreshOverdueRecords();
+    const { id } = req.params;
+
+    const row = await CreditTransaction.findById(id).populate('orderId');
+    if (!row) {
+      return res.status(404).json({ message: 'Credit transaction not found.' });
+    }
+
+    if (req.user?.role === 'cashier') {
+      const orderCashierId = row.orderId?.cashier ? String(row.orderId.cashier) : '';
+      if (!orderCashierId || orderCashierId !== String(req.user._id)) {
+        return res.status(403).json({ message: 'You can only access your own credit transactions.' });
+      }
+    }
+
+    const status = resolveStatus({
+      remainingBalance: row.remainingBalance,
+      amountPaid: row.amountPaid,
+      dueDate: row.dueDate,
+      status: row.status,
+    });
+
+    return res.json({
+      ...row.toObject(),
+      status,
+      orderReference: row.orderId?._id ? `TRX-${String(row.orderId._id).slice(-8).toUpperCase()}` : '',
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+const applyPaymentToCreditTransaction = async ({
+  transaction,
+  amount,
+  method,
+  reference,
+  note,
+  paymentDate,
+  user,
+  req,
+  onTransactionSaved,
+}) => {
+  const amountValue = parseSafeMoney(amount, { min: 0.01 });
+  if (amountValue === null) {
+    const error = new Error(isMoneyInputTooLarge(amount) ? 'Amount is too large. Please enter a smaller value.' : 'Payment amount must be greater than zero.');
+    error.status = 400;
+    throw error;
+  }
+
+  const remaining = Number(transaction.remainingBalance || 0);
+  if (remaining <= 0) {
+    const error = new Error('This account is already fully paid.');
+    error.status = 400;
+    throw error;
+  }
+
+  const appliedAmount = Math.min(amountValue, remaining);
+  const nextAmountPaid = Number(transaction.amountPaid || 0) + appliedAmount;
+  const nextRemaining = Math.max(0, Number(transaction.totalAmount || 0) - nextAmountPaid);
+  const parsedPaymentDate = paymentDate ? new Date(paymentDate) : new Date();
+  if (Number.isNaN(parsedPaymentDate.getTime())) {
+    const error = new Error('Invalid payment date.');
+    error.status = 400;
+    throw error;
+  }
+
+  transaction.paymentHistory.push({
+    paymentDate: parsedPaymentDate,
+    amount: appliedAmount,
+    method: normalizeString(method || 'cash').toLowerCase(),
+    reference: normalizeString(reference),
+    note: normalizeString(note),
+    recordedBy: user?.displayName || user?.name || user?.username || 'System',
+    recordedById: user?._id || null,
+  });
+  transaction.amountPaid = nextAmountPaid;
+  transaction.remainingBalance = nextRemaining;
+  transaction.status = resolveStatus({
+    remainingBalance: nextRemaining,
+    amountPaid: nextAmountPaid,
+    dueDate: transaction.dueDate,
+  });
+  await transaction.save();
+  if (onTransactionSaved) onTransactionSaved();
+
+  const sale = await Sale.findById(transaction.orderId);
+  if (sale) {
+    sale.paymentStatus = nextRemaining <= 0 ? 'Paid' : 'Partially Paid';
+    await sale.save();
+  }
+
+  await writeActivityLog({
+    user,
+    action: 'Recorded Credit Payment',
+    details: `Credit transaction ${transaction.creditTransactionId} payment recorded: ${appliedAmount}. Remaining balance: ${nextRemaining}.`,
+    ipAddress: req.ip,
+    userAgent: req.get('user-agent') || '',
+  });
+
+  publishCreditTransactionsUpdated({
+    reason: 'credit-transaction.payment-recorded',
+    creditTransactionId: transaction._id,
+  });
+
+  return transaction;
+};
+
+const recordCreditPayment = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const transaction = await CreditTransaction.findById(id);
+    if (!transaction) {
+      return res.status(404).json({ message: 'Credit transaction not found.' });
+    }
+
+    await ensureCashierOwnsCreditTransaction({ transaction, user: req.user });
+
+    const updated = await applyPaymentToCreditTransaction({
+      transaction,
+      amount: req.body?.amount,
+      method: req.body?.method,
+      reference: req.body?.reference,
+      note: req.body?.note,
+      paymentDate: req.body?.paymentDate,
+      user: req.user,
+      req,
+    });
+
+    return res.json(updated);
+  } catch (error) {
+    if (error?.status) {
+      return res.status(error.status).json({ message: error.message });
+    }
+    return next(error);
+  }
+};
+
+const markCreditTransactionFullyPaid = async (req, res, next) => {
+  let savedProof = null;
+  let isProofReferenced = false;
+
+  try {
+    const { id } = req.params;
+    const transaction = await CreditTransaction.findById(id);
+    if (!transaction) {
+      return res.status(404).json({ message: 'Credit transaction not found.' });
+    }
+
+    await ensureCashierOwnsCreditTransaction({ transaction, user: req.user });
+
+    const remaining = Number(transaction.remainingBalance || 0);
+    if (remaining <= 0) {
+      return res.json(transaction);
+    }
+
+    const proofOfPayment = await persistProofOfPayment({ file: req.file, user: req.user });
+    savedProof = proofOfPayment;
+
+    const extensionRaw = Object.prototype.hasOwnProperty.call(req.body || {}, 'extensionDays')
+      ? req.body.extensionDays
+      : 0;
+    const extensionDays = parseStrictWholeNumber(extensionRaw);
+    if (extensionDays === null) {
+      return res.status(400).json({ message: 'Extension day must be a whole number greater than or equal to 0.' });
+    }
+
+    if (extensionDays > 0) {
+      await applyCreditTermExtension({ transaction, extensionDays });
+    }
+
+    const finalNote = normalizeString(req.body?.note) || 'Marked as fully paid.';
+    const noteWithExtension = extensionDays > 0
+      ? `${finalNote} (Extension applied: +${extensionDays} day(s), term is now ${transaction.termDays} day(s).)`
+      : finalNote;
+
+    transaction.proofOfPayment = proofOfPayment;
+
+    const updated = await applyPaymentToCreditTransaction({
+      transaction,
+      amount: remaining,
+      method: req.body?.method || 'cash',
+      reference: req.body?.reference,
+      note: noteWithExtension,
+      paymentDate: req.body?.paymentDate,
+      user: req.user,
+      req,
+      onTransactionSaved: () => {
+        isProofReferenced = true;
+      },
+    });
+
+    if (extensionDays > 0) {
+      const saleForTermSync = await Sale.findById(transaction.orderId);
+      if (saleForTermSync) {
+        saleForTermSync.creditTermDays = Number(transaction.termDays || 0);
+        saleForTermSync.dueDate = transaction.dueDate;
+        await saleForTermSync.save();
+      }
+    }
+
+    return res.json(updated);
+  } catch (error) {
+    if (savedProof?.storageKey && !isProofReferenced) {
+      try {
+        await removeStoredProof(savedProof.storageKey);
+      } catch (cleanupError) {
+        console.error('Unable to remove unreferenced payment proof:', cleanupError.message);
+      }
+    }
+    if (error?.status) {
+      return res.status(error.status).json({ message: error.message });
+    }
+    return next(error);
+  }
+};
+
+const getCreditTransactionProofOfPayment = async (req, res, next) => {
+  try {
+    const transaction = await CreditTransaction.findById(req.params.id).select('orderId proofOfPayment');
+    if (!transaction) {
+      return res.status(404).json({ message: 'Credit transaction not found.' });
+    }
+
+    await ensureCashierOwnsCreditTransaction({ transaction, user: req.user });
+
+    const proof = transaction.proofOfPayment;
+    const storageKey = String(proof?.storageKey || '');
+    if (!proof || !/^[a-f0-9-]+\.(jpg|png)$/i.test(storageKey)) {
+      return res.status(404).json({ message: 'Proof of Payment is not available.' });
+    }
+
+    const filePath = path.resolve(PROOF_OF_PAYMENT_DIRECTORY, storageKey);
+    if (!filePath.startsWith(`${PROOF_OF_PAYMENT_DIRECTORY}${path.sep}`)) {
+      return res.status(404).json({ message: 'Proof of Payment is not available.' });
+    }
+
+    try {
+      await fs.access(filePath);
+    } catch {
+      return res.status(404).json({ message: 'Proof of Payment is not available.' });
+    }
+
+    res.set('Cache-Control', 'private, no-store');
+    res.type(proof.mimeType);
+    return res.sendFile(filePath);
+  } catch (error) {
+    if (error?.status) {
+      return res.status(error.status).json({ message: error.message });
+    }
+    return next(error);
+  }
+};
+
+const extendCreditTransactionTerm = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const transaction = await CreditTransaction.findById(id);
+    if (!transaction) {
+      return res.status(404).json({ message: 'Credit transaction not found.' });
+    }
+
+    await ensureCashierOwnsCreditTransaction({ transaction, user: req.user });
+
+    const remaining = Number(transaction.remainingBalance || 0);
+    if (remaining <= 0) {
+      return res.status(400).json({ message: 'Cannot extend term for a fully paid account.' });
+    }
+
+    const { extensionDays } = await applyCreditTermExtension({
+      transaction,
+      extensionDays: req.body?.extensionDays,
+    });
+
+    transaction.status = resolveStatus({
+      remainingBalance: transaction.remainingBalance,
+      amountPaid: transaction.amountPaid,
+      dueDate: transaction.dueDate,
+      status: transaction.status,
+    });
+    await transaction.save();
+
+    const sale = await Sale.findById(transaction.orderId);
+    if (sale) {
+      sale.creditTermDays = Number(transaction.termDays || 0);
+      sale.dueDate = transaction.dueDate;
+      await sale.save();
+    }
+
+    const note = normalizeString(req.body?.note);
+    await writeActivityLog({
+      user: req.user,
+      action: 'Extended Credit Term',
+      details: `Credit transaction ${transaction.creditTransactionId} term extended by ${extensionDays} day(s). New term: ${transaction.termDays} day(s).`,
+      metadata: {
+        note,
+      },
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent') || '',
+    });
+
+    publishCreditTransactionsUpdated({
+      reason: 'credit-transaction.term-extended',
+      creditTransactionId: transaction._id,
+    });
+
+    return res.json(transaction);
+  } catch (error) {
+    if (error?.status) {
+      return res.status(error.status).json({ message: error.message });
+    }
+    return next(error);
+  }
+};
+
+const cancelCreditTransaction = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const transaction = await CreditTransaction.findById(id);
+    if (!transaction) {
+      return res.status(404).json({ message: 'Credit transaction not found.' });
+    }
+
+    await ensureCashierOwnsCreditTransaction({ transaction, user: req.user });
+
+    if (String(transaction.status || '').toLowerCase() === 'cancelled') {
+      return res.json({ message: 'Credit transaction already cancelled.', transaction });
+    }
+
+    const reason = normalizeString(req.body?.reason);
+    if (!reason) {
+      return res.status(400).json({ message: 'Cancellation reason is required.' });
+    }
+
+    transaction.cancelReason = reason;
+    transaction.cancelledAt = new Date();
+    transaction.cancelledBy = req.user?._id || null;
+    transaction.status = 'Cancelled';
+    await transaction.save();
+
+    await writeActivityLog({
+      user: req.user,
+      action: 'Cancelled Credit Transaction',
+      details: `Cancelled credit transaction ${transaction.creditTransactionId}.`,
+      metadata: {
+        reason,
+        orderId: transaction.orderId,
+      },
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent') || '',
+    });
+
+    publishCreditTransactionsUpdated({
+      reason: 'credit-transaction.cancelled',
+      creditTransactionId: transaction._id,
+    });
+
+    return res.json({ message: 'Credit transaction cancelled.', transaction });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+module.exports = {
+  listCreditTransactions,
+  getCreditTransactionsSummary,
+  getCreditTransactionById,
+  recordCreditPayment,
+  markCreditTransactionFullyPaid,
+  getCreditTransactionProofOfPayment,
+  extendCreditTransactionTerm,
+  cancelCreditTransaction,
+};

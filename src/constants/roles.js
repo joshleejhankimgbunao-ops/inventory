@@ -29,13 +29,15 @@ export const pageAccess = {
     // point‑of‑sale should be available to admin again alongside superadmin and cashiers
     POS:            [_roleOrder[2], _roleOrder[1], _roleOrder[0]],
     // history/logs should also be visible to cashiers (they may need to review their own sales)
-    History:        [ROLES.SUPER_ADMIN, ROLES.CASHIER],
+    History:        [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.CASHIER],
     Inventory:      [ROLES.SUPER_ADMIN, ROLES.ADMIN],
-    ProductList:    [ROLES.SUPER_ADMIN, ROLES.ADMIN],
+    ProductList:    [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.CASHIER],
     Reports:        [ROLES.SUPER_ADMIN, ROLES.ADMIN],
     Settings:       [ROLES.SUPER_ADMIN, ROLES.ADMIN],
     UserList:       [ROLES.SUPER_ADMIN],
     Partners:       [ROLES.SUPER_ADMIN, ROLES.ADMIN],
+    SpecialOrders:  [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.CASHIER],
+    CreditTransactions: [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.CASHIER],
     Profile:        [_roleOrder[2], _roleOrder[1], _roleOrder[0]]
 };
 

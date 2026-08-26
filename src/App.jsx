@@ -4,10 +4,14 @@ import { Toaster, ToastBar } from 'react-hot-toast';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import ResetCredential from './pages/ResetCredential';
-import { getAuthToken, clearAuthToken } from './services/apiClient';
+import { getAuthToken, clearAuthToken, AUTH_SESSION_EXPIRED_EVENT } from './services/apiClient';
+import { logoutApi } from './services/authApi';
+import { resumeRealtime, stopRealtime } from './services/realtimeClient';
+import { useAuth } from './context/AuthContext';
 import './App.css';
 
 function App() {
+  const { clearAuthenticatedSession } = useAuth();
   // Token in session storage is the single source of auth state on the client.
   const [isAuthenticated, setIsAuthenticated] = useState(() => {
     return Boolean(getAuthToken());
@@ -31,20 +35,40 @@ function App() {
     }
   }, [isAuthenticated, isPublicRoute, isLoginRoute, navigate]);
 
+  useEffect(() => {
+    const handleSessionExpired = () => {
+      stopRealtime();
+      clearAuthenticatedSession();
+      clearAuthToken();
+      setIsAuthenticated(false);
+      navigate('/login', { replace: true });
+    };
+
+    window.addEventListener(AUTH_SESSION_EXPIRED_EVENT, handleSessionExpired);
+    return () => {
+      window.removeEventListener(AUTH_SESSION_EXPIRED_EVENT, handleSessionExpired);
+    };
+  }, [navigate, clearAuthenticatedSession]);
+
   const handleLogin = () => {
     setIsAuthenticated(true);
+    resumeRealtime();
     navigate('/dashboard', { replace: true });
   };
 
-  const handleLogout = () => {
-    // wipe all session-based user state so next login starts clean
-    sessionStorage.removeItem('userRole');
-    sessionStorage.removeItem('userName');
-    sessionStorage.removeItem('userAvatar');
-    sessionStorage.removeItem('authUsername');
-    clearAuthToken();
-    setIsAuthenticated(false);
-    navigate('/login', { replace: true });
+  const handleLogout = async () => {
+    try {
+      await logoutApi();
+    } catch {
+      // Continue local sign-out even if logout logging request fails.
+    } finally {
+      // wipe all session-based user state so next login starts clean
+      stopRealtime();
+      clearAuthenticatedSession();
+      clearAuthToken();
+      setIsAuthenticated(false);
+      navigate('/login', { replace: true });
+    }
   };
 
   return (
@@ -89,7 +113,7 @@ function App() {
               <div className="flex flex-col w-full relative min-w-60">
                 <div className="flex items-center gap-3 px-4 py-3">
                   <span className="shrink-0 scale-100">{icon}</span>
-                  <div className="text-xs font-bold leading-relaxed">{message}</div>
+                  <div className="text-xs font-semibold leading-relaxed">{message}</div>
                 </div>
                 {t.type !== 'loading' && t.duration !== Infinity && (
                   <div className="h-0.5 w-full bg-white/10 mt-auto">

@@ -12,8 +12,57 @@ import {
     archivePartnerApi,
     restorePartnerApi,
 } from '../services/inventoryApi';
+import { getAuthToken } from '../services/apiClient';
+import { subscribeRealtimeEvent } from '../services/realtimeClient';
+import Pagination from '../components/Pagination';
+import ArchiveIcon from '../components/ArchiveIcon';
+import EditIcon from '../components/EditIcon';
 
 const EMAIL_RULE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PARTNERS_PER_PAGE = 15;
+
+const parseLegacySupplierNoteToCapabilities = (noteValue) => {
+    const note = String(noteValue || '').trim();
+    if (!note) return [];
+
+    const chunks = note
+        .split(/[\n,;]+/)
+        .map((entry) => String(entry || '').trim())
+        .filter(Boolean);
+
+    const normalized = chunks
+        .map((chunk) => {
+            const parenthesisMatch = chunk.match(/^(.+?)\s*\((.+)\)$/);
+            if (parenthesisMatch) {
+                return {
+                    category: String(parenthesisMatch[1] || '').trim(),
+                    brand: String(parenthesisMatch[2] || '').trim(),
+                };
+            }
+
+            const bulletParts = chunk.split(/\s*[•:-]\s*/).map((part) => String(part || '').trim()).filter(Boolean);
+            if (bulletParts.length >= 2) {
+                return {
+                    category: bulletParts[0],
+                    brand: bulletParts.slice(1).join(' '),
+                };
+            }
+
+            return {
+                category: chunk,
+                brand: '',
+            };
+        })
+        .filter((entry) => entry.category && !['general', 'regular', 'n/a'].includes(entry.category.toLowerCase()));
+
+    const seen = new Set();
+    return normalized.filter((entry) => {
+        const key = `${entry.category.toLowerCase()}::${entry.brand.toLowerCase()}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+};
 
 const Partners = ({ viewOnly = false }) => {
     const { appSettings: settings, currentUserName, userRole } = useAuth();
@@ -22,13 +71,15 @@ const Partners = ({ viewOnly = false }) => {
 
     const successToastId = useRef(null);
     const [activeTab, setActiveTab] = useState('suppliers');
+    const showActionsColumn = !isViewOnly || activeTab === 'suppliers';
     const [searchQuery, setSearchQuery] = useState('');
+    const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
+    const [currentPage, setCurrentPage] = useState(1);
     const [isAddModalOpen, setIsAddModalOpen] = useState(false);
     
-    // New State for Menu
-    const [openMenuId, setOpenMenuId] = useState(null);
     const [isEditMode, setIsEditMode] = useState(false);
     const [editingId, setEditingId] = useState(null);
+    const [editingUpdatedAt, setEditingUpdatedAt] = useState(null);
     const [showArchived, setShowArchived] = useState(false);
     const [isArchiveModalOpen, setIsArchiveModalOpen] = useState(false);
     const [partnerToArchive, setPartnerToArchive] = useState(null);
@@ -40,6 +91,14 @@ const Partners = ({ viewOnly = false }) => {
 
     const [suppliers, setSuppliers] = useState([]);
     const [customers, setCustomers] = useState([]);
+    const [capabilityDraft, setCapabilityDraft] = useState({ category: '', brand: '' });
+
+    const syncSupplierNoteFromCapabilities = React.useCallback((capabilities) => {
+        const categories = [...new Set((Array.isArray(capabilities) ? capabilities : [])
+            .map((entry) => String(entry?.category || '').trim())
+            .filter(Boolean))];
+        return categories.length > 0 ? categories.join(', ') : 'General';
+    }, []);
 
     const mapPartnerToUi = React.useCallback((partner) => {
         const base = {
@@ -49,22 +108,75 @@ const Partners = ({ viewOnly = false }) => {
             email: partner?.email || '',
             address: partner?.address || '',
             isArchived: Boolean(partner?.isArchived),
+            updatedAt: partner?.updatedAt || null,
         };
 
         if ((partner?.type || '').toLowerCase() === 'supplier') {
-            return { ...base, products: partner?.note || 'General' };
+            const capabilities = (Array.isArray(partner?.supplierCapabilities) ? partner.supplierCapabilities : [])
+                .map((entry) => ({
+                    category: String(entry?.category || '').trim(),
+                    brand: String(entry?.brand || '').trim(),
+                }))
+                .filter((entry) => entry.category);
+
+            const noteText = String(partner?.note || '').trim();
+            const legacyCapabilities = capabilities.length === 0 ? parseLegacySupplierNoteToCapabilities(noteText) : [];
+            const effectiveCapabilities = capabilities.length > 0 ? capabilities : legacyCapabilities;
+
+            const displayProducts = effectiveCapabilities.length > 0
+                ? syncSupplierNoteFromCapabilities(effectiveCapabilities)
+                : (noteText || 'General');
+
+            return { ...base, products: displayProducts, supplierCapabilities: effectiveCapabilities };
         }
 
-        return { ...base, type: partner?.note || 'Regular' };
-    }, []);
+        return {
+            ...base,
+            type: partner?.note || 'Regular',
+        };
+    }, [syncSupplierNoteFromCapabilities]);
 
     const loadPartners = React.useCallback(async () => {
         setIsLoadingPartners(true);
         try {
-            const [supplierRows, customerRows] = await Promise.all([
+            let [supplierRows, customerRows] = await Promise.all([
                 listPartnersApi({ type: 'supplier', includeArchived: true }),
                 listPartnersApi({ type: 'customer', includeArchived: true }),
             ]);
+
+            if (!isViewOnly) {
+                const suppliersToMigrate = (supplierRows || []).filter((partner) => {
+                    const currentCapabilities = Array.isArray(partner?.supplierCapabilities) ? partner.supplierCapabilities : [];
+                    if (currentCapabilities.length > 0) return false;
+                    return parseLegacySupplierNoteToCapabilities(partner?.note).length > 0;
+                });
+
+                if (suppliersToMigrate.length > 0) {
+                    await Promise.allSettled(
+                        suppliersToMigrate.map((partner) => {
+                            const migratedCapabilities = parseLegacySupplierNoteToCapabilities(partner?.note);
+                            const migratedNote = syncSupplierNoteFromCapabilities(migratedCapabilities);
+                            const partnerId = String(partner?._id || partner?.id || '').trim();
+
+                            if (!partnerId || migratedCapabilities.length === 0) {
+                                return Promise.resolve();
+                            }
+
+                            return updatePartnerApi(
+                                partnerId,
+                                {
+                                    supplierCapabilities: migratedCapabilities,
+                                    note: migratedNote,
+                                    type: 'supplier',
+                                },
+                                { expectedUpdatedAt: partner?.updatedAt || null }
+                            );
+                        })
+                    );
+
+                    supplierRows = await listPartnersApi({ type: 'supplier', includeArchived: true });
+                }
+            }
 
             setSuppliers((supplierRows || []).map(mapPartnerToUi));
             setCustomers((customerRows || []).map(mapPartnerToUi));
@@ -73,23 +185,135 @@ const Partners = ({ viewOnly = false }) => {
         } finally {
             setIsLoadingPartners(false);
         }
-    }, [mapPartnerToUi]);
+    }, [isViewOnly, mapPartnerToUi, syncSupplierNoteFromCapabilities]);
 
     React.useEffect(() => {
         loadPartners();
     }, [loadPartners]);
 
-    const [newPartner, setNewPartner] = useState({ name: '', contact: '', email: '', address: '', note: '' });
+    React.useEffect(() => {
+        const token = getAuthToken();
+        if (!token) {
+            return undefined;
+        }
 
-    const filteredData = (activeTab === 'suppliers' ? suppliers : customers).filter(item => {
-        const matchesSearch = item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-            item.contact.includes(searchQuery) ||
-            item.email.toLowerCase().includes(searchQuery.toLowerCase());
+        const unsubscribe = subscribeRealtimeEvent('partners.updated', () => {
+            void loadPartners();
+        });
+
+        return () => {
+            unsubscribe();
+        };
+    }, [loadPartners]);
+
+    const [newPartner, setNewPartner] = useState({ name: '', contact: '', email: '', address: '', note: '', supplierCapabilities: [] });
+
+    const supplierCategoryOptions = React.useMemo(
+        () => [...new Set(inventory.map((item) => String(item?.category || '').trim()).filter(Boolean))]
+            .sort((a, b) => a.localeCompare(b)),
+        [inventory]
+    );
+
+    const supplierBrandOptions = React.useMemo(() => {
+        const selectedCategory = String(capabilityDraft.category || '').trim().toLowerCase();
+        const rows = (inventory || []).filter((item) => {
+            if (!selectedCategory) return true;
+            return String(item?.category || '').trim().toLowerCase() === selectedCategory;
+        });
+
+        return [...new Set(rows.map((item) => String(item?.brand || '').trim()).filter(Boolean))]
+            .sort((a, b) => a.localeCompare(b));
+    }, [capabilityDraft.category, inventory]);
+
+    React.useEffect(() => {
+        const timeoutId = window.setTimeout(() => {
+            setDebouncedSearchQuery(searchQuery);
+        }, 250);
+
+        return () => {
+            window.clearTimeout(timeoutId);
+        };
+    }, [searchQuery]);
+
+    const filteredDataBase = (activeTab === 'suppliers' ? suppliers : customers).filter(item => {
+        const query = debouncedSearchQuery.toLowerCase();
+        const matchesSearch = !query
+            || item.name.toLowerCase().includes(query)
+            || item.contact.includes(debouncedSearchQuery)
+            || item.email.toLowerCase().includes(query);
         if (showArchived) return item.isArchived && matchesSearch;
         return !item.isArchived && matchesSearch;
     });
 
+    const filteredData = filteredDataBase;
+    const totalPages = Math.ceil(filteredData.length / PARTNERS_PER_PAGE);
+    const activePage = Math.min(currentPage, Math.max(totalPages, 1));
+    const indexOfFirstPartner = (activePage - 1) * PARTNERS_PER_PAGE;
+    const paginatedData = filteredData.slice(indexOfFirstPartner, indexOfFirstPartner + PARTNERS_PER_PAGE);
+    const displayStart = filteredData.length === 0 ? 0 : indexOfFirstPartner + 1;
+    const displayEnd = Math.min(indexOfFirstPartner + PARTNERS_PER_PAGE, filteredData.length);
+    React.useEffect(() => {
+        setCurrentPage(1);
+    }, [activeTab, debouncedSearchQuery, showArchived]);
+
+    React.useEffect(() => {
+        setCurrentPage((previous) => Math.min(previous, Math.max(totalPages, 1)));
+    }, [totalPages]);
+
+    const directorySearchSuggestions = React.useMemo(() => {
+        const sourceRows = activeTab === 'suppliers' ? suppliers : customers;
+        const terms = new Set();
+
+        sourceRows.forEach((item) => {
+            [item?.name, item?.contact, item?.email]
+                .forEach((value) => {
+                    const text = String(value || '').trim();
+                    if (text) {
+                        terms.add(text);
+                    }
+                });
+        });
+
+        return Array.from(terms)
+            .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+            .slice(0, 120);
+    }, [activeTab, suppliers, customers]);
+
     const archivedCount = (activeTab === 'suppliers' ? suppliers : customers).filter(i => i.isArchived).length;
+
+    const addSupplierCapability = () => {
+        const category = String(capabilityDraft.category || '').trim();
+        const brand = String(capabilityDraft.brand || '').trim();
+        if (!category) return;
+
+        setNewPartner((prev) => {
+            const current = Array.isArray(prev.supplierCapabilities) ? prev.supplierCapabilities : [];
+            const key = `${category.toLowerCase()}::${brand.toLowerCase()}`;
+            const exists = current.some((entry) => (`${String(entry?.category || '').trim().toLowerCase()}::${String(entry?.brand || '').trim().toLowerCase()}`) === key);
+            if (exists) return prev;
+
+            const supplierCapabilities = [...current, { category, brand }];
+            return {
+                ...prev,
+                supplierCapabilities,
+                note: syncSupplierNoteFromCapabilities(supplierCapabilities),
+            };
+        });
+
+        setCapabilityDraft({ category: '', brand: '' });
+    };
+
+    const removeSupplierCapability = (indexToRemove) => {
+        setNewPartner((prev) => {
+            const current = Array.isArray(prev.supplierCapabilities) ? prev.supplierCapabilities : [];
+            const supplierCapabilities = current.filter((_, index) => index !== indexToRemove);
+            return {
+                ...prev,
+                supplierCapabilities,
+                note: syncSupplierNoteFromCapabilities(supplierCapabilities),
+            };
+        });
+    };
 
     const handleRestore = async (id) => {
         if (isViewOnly) return;
@@ -103,8 +327,6 @@ const Partners = ({ viewOnly = false }) => {
             logActivity(currentUserName, 'Restored Partner', `Restored ${activeTab === 'suppliers' ? 'supplier' : 'customer'}: ${item?.name || 'Unknown'}`);
         } catch (error) {
             showToast('Restore Failed', error.message || 'Unable to restore partner.', 'error', 'partner-restore');
-        } finally {
-            setOpenMenuId(null);
         }
     };
 
@@ -124,6 +346,14 @@ const Partners = ({ viewOnly = false }) => {
             showToast('Invalid Contact', 'Contact number must be exactly 11 digits.', 'error', 'partner-validation');
             return;
         }
+
+        if (activeTab === 'suppliers') {
+            const capabilities = Array.isArray(newPartner.supplierCapabilities) ? newPartner.supplierCapabilities : [];
+            if (capabilities.length === 0) {
+                showToast('Missing Fields', 'Add at least one supply capability.', 'error', 'partner-validation');
+                return;
+            }
+        }
         
         const payload = {
             type: activeTab === 'suppliers' ? 'supplier' : 'customer',
@@ -132,11 +362,14 @@ const Partners = ({ viewOnly = false }) => {
             email: normalizedEmail,
             address: newPartner.address,
             note: newPartner.note || (activeTab === 'suppliers' ? 'General' : 'Regular'),
+            supplierCapabilities: activeTab === 'suppliers'
+                ? (Array.isArray(newPartner.supplierCapabilities) ? newPartner.supplierCapabilities : [])
+                : [],
         };
 
         try {
             if (isEditMode && editingId) {
-                await updatePartnerApi(editingId, payload);
+                await updatePartnerApi(editingId, payload, { expectedUpdatedAt: editingUpdatedAt });
                 logActivity(currentUserName, 'Updated Partner', `Updated ${activeTab === 'suppliers' ? 'supplier' : 'customer'}: ${newPartner.name}`);
                 showToast('Partner Updated', `${activeTab === 'suppliers' ? 'Supplier' : 'Customer'} details updated successfully.`, 'success', 'partner-save');
             } else {
@@ -147,27 +380,51 @@ const Partners = ({ viewOnly = false }) => {
 
             await loadPartners();
             setIsAddModalOpen(false);
-            setNewPartner({ name: '', contact: '', email: '', address: '', note: '' });
+            setNewPartner({ name: '', contact: '', email: '', address: '', note: '', supplierCapabilities: [] });
+            setCapabilityDraft({ category: '', brand: '' });
             setIsEditMode(false);
             setEditingId(null);
         } catch (error) {
+            if (Number(error?.status || 0) === 409) {
+                await loadPartners();
+                showToast('Conflict Detected', 'This partner was edited in another session. Data was refreshed.', 'warning', 'partner-conflict');
+                setIsAddModalOpen(false);
+                setIsEditMode(false);
+                setEditingId(null);
+                setEditingUpdatedAt(null);
+                return;
+            }
             showToast('Save Failed', error.message || 'Unable to save partner.', 'error', 'partner-save');
         }
     };
 
     const handleEdit = (item) => {
         if (isViewOnly) return;
+
+        const existingCapabilities = activeTab === 'suppliers' && Array.isArray(item?.supplierCapabilities)
+            ? item.supplierCapabilities.map((entry) => ({
+                category: String(entry?.category || '').trim(),
+                brand: String(entry?.brand || '').trim(),
+            })).filter((entry) => entry.category)
+            : [];
+
+        setCapabilityDraft({
+            category: existingCapabilities[0]?.category || '',
+            brand: '',
+        });
+
         setNewPartner({
             name: item.name,
             contact: item.contact,
             email: item.email,
             address: item.address,
-            note: activeTab === 'suppliers' ? item.products : item.type
+            note: activeTab === 'suppliers' ? item.products : item.type,
+            supplierCapabilities: existingCapabilities,
         });
         setIsEditMode(true);
         setEditingId(item.id);
+        setEditingUpdatedAt(item.updatedAt || null);
         setIsAddModalOpen(true);
-        setOpenMenuId(null);
     };
 
     const handleArchive = (id) => {
@@ -175,7 +432,6 @@ const Partners = ({ viewOnly = false }) => {
         const item = (activeTab === 'suppliers' ? suppliers : customers).find(i => i.id === id);
         setPartnerToArchive(item);
         setIsArchiveModalOpen(true);
-        setOpenMenuId(null);
     };
 
     const confirmArchive = async () => {
@@ -203,7 +459,7 @@ const Partners = ({ viewOnly = false }) => {
 
             const newId = toast.success(
                 <div className="flex flex-col">
-                    <span className="font-extrabold text-base text-white">Optimal Status</span>
+                    <span className="font-semibold text-base text-white">Optimal Status</span>
                     <span className="text-xs font-medium text-gray-300">Optimal inventory levels maintained. No restocking required.</span>
                 </div>, 
                 { 
@@ -229,45 +485,30 @@ const Partners = ({ viewOnly = false }) => {
         setIsRecModalOpen(true);
     };
 
-    // Click outside to close menu
-    React.useEffect(() => {
-        const handleClickOutside = (event) => {
-            if (openMenuId && !event.target.closest('.partner-menu-trigger') && !event.target.closest('.partner-menu-dropdown')) {
-                setOpenMenuId(null);
-            }
-        };
-        document.addEventListener('mousedown', handleClickOutside);
-        return () => document.removeEventListener('mousedown', handleClickOutside);
-    }, [openMenuId]);
-
     return (
-        <div className="h-auto md:h-[calc(100vh-80px)] flex flex-col p-2 gap-2">
-            <div className="bg-slate-200/50 rounded-xl border border-gray-100 shadow-sm flex flex-col h-auto md:h-full relative border-t-8 border-t-[#111827]">
+        <div className="h-auto md:h-[calc(100vh-80px)] flex flex-col gap-2">
+            <div className="bg-slate-200/50 rounded-2xl border border-slate-300 shadow-inner flex flex-col h-auto md:h-full relative">
                 <div className="p-5 pb-0 shrink-0">
                     {/* Header */}
                     <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-6 gap-3">
-                        <div className="flex items-center gap-3">
-                            <div className="bg-gray-900 p-2.5 rounded-xl hidden sm:block">
-                                <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
-                            </div>
-                            <div>
-                                <h1 className="text-4xl md:text-5xl font-black text-gray-900 leading-tight">Partners & Directory</h1>
-                                <p className="text-gray-500 text-xs font-medium mt-0.5">
-                                    {isViewOnly ? 'View suppliers and regular customers (read-only)' : 'Manage your suppliers and regular customers'}
-                                </p>
-                                {isLoadingPartners && (
-                                    <p className="text-[10px] text-gray-500 font-semibold mt-1">Syncing partner data from server...</p>
-                                )}
-                            </div>
+                        <div>
+                            <p className="text-3xl md:text-4xl font-bold text-gray-900 leading-tight">Partners & Directory</p>
+                            <p className="text-gray-500 font-medium text-[11px] md:text-xs mt-0.5">
+                                {isViewOnly ? 'View suppliers and regular customers (read-only)' : 'Manage your suppliers and regular customers'}
+                            </p>
+                            {isLoadingPartners && (
+                                <p className="text-[10px] text-gray-500 font-semibold mt-1">Syncing partner data from server...</p>
+                            )}
                         </div>
                         {!isViewOnly && (
                             <button 
                                 onClick={() => {
                                     setIsEditMode(false);
                                     setIsAddModalOpen(true);
-                                    setNewPartner({ name: '', contact: '', email: '', address: '', note: '' });
+                                    setCapabilityDraft({ category: '', brand: '' });
+                                    setNewPartner({ name: '', contact: '', email: '', address: '', note: '', supplierCapabilities: [] });
                                 }}
-                                className="w-full sm:w-auto px-4 py-2 rounded-lg text-white font-bold text-xs shadow-md flex items-center justify-center gap-2 transition-all hover:opacity-90 transform hover:-translate-y-0.5 whitespace-nowrap"
+                                className="w-full sm:w-auto px-4 py-2 rounded-lg text-white font-semibold text-xs shadow-md flex items-center justify-center gap-2 transition-all hover:opacity-90 transform hover:-translate-y-0.5 whitespace-nowrap"
                                 style={{ backgroundColor: '#111827' }}
                             >
                                 <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"></path></svg>
@@ -276,18 +517,12 @@ const Partners = ({ viewOnly = false }) => {
                         )}
                     </div>
 
-                    {isViewOnly && (
-                        <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700">
-                            Admin mode: Viewing only. Add, edit, restore, and archive actions are disabled.
-                        </div>
-                    )}
-
                     {/* Tabs & Search */}
                     <div className="flex flex-col sm:flex-row justify-between items-center gap-4 mb-6">
                         <div className="inline-flex rounded-lg bg-gray-100 p-1 w-full sm:w-auto">
                             <button 
                                 onClick={() => setActiveTab('suppliers')}
-                                className={`flex-1 sm:flex-none px-4 py-2 rounded-md text-xs font-bold transition-all ${
+                                className={`flex-1 sm:flex-none px-4 py-2 rounded-md text-xs font-semibold transition-all ${
                                     activeTab === 'suppliers' 
                                         ? 'text-white shadow-sm' 
                                         : 'text-gray-500 hover:text-gray-900'
@@ -298,7 +533,7 @@ const Partners = ({ viewOnly = false }) => {
                             </button>
                             <button 
                                 onClick={() => setActiveTab('customers')}
-                                className={`flex-1 sm:flex-none px-4 py-2 rounded-md text-xs font-bold transition-all ${
+                                className={`flex-1 sm:flex-none px-4 py-2 rounded-md text-xs font-semibold transition-all ${
                                     activeTab === 'customers' 
                                         ? 'text-white shadow-sm' 
                                         : 'text-gray-500 hover:text-gray-900'
@@ -313,7 +548,7 @@ const Partners = ({ viewOnly = false }) => {
                                 <button
                                     onClick={() => setShowArchived(!showArchived)}
                                     title={showArchived ? `Back to Active ${activeTab === 'suppliers' ? 'Suppliers' : 'Customers'}` : `View Archived ${activeTab === 'suppliers' ? 'Suppliers' : 'Customers'}`}
-                                    className={`group/btn shrink-0 px-2.5 py-2 rounded-xl text-xs font-bold inline-flex items-center transition-all border ${
+                                    className={`group/btn shrink-0 px-2.5 py-2 rounded-xl text-xs font-semibold inline-flex items-center transition-all border ${
                                         showArchived 
                                             ? 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100 hover:text-gray-700' 
                                             : 'bg-orange-50 text-orange-600 border-orange-200 hover:bg-orange-100'
@@ -322,7 +557,7 @@ const Partners = ({ viewOnly = false }) => {
                                     {showArchived ? (
                                         <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7 7-7M3 12h13a5 5 0 010 10h-1"></path></svg>
                                     ) : (
-                                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path></svg>
+                                        <ArchiveIcon className="w-3.5 h-3.5" />
                                     )}
                                     <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 group-hover/btn:ml-2 group-hover/btn:max-w-40 group-hover/btn:opacity-100">
                                         {showArchived
@@ -331,154 +566,151 @@ const Partners = ({ viewOnly = false }) => {
                                     </span>
                                 </button>
                             )}
-                            <div className="relative flex-1 sm:w-56 group">
+                            <div className="main-toolbar-search group">
                                 <input 
                                     type="text" 
                                     placeholder="Search directory..." 
                                     value={searchQuery}
+                                    list="partners-search-suggestions"
                                     onChange={(e) => setSearchQuery(e.target.value)}
-                                    className="w-full pl-10 pr-3 py-2 bg-gray-50 dark:bg-gray-700 border-2 border-gray-100 dark:border-gray-600 rounded-xl text-sm focus:bg-white dark:focus:bg-gray-600 focus:border-gray-900 dark:focus:border-gray-400 focus:ring-0 transition-all shadow-sm placeholder:text-gray-400 font-bold text-gray-800 dark:text-gray-200"
+                                    className="main-toolbar-search-input"
                                 />
-                                <div className="absolute left-3 top-1/2 -translate-y-1/2 p-1 bg-white dark:bg-gray-600 rounded-lg shadow-sm border border-gray-100 dark:border-gray-500 group-focus-within:border-gray-900 group-focus-within:bg-gray-900 dark:group-focus-within:border-gray-400 dark:group-focus-within:bg-gray-400 transition-all duration-300">
-                                    <svg className="w-3.5 h-3.5 text-gray-400 dark:text-gray-300 group-focus-within:text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                                <datalist id="partners-search-suggestions">
+                                    {directorySearchSuggestions.map((term) => (
+                                        <option key={term} value={term} />
+                                    ))}
+                                </datalist>
+                                <div className="main-toolbar-search-icon">
+                                    <svg className="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
                                 </div>
                             </div>
                         </div>
                     </div>
                 </div>
 
-                    <div className="flex-1 overflow-y-auto px-5 pb-5">
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                            {filteredData.map(item => (
-                                <div key={item.id} className={`border text-left rounded-xl p-4 transition-shadow group relative overflow-hidden ${
-                                    item.isArchived 
-                                        ? 'bg-orange-50/50 border-orange-200 opacity-75' 
-                                        : 'bg-white border-gray-100 hover:shadow-md'
-                                }`}>
-                                     <div className={`absolute top-0 left-0 right-0 h-1.5 ${item.isArchived ? 'bg-orange-400' : 'bg-[#111827]'}`}></div>
-                                     {item.isArchived && (
-                                        <div className="absolute top-3 left-4 z-10">
-                                            <span className="px-2 py-0.5 rounded-full bg-orange-100 text-orange-600 text-[10px] font-black uppercase tracking-wider">Archived</span>
-                                        </div>
-                                     )}
-                                    
-                                    {!isViewOnly && (
-                                        <div className="absolute top-4 right-4 z-10">
-                                            <button 
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    setOpenMenuId(openMenuId === item.id ? null : item.id);
-                                                }}
-                                                className="partner-menu-trigger text-gray-300 hover:text-gray-600 p-1 rounded-full hover:bg-gray-100 transition-all"
-                                            >
-                                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z"></path></svg>
-                                            </button>
-                                            
-                                            {openMenuId === item.id && (
-                                                <div className="partner-menu-dropdown absolute right-0 mt-1 w-32 bg-white rounded-lg shadow-xl border border-gray-100 py-1 z-20 animate-in fade-in zoom-in-95">
-                                                    {item.isArchived ? (
-                                                        <button 
-                                                            onClick={(e) => {
-                                                                e.stopPropagation();
-                                                                handleRestore(item.id);
-                                                            }}
-                                                            className="w-full text-left px-4 py-2 text-xs font-bold text-teal-600 hover:bg-teal-50 flex items-center gap-2"
+                <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                    <div className="min-h-[280px] flex-1 overflow-auto">
+                        <table className={`main-data-table w-full table-fixed border-separate border-spacing-0 text-left ${showActionsColumn ? 'min-w-[960px]' : 'min-w-[800px]'}`}>
+                            <thead className="sticky top-0 z-10 shadow-sm">
+                                <tr className="bg-gray-900 text-white uppercase tracking-wider">
+                                    <th className={`${showActionsColumn ? 'w-[18%]' : 'w-[21%]'} border border-gray-700 px-3 py-3 text-center text-[11px] font-semibold`}>{activeTab === 'suppliers' ? 'Supplier' : 'Customer'}</th>
+                                    <th className={`${showActionsColumn ? 'w-[18%]' : 'w-[21%]'} border border-gray-700 px-3 py-3 text-center text-[11px] font-semibold`}>{activeTab === 'suppliers' ? 'Category / Product Type' : 'Customer Type'}</th>
+                                    <th className={`${showActionsColumn ? 'w-[14%]' : 'w-[16%]'} border border-gray-700 px-3 py-3 text-center text-[11px] font-semibold`}>Contact</th>
+                                    <th className={`${showActionsColumn ? 'w-[18%]' : 'w-[21%]'} border border-gray-700 px-3 py-3 text-center text-[11px] font-semibold`}>Email</th>
+                                    <th className={`${showActionsColumn ? 'w-[18%]' : 'w-[21%]'} border border-gray-700 px-3 py-3 text-center text-[11px] font-semibold`}>Location</th>
+                                    {showActionsColumn && <th className="w-[14%] border border-gray-700 px-3 py-3 text-center text-[11px] font-semibold">Actions</th>}
+                                </tr>
+                            </thead>
+                            <tbody className="text-sm">
+                                {filteredData.length === 0 ? (
+                                    <tr>
+                                        <td colSpan={showActionsColumn ? 6 : 5} className="p-8 text-center">
+                                            <div className="mx-auto flex max-w-xl flex-col items-center justify-center rounded-3xl border-2 border-dashed border-gray-300 bg-gray-50/50 p-8 text-gray-500">
+                                                <h3 className="mb-1 text-lg font-semibold text-gray-900">
+                                                    {isLoadingPartners
+                                                        ? `Loading ${activeTab === 'suppliers' ? 'suppliers' : 'customers'}...`
+                                                        : showArchived
+                                                            ? 'No archive records'
+                                                            : searchQuery
+                                                                ? `No matching ${activeTab === 'suppliers' ? 'suppliers' : 'customers'}`
+                                                                : `No ${activeTab === 'suppliers' ? 'suppliers' : 'customers'} recorded`}
+                                                </h3>
+                                                <p className="text-sm text-gray-500">
+                                                    {isLoadingPartners
+                                                        ? 'Fetching partner records from the backend. Please wait a moment.'
+                                                        : showArchived
+                                                            ? 'Archived records will appear here once a partner is archived.'
+                                                            : searchQuery
+                                                                ? 'Try a different name, contact number, or email address.'
+                                                                : `Use the Add ${activeTab === 'suppliers' ? 'Supplier' : 'Customer'} button to create the first record.`}
+                                                </p>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                ) : (
+                                    paginatedData.map((item) => (
+                                        <tr key={item.id} className={`border-b border-gray-200 transition-colors duration-200 ${item.isArchived ? 'bg-orange-50/50 hover:bg-orange-50' : 'hover:bg-gray-50'}`}>
+                                            <td className="border border-gray-200 px-3 py-2 text-center">
+                                                <div className="flex flex-col items-center leading-tight">
+                                                    <span className="max-w-full truncate text-xs font-semibold text-gray-900">{item.name}</span>
+                                                    {item.isArchived && <span className="mt-1 rounded border border-orange-200 bg-orange-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-orange-600">Archived</span>}
+                                                </div>
+                                            </td>
+                                            <td className="border border-gray-200 px-3 py-2 text-center text-xs font-medium text-gray-700">{activeTab === 'suppliers' ? item.products : item.type}</td>
+                                            <td className="border border-gray-200 px-3 py-2 text-center text-xs font-medium text-gray-700">{item.contact || '-'}</td>
+                                            <td className="truncate border border-gray-200 px-3 py-2 text-center text-xs font-medium text-gray-700">
+                                                {item.email ? <a href={`mailto:${item.email}`} className="hover:text-gray-900 hover:underline">{item.email}</a> : '-'}
+                                            </td>
+                                            <td className="border border-gray-200 px-3 py-2 text-center text-xs font-medium text-gray-700">{item.address || '-'}</td>
+                                            {showActionsColumn && (
+                                            <td className="border border-gray-200 px-2 py-2 text-center">
+                                                <div className="flex items-center justify-center gap-1">
+                                                    {activeTab === 'suppliers' && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleOpenRecommendations(item)}
+                                                            title="View Restock Plan"
+                                                            aria-label={`View restock plan for ${item.name}`}
+                                                            className="group/btn inline-flex shrink-0 items-center rounded-lg border border-indigo-100 bg-indigo-50 px-2 py-1.5 text-indigo-700 transition-all hover:bg-indigo-100"
                                                         >
-                                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-                                                            Restore
+                                                            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                                                            <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap text-[10px] font-semibold opacity-0 transition-all duration-200 group-hover/btn:ml-1 group-hover/btn:max-w-16 group-hover/btn:opacity-100">Restock</span>
+                                                        </button>
+                                                    )}
+                                                    {!isViewOnly && (item.isArchived ? (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleRestore(item.id)}
+                                                            title="Restore"
+                                                            aria-label={`Restore ${item.name}`}
+                                                            className="group/btn inline-flex shrink-0 items-center rounded-lg border border-teal-100 bg-teal-50 px-2 py-1.5 text-teal-600 transition-all hover:bg-teal-100"
+                                                        >
+                                                            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                                                            <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap text-[10px] font-semibold opacity-0 transition-all duration-200 group-hover/btn:ml-1 group-hover/btn:max-w-16 group-hover/btn:opacity-100">Restore</span>
                                                         </button>
                                                     ) : (
                                                         <>
-                                                            <button 
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation();
-                                                                    handleEdit(item);
-                                                                }}
-                                                                className="w-full text-left px-4 py-2 text-xs font-bold text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleEdit(item)}
+                                                                title="Edit"
+                                                                aria-label={`Edit ${item.name}`}
+                                                                className="group/btn inline-flex shrink-0 items-center rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-gray-600 transition-all hover:bg-gray-100 hover:text-gray-800"
                                                             >
-                                                                <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
-                                                                Edit
+                                                                <EditIcon />
+                                                                <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap text-[10px] font-semibold opacity-0 transition-all duration-200 group-hover/btn:ml-1 group-hover/btn:max-w-12 group-hover/btn:opacity-100">Edit</span>
                                                             </button>
-                                                            <button 
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation();
-                                                                    handleArchive(item.id);
-                                                                }}
-                                                                className="w-full text-left px-4 py-2 text-xs font-bold text-orange-600 hover:bg-orange-50 flex items-center gap-2"
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleArchive(item.id)}
+                                                                title="Archive"
+                                                                aria-label={`Archive ${item.name}`}
+                                                                className="group/btn inline-flex shrink-0 items-center rounded-lg border border-orange-100 bg-orange-50 px-2 py-1.5 text-orange-600 transition-all hover:bg-orange-100"
                                                             >
-                                                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path></svg>
-                                                                Archive
+                                                                <ArchiveIcon />
+                                                                <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap text-[10px] font-semibold opacity-0 transition-all duration-200 group-hover/btn:ml-1 group-hover/btn:max-w-16 group-hover/btn:opacity-100">Archive</span>
                                                             </button>
                                                         </>
-                                                    )}
+                                                    ))}
                                                 </div>
+                                            </td>
                                             )}
-                                        </div>
-                                    )}
+                                        </tr>
+                                    ))
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
 
-                                    <div className="flex items-start gap-4">
-                                        <div className="w-12 h-12 rounded-full flex items-center justify-center text-lg font-bold shrink-0 bg-blue-100 text-blue-600">
-                                            {item.name.charAt(0)}
-                                        </div>
-                                        <div>
-                                            <h3 className="font-bold text-gray-900 line-clamp-1">{item.name}</h3>
-                                            <p className="text-xs text-gray-500 font-medium mb-2">{activeTab === 'suppliers' ? item.products : item.type}</p>
-                                            
-                                            <div className="flex flex-col gap-1.5 mt-3">
-                                                <div className="flex items-center gap-2 text-xs text-gray-600">
-                                                    <svg className="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"></path></svg>
-                                                    {item.contact}
-                                                </div>
-                                                <div className="flex items-center gap-2 text-xs text-gray-600">
-                                                    <svg className="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
-                                                    <a href={`mailto:${item.email}`} className="hover:text-gray-900 transition-colors">{item.email}</a>
-                                                </div>
-                                                <div className="flex items-center gap-2 text-xs text-gray-600">
-                                                    <svg className="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
-                                                    {item.address}
-                                                </div>
-                                            </div>
-                                            
-                                            {/* Smart Recommendations Button */}
-                                            {activeTab === 'suppliers' && (
-                                                <button 
-                                                    onClick={() => handleOpenRecommendations(item)}
-                                                    className="mt-4 w-full bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold py-2 rounded-lg text-xs transition-colors border border-indigo-100 flex items-center justify-center gap-2"
-                                                >
-                                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
-                                                    View Restock Plan
-                                                </button>
-                                            )}
-                                        </div>
-                                    </div>
-                                </div>
-                            ))}
-                            {showArchived && filteredData.length === 0 && (
-                                <div className="col-span-1 md:col-span-2 lg:col-span-3 border-2 border-dashed border-gray-200 rounded-xl p-8 flex flex-col items-center justify-center text-center bg-gray-50/60">
-                                    <div className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center mb-3">
-                                        <svg className="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-                                    </div>
-                                    <p className="text-sm font-black text-gray-800">No archive records</p>
-                                    <p className="text-xs font-medium text-gray-500 mt-1">Archived records will appear here once you archive a supplier or customer.</p>
-                                </div>
-                            )}
-                            {!isViewOnly && !showArchived && (
-                                <button 
-                                    onClick={() => {
-                                        setIsEditMode(false);
-                                        setNewPartner({ name: '', contact: '', email: '', address: '', note: '' });
-                                        setIsAddModalOpen(true);
-                                    }}
-                                    className="border-2 border-dashed border-gray-200 rounded-xl p-4 flex flex-col items-center justify-center text-gray-400 hover:border-gray-900 hover:text-gray-900 transition-all min-h-[160px] group"
-                                >
-                                    <div className="w-10 h-10 rounded-full bg-gray-50 group-hover:bg-gray-900 flex items-center justify-center transition-colors mb-2">
-                                        <svg className="w-6 h-6 text-gray-400 group-hover:text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"></path></svg>
-                                    </div>
-                                    <span className="text-sm font-bold">Add New {activeTab === 'suppliers' ? 'Supplier' : 'Customer'}</span>
-                                </button>
-                            )}
+                    <div className="shrink-0 border-t border-gray-200 bg-slate-200/95 px-4 py-2 shadow-[0_-8px_24px_rgba(0,0,0,0.08)] backdrop-blur-sm md:px-6 md:py-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="text-xs font-medium text-gray-500">
+                                Showing <span className="font-semibold text-gray-900">{displayStart}</span> to <span className="font-semibold text-gray-900">{displayEnd}</span> of <span className="font-semibold text-gray-900">{filteredData.length}</span> results
+                            </div>
+                            <Pagination currentPage={activePage} totalPages={totalPages} onPageChange={setCurrentPage} />
                         </div>
                     </div>
+                </div>
 
                 {/* Add Modal */}
                 {!isViewOnly && isAddModalOpen && (
@@ -494,7 +726,7 @@ const Partners = ({ viewOnly = false }) => {
                                         )}
                                     </div>
                                     <div>
-                                        <h2 className="text-sm font-bold text-gray-900">{isEditMode ? 'Edit' : 'Add New'} {activeTab === 'suppliers' ? 'Supplier' : 'Customer'}</h2>
+                                        <h2 className="text-sm font-semibold text-gray-900">{isEditMode ? 'Edit' : 'Add New'} {activeTab === 'suppliers' ? 'Supplier' : 'Customer'}</h2>
                                         <p className="text-[10px] text-gray-500 mt-0.5">{isEditMode ? 'Update partner details.' : 'Register a new partner to the directory.'}</p>
                                     </div>
                                 </div>
@@ -504,7 +736,7 @@ const Partners = ({ viewOnly = false }) => {
                             </div>
                             <form onSubmit={handleAddPartner} className="space-y-3">
                                 <div>
-                                    <label className="block text-xs font-bold text-gray-700 mb-1">Name / Company</label>
+                                    <label className="block text-xs font-semibold text-gray-700 mb-1">Name / Company</label>
                                     <input 
                                         required 
                                         minLength="2"
@@ -518,7 +750,7 @@ const Partners = ({ viewOnly = false }) => {
                                 </div>
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                     <div>
-                                        <label className="block text-xs font-bold text-gray-700 mb-1">Contact No.</label>
+                                        <label className="block text-xs font-semibold text-gray-700 mb-1">Contact No.</label>
                                         <input 
                                             required 
                                             type="text"
@@ -537,7 +769,7 @@ const Partners = ({ viewOnly = false }) => {
                                         )}
                                     </div>
                                     <div>
-                                        <label className="block text-xs font-bold text-gray-700 mb-1">Email</label>
+                                        <label className="block text-xs font-semibold text-gray-700 mb-1">Email</label>
                                         <input 
                                             type="email" 
                                             placeholder="e.g. partner@example.com"
@@ -550,7 +782,7 @@ const Partners = ({ viewOnly = false }) => {
                                     </div>
                                 </div>
                                 <div>
-                                    <label className="block text-xs font-bold text-gray-700 mb-1">Address</label>
+                                    <label className="block text-xs font-semibold text-gray-700 mb-1">Address</label>
                                     <input 
                                         required
                                         minLength="5"
@@ -562,49 +794,84 @@ const Partners = ({ viewOnly = false }) => {
                                     />
                                 </div>
                                 <div>
-                                    <label className="block text-xs font-bold text-gray-700 mb-1">{activeTab === 'suppliers' ? 'Products Supplied' : 'Customer Type'}</label>
+                                    <label className="block text-xs font-semibold text-gray-700 mb-1">{activeTab === 'suppliers' ? 'Supply Capabilities' : 'Customer Type'}</label>
                                     {activeTab === 'suppliers' ? (
                                         <>
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+                                                <select
+                                                    value={capabilityDraft.category}
+                                                    onChange={(e) => setCapabilityDraft({ category: e.target.value, brand: '' })}
+                                                    className="w-full bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-gray-900 outline-none transition-all"
+                                                >
+                                                    <option value="">Select category</option>
+                                                    {supplierCategoryOptions.map((category) => (
+                                                        <option key={category} value={category}>{category}</option>
+                                                    ))}
+                                                </select>
+
+                                                <input
+                                                    list="supplier-brand-suggestions"
+                                                    value={capabilityDraft.brand}
+                                                    onChange={(e) => setCapabilityDraft((prev) => ({ ...prev, brand: e.target.value }))}
+                                                    placeholder="Brand (optional)"
+                                                    className="w-full bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-gray-900 outline-none transition-all"
+                                                />
+                                                <datalist id="supplier-brand-suggestions">
+                                                    {supplierBrandOptions.map((brand) => (
+                                                        <option key={brand} value={brand} />
+                                                    ))}
+                                                </datalist>
+                                            </div>
+
+                                            <button
+                                                type="button"
+                                                onClick={addSupplierCapability}
+                                                disabled={!capabilityDraft.category}
+                                                className={`w-full mb-2 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-all ${capabilityDraft.category ? 'bg-gray-900 text-white border-gray-900 hover:opacity-90' : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'}`}
+                                            >
+                                                Add Capability
+                                            </button>
+
+                                            <div className="rounded-lg border border-gray-200 bg-gray-50 p-2 min-h-[56px]">
+                                                {(Array.isArray(newPartner.supplierCapabilities) ? newPartner.supplierCapabilities : []).length === 0 ? (
+                                                    <p className="text-[11px] text-gray-500">No capabilities added yet.</p>
+                                                ) : (
+                                                    <div className="flex flex-wrap gap-1.5">
+                                                        {(newPartner.supplierCapabilities || []).map((entry, index) => (
+                                                            <span key={`${entry.category}-${entry.brand}-${index}`} className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-semibold bg-white border border-gray-300 text-gray-700">
+                                                                {entry.category}{entry.brand ? ` • ${entry.brand}` : ''}
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => removeSupplierCapability(index)}
+                                                                    className="text-gray-400 hover:text-gray-700"
+                                                                    aria-label="Remove capability"
+                                                                >
+                                                                    x
+                                                                </button>
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </div>
+                                            <p className="text-[10px] text-gray-400 mt-1">Add category and optional brand per supplier (example: Paints • Boysen).</p>
+                                        </>
+                                    ) : (
+                                        <div className="space-y-2.5">
                                             <input 
                                                 required
-                                                list="product-suggestions"
                                                 type="text" 
-                                                placeholder="e.g. Lumber, Cement, Paints"
+                                                placeholder="e.g. Contractor, Retail"
                                                 className="w-full bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-gray-900 outline-none transition-all" 
                                                 value={newPartner.note}
                                                 onChange={e => setNewPartner({...newPartner, note: e.target.value})}
                                             />
-                                            <datalist id="product-suggestions">
-                                                {/* Common Categories */}
-                                                <option value="Lumbers & Boards" />
-                                                <option value="Cement" />
-                                                <option value="Paints" />
-                                                <option value="Steel" />
-                                                <option value="Tiles" />
-                                                <option value="Hardware" />
-                                                <option value="Electrical" />
-                                                <option value="Plumbing" />
-                                                {/* Dynamic Categories from Inventory */}
-                                                {[...new Set(inventory.map(i => i.category))].filter(Boolean).map(cat => (
-                                                    <option key={cat} value={cat} />
-                                                ))}
-                                            </datalist>
-                                        </>
-                                    ) : (
-                                        <input 
-                                            required
-                                            type="text" 
-                                            placeholder="e.g. Contractor, Retail"
-                                            className="w-full bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-gray-900 outline-none transition-all" 
-                                            value={newPartner.note}
-                                            onChange={e => setNewPartner({...newPartner, note: e.target.value})}
-                                        />
+                                        </div>
                                     )}
                                 </div>
                                 <div className="pt-1">
                                     <button 
                                         type="submit" 
-                                        className="w-full py-2 rounded-lg font-bold uppercase tracking-widest hover:opacity-90 transition-all duration-300 shadow-md transform hover:-translate-y-0.5 text-xs text-center"
+                                        className="w-full py-2 rounded-lg font-semibold tracking-widest hover:opacity-90 transition-all duration-300 shadow-md transform hover:-translate-y-0.5 text-xs text-center"
                                         style={{ backgroundColor: '#111827', color: '#ffffff', border: '2px solid #111827' }}
                                     >
                                         Save {activeTab === 'suppliers' ? 'Supplier' : 'Customer'}
@@ -624,13 +891,13 @@ const Partners = ({ viewOnly = false }) => {
                             <div className="p-6 border-b border-gray-100 bg-gray-50 flex justify-between items-start">
                                 <div>
                                     <div className="flex items-center gap-2 mb-1">
-                                        <div className="bg-indigo-100 p-1.5 rounded-lg">
-                                            <svg className="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                                        <div className="bg-gray-100 p-1.5 rounded-lg">
+                                            <svg className="w-5 h-5 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
                                         </div>
-                                        <h2 className="text-xl font-black text-gray-900">Restock Recommendations</h2>
+                                        <h2 className="text-xl font-semibold text-gray-900">Restock Recommendations</h2>
                                     </div>
                                     <p className="text-sm text-gray-500 font-medium ml-1">
-                                        Suggested order for <span className="text-gray-900 font-bold">{selectedSupplierRecs.supplier.name}</span>
+                                        Suggested order for <span className="text-gray-900 font-semibold">{selectedSupplierRecs.supplier.name}</span>
                                     </p>
                                 </div>
                                 <button onClick={() => setIsRecModalOpen(false)} className="text-gray-400 hover:text-gray-600 p-2 hover:bg-gray-200 rounded-full transition-colors">
@@ -644,7 +911,7 @@ const Partners = ({ viewOnly = false }) => {
                                   <div className="overflow-x-auto">
                                     <table className="w-full text-left border-collapse min-w-[500px]">
                                         <thead>
-                                            <tr className="bg-gray-900 text-xs uppercase tracking-wider text-white font-bold border-b border-gray-700">
+                                            <tr className="bg-gray-900 text-[11px] uppercase tracking-wider text-white font-semibold border-b border-gray-700">
                                                 <th className="px-4 py-3 border border-gray-700">Item Details</th>
                                                 <th className="px-4 py-3 text-center border border-gray-700">Current Stock</th>
                                                 <th className="px-4 py-3 text-center border border-gray-700">Reorder Qty</th>
@@ -654,11 +921,11 @@ const Partners = ({ viewOnly = false }) => {
                                             {selectedSupplierRecs.items.map((item, idx) => (
                                                 <tr key={idx} className="hover:bg-gray-50 transition-colors group">
                                                     <td className="px-4 py-3 border border-gray-200">
-                                                        <p className="font-bold text-gray-900 text-sm">{item.name}</p>
+                                                        <p className="font-semibold text-gray-900 text-sm">{item.name}</p>
                                                         <p className="text-[10px] text-gray-500 font-mono">{item.code} • {item.size}</p>
                                                     </td>
                                                     <td className="px-4 py-3 text-center border border-gray-200">
-                                                        <span className={`px-2 py-1 rounded-md text-xs font-bold ${
+                                                        <span className={`px-2 py-1 rounded-md text-xs font-semibold ${
                                                             item.stock === 0 ? 'bg-red-100 text-red-700' : 'bg-orange-100 text-orange-700'
                                                         }`}>
                                                             {item.stock} Qty
@@ -666,7 +933,7 @@ const Partners = ({ viewOnly = false }) => {
                                                     </td>
                                                     <td className="px-4 py-3 text-center border border-gray-200">
                                                         <div className="flex items-center justify-center gap-2">
-                                                            <span className="text-lg font-black text-indigo-600">+{item.recommendedOrder}</span>
+                                                            <span className="text-lg font-semibold text-black">+{item.recommendedOrder}</span>
                                                             <span className="text-xs text-gray-400 font-medium">to reach target</span>
                                                         </div>
                                                     </td>
@@ -677,7 +944,7 @@ const Partners = ({ viewOnly = false }) => {
                                   </div>
                                 </div>
                                 <p className="text-xs text-center text-gray-400 mt-4 italic">
-                                    * Recommendations based on maintaining healthy stock buffer (Target: 100 units).
+                                    * Recommendations based on maintaining healthy stock buffer (Target: {Number(settings?.maxStockLimit || 100)} units).
                                 </p>
                             </div>
 
@@ -687,7 +954,7 @@ const Partners = ({ viewOnly = false }) => {
                                     onClick={() => {
                                         setIsRecModalOpen(false);
                                     }}
-                                    className="px-5 py-2.5 rounded-xl font-bold transition-all shadow-md transform hover:-translate-y-0.5 text-xs text-white"
+                                    className="px-5 py-2.5 rounded-xl font-semibold transition-all shadow-md transform hover:-translate-y-0.5 text-xs text-white"
                                     style={{ backgroundColor: '#111827' }}
                                 >
                                     Close
@@ -703,28 +970,28 @@ const Partners = ({ viewOnly = false }) => {
                     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
                         <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm md:max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
                             <div className="p-6 text-center">
-                                <div className="mx-auto flex items-center justify-center mb-4 text-red-600">
-                                    <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path></svg>
+                                <div className="mx-auto flex items-center justify-center mb-4 text-orange-600">
+                                    <ArchiveIcon className="w-12 h-12" />
                                 </div>
-                                <h3 className="text-xl font-black text-gray-900 mb-2">
+                                <h3 className="text-xl font-semibold text-gray-900 mb-2">
                                     Archive {activeTab === 'suppliers' ? 'Supplier' : 'Customer'}?
                                 </h3>
                                 <p className="text-gray-500 text-sm mb-6">
-                                    Are you sure you want to archive <span className="font-bold text-gray-900">{partnerToArchive.name}</span>?
+                                    Are you sure you want to archive <span className="font-semibold text-gray-900">{partnerToArchive.name}</span>?
                                 </p>
                                 <div className="flex gap-3">
                                     <button
                                         onClick={() => { setIsArchiveModalOpen(false); setPartnerToArchive(null); }}
-                                        className="flex-1 py-2.5 bg-gray-100 text-gray-700 rounded-xl font-bold text-sm hover:bg-gray-200 transition-colors"
+                                        className="flex-1 py-2.5 bg-gray-100 text-gray-700 rounded-xl font-semibold text-sm hover:bg-gray-200 transition-colors"
                                     >
                                         Cancel
                                     </button>
                                     <button
                                         onClick={confirmArchive}
                                         style={{ backgroundColor: '#111827' }}
-                                        className="flex-1 py-2.5 text-white rounded-xl font-bold text-sm shadow-md hover:opacity-90 transition-all transform hover:-translate-y-0.5"
+                                        className="flex-1 py-2.5 text-white rounded-xl font-semibold text-sm shadow-md hover:opacity-90 transition-all transform hover:-translate-y-0.5"
                                     >
-                                        Confirm
+                                        Archive
                                     </button>
                                 </div>
                             </div>

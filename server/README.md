@@ -9,7 +9,7 @@ cd server
 cp .env.example .env
 ```
 
-Update `.env` values, especially `MONGO_URI` and `JWT_SECRET`.
+Update `.env` values, especially `MONGO_URI` and `JWT_SECRET`. The JWT value must be a random secret of at least 32 bytes; the example value is deliberately rejected.
 
 ## 2) Run
 
@@ -31,7 +31,21 @@ Use reset mode to wipe and reseed:
 npm run seed:reset
 ```
 
-Sample dev credentials are configurable via `SEED_*` env vars in `src/scripts/seed.js`.
+Sample dev credentials are required via explicit `SEED_SUPERADMIN_USERNAME`, `SEED_SUPERADMIN_PASSWORD`, and `SEED_SUPERADMIN_PIN` environment values. No fallback credential is supplied.
+
+Important: owner repair scripts target only the exact `SEED_SUPERADMIN_USERNAME`. They refuse missing credential input and do not select an arbitrary Super Admin account.
+
+If you have a JSON backup downloaded from the Settings screen and only want to recover the superadmin account without wiping the rest of the database, run:
+
+```bash
+node scripts/recoverSuperAdminFromBackup.js --backup path\to\inventory-backup.json
+```
+
+Or use the one-click Windows launcher:
+
+```bash
+Recover_SuperAdmin_From_Backup.bat
+```
 
 ## 3) Health Check
 
@@ -58,7 +72,7 @@ GET /api/health
 - `GET /api/sales/history-view` (superadmin/admin; frontend transaction contract)
 - `PATCH /api/sales/:id/archive` (superadmin/admin)
 - `PATCH /api/sales/:id/restore` (superadmin/admin)
-- `GET /api/settings` (public)
+- `GET /api/settings` (sanitized public projection; authenticated callers receive the full settings document)
 - `PATCH /api/settings` (superadmin/admin)
 - `GET /api/partners` (authenticated)
 - `POST /api/partners` (superadmin/admin)
@@ -93,7 +107,7 @@ The smoke test validates:
 - `GET /api/products`
 - `GET /api/sales`
 
-You can override credentials using env vars:
+The smoke test requires explicit credentials using env vars:
 - `SMOKE_BASE_URL`
 - `SMOKE_USERNAME`
 - `SMOKE_PASSWORD`

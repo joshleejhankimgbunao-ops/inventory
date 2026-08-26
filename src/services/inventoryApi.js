@@ -1,4 +1,4 @@
-import { apiRequest } from './apiClient';
+import { apiBlobRequest, apiRequest } from './apiClient';
 import { getStockStatus } from '../utils/recommendationLogic';
 
 const toStatus = (stock) => {
@@ -13,12 +13,16 @@ export const mapApiProductToUi = (product) => ({
   color: product.color || '',
   size: product.size || '',
   supplier: product.supplierName || product.supplier || 'Local Supplier',
+  imageUrl: product.imageUrl || product.image || '',
   category: product.category || 'General',
   price: Number(product.price || 0),
   stock: Number(product.stock || 0),
   status: toStatus(Number(product.stock || 0)),
+  manualAlternatives: Array.isArray(product.manualAlternatives) ? product.manualAlternatives : [],
+  excludedAlternatives: Array.isArray(product.excludedAlternatives) ? product.excludedAlternatives : [],
   isActive: product.isActive,
   isArchived: product.isActive === false,
+  updatedAt: product.updatedAt || null,
 });
 
 const mapUiProductToApi = (product) => ({
@@ -31,6 +35,7 @@ const mapUiProductToApi = (product) => ({
   color: product.color || '',
   size: product.size || '',
   supplierName: product.supplier || 'Local Supplier',
+  imageUrl: product.imageUrl || '',
   isActive: product.isArchived ? false : true,
 });
 
@@ -47,31 +52,80 @@ export const createProductApi = async (product) => {
   return mapApiProductToUi(created);
 };
 
-export const updateProductApi = async (productId, updates) => {
+export const updateProductApi = async (productId, updates, options = {}) => {
+  const payload = {
+    ...mapUiProductToApi(updates),
+    ...(options.expectedUpdatedAt ? { expectedUpdatedAt: options.expectedUpdatedAt } : {}),
+  };
+
   const updated = await apiRequest(`/api/products/${productId}`, {
     method: 'PATCH',
-    body: JSON.stringify(mapUiProductToApi(updates)),
+    body: JSON.stringify(payload),
   });
   return mapApiProductToUi(updated);
 };
 
-export const updateProductStockApi = async (productId, stock) => {
+export const updateProductStockApi = async (productId, stock, options = {}) => {
+  const adjustmentReason = String(options.adjustmentReason || '').trim();
+
   return apiRequest(`/api/products/${productId}`, {
     method: 'PATCH',
-    body: JSON.stringify({ stock }),
+    body: JSON.stringify({
+      stock,
+      ...(adjustmentReason ? { inventoryAdjustmentReason: adjustmentReason } : {}),
+    }),
   });
 };
 
-export const createSaleApi = async (items, paymentMethod = 'cash', clientRequestId = '') => {
+export const removeProductRecommendationApi = async (productId, alternativeCode) => {
+  const updated = await apiRequest(`/api/products/${productId}/recommendations/${encodeURIComponent(alternativeCode)}`, {
+    method: 'DELETE',
+  });
+  return mapApiProductToUi(updated);
+};
+
+export const createSaleApi = async (items, paymentMethod = 'cash', clientRequestId = '', options = {}) => {
+  const payload = {
+    items,
+    paymentMethod,
+    ...(options.saleType ? { saleType: options.saleType } : {}),
+    ...(options.specialOrderId ? { specialOrderId: options.specialOrderId } : {}),
+    ...(options.specialOrderNumber ? { specialOrderNumber: options.specialOrderNumber } : {}),
+    ...(clientRequestId ? { clientRequestId } : {}),
+    ...(options.customerId ? { customerId: options.customerId } : {}),
+    ...(options.customerName ? { customerName: String(options.customerName).trim() } : {}),
+    ...(options.creditPaymentMode ? { creditPaymentMode: String(options.creditPaymentMode).trim() } : {}),
+    ...(options.creditPaymentModeOther ? { creditPaymentModeOther: String(options.creditPaymentModeOther).trim() } : {}),
+    ...(options.termDays ? { termDays: Number(options.termDays) } : {}),
+    ...(options.notes ? { notes: options.notes } : {}),
+    ...(options.vatMode ? { vatMode: String(options.vatMode).trim() } : {}),
+    ...(options.cashTendered !== undefined ? { cashTendered: String(options.cashTendered).trim() } : {}),
+  };
+
   return apiRequest('/api/sales', {
     method: 'POST',
-    body: JSON.stringify({ items, paymentMethod, ...(clientRequestId ? { clientRequestId } : {}) }),
+    body: JSON.stringify(payload),
   });
 };
 
 export const listSalesHistoryViewApi = async (includeArchived = true) => {
   const sales = await apiRequest(`/api/sales/history-view?includeArchived=${includeArchived ? 'true' : 'false'}`);
-  return Array.isArray(sales) ? sales : [];
+  const paymentMethodLabels = {
+    cash: 'Cash',
+    gcash: 'GCash',
+    card: 'Card',
+    cheque: 'Cheque',
+    other: 'Other',
+    credit: 'Credit',
+  };
+
+  return Array.isArray(sales)
+    ? sales.map((sale) => ({
+        ...sale,
+        paymentMethod: paymentMethodLabels[String(sale?.paymentMethod || '').trim().toLowerCase()]
+          || String(sale?.paymentMethod || 'Cash').trim(),
+      }))
+    : [];
 };
 
 export const listActivityLogsApi = async (limit = 100) => {
@@ -139,10 +193,15 @@ export const createPartnerApi = async (payload) => {
   });
 };
 
-export const updatePartnerApi = async (id, payload) => {
+export const updatePartnerApi = async (id, payload, options = {}) => {
+  const requestPayload = {
+    ...(payload || {}),
+    ...(options.expectedUpdatedAt ? { expectedUpdatedAt: options.expectedUpdatedAt } : {}),
+  };
+
   return apiRequest(`/api/partners/${id}`, {
     method: 'PATCH',
-    body: JSON.stringify(payload),
+    body: JSON.stringify(requestPayload),
   });
 };
 
@@ -155,5 +214,102 @@ export const archivePartnerApi = async (id) => {
 export const restorePartnerApi = async (id) => {
   return apiRequest(`/api/partners/${id}/restore`, {
     method: 'PATCH',
+  });
+};
+
+export const listCreditTransactionsApi = async ({ status = 'All', search = '', includeArchived = false } = {}) => {
+  const params = new URLSearchParams();
+  if (status && status !== 'All') {
+    params.set('status', status);
+  }
+  if (search) {
+    params.set('search', search);
+  }
+  params.set('includeArchived', includeArchived ? 'true' : 'false');
+
+  const rows = await apiRequest(`/api/credit-transactions?${params.toString()}`);
+  return Array.isArray(rows) ? rows : [];
+};
+
+export const getCreditTransactionsSummaryApi = async () => {
+  return apiRequest('/api/credit-transactions/summary');
+};
+
+export const getCreditTransactionByIdApi = async (id) => {
+  return apiRequest(`/api/credit-transactions/${id}`);
+};
+
+export const recordCreditPaymentApi = async (id, payload) => {
+  return apiRequest(`/api/credit-transactions/${id}/payments`, {
+    method: 'POST',
+    body: JSON.stringify(payload || {}),
+  });
+};
+
+export const markCreditTransactionPaidApi = async (id, payload = {}) => {
+  const formData = new FormData();
+  Object.entries(payload || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || key === 'proofFile') return;
+    formData.append(key, String(value));
+  });
+  if (payload?.proofFile) {
+    formData.append('proof', payload.proofFile);
+  }
+
+  return apiRequest(`/api/credit-transactions/${id}/mark-paid`, {
+    method: 'PATCH',
+    body: formData,
+  });
+};
+
+export const getCreditTransactionProofApi = async (id) => {
+  return apiBlobRequest(`/api/credit-transactions/${id}/proof`);
+};
+
+export const extendCreditTransactionTermApi = async (id, payload = {}) => {
+  return apiRequest(`/api/credit-transactions/${id}/extend-term`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+};
+
+export const cancelCreditTransactionApi = async (id, payload = {}) => {
+  return apiRequest(`/api/credit-transactions/${id}/cancel`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+};
+
+export const listSpecialOrdersApi = async ({ status = 'All', search = '' } = {}) => {
+  const params = new URLSearchParams();
+  if (status && status !== 'All') {
+    params.set('status', status);
+  }
+  if (search) {
+    params.set('search', search);
+  }
+
+  const rows = await apiRequest(`/api/special-orders?${params.toString()}`);
+  return Array.isArray(rows) ? rows : [];
+};
+
+export const createSpecialOrderApi = async (payload) => {
+  return apiRequest('/api/special-orders', {
+    method: 'POST',
+    body: JSON.stringify(payload || {}),
+  });
+};
+
+export const updateSpecialOrderApi = async (id, payload) => {
+  return apiRequest(`/api/special-orders/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload || {}),
+  });
+};
+
+export const completeSpecialOrderApi = async (id, payload = {}) => {
+  return apiRequest(`/api/special-orders/${id}/complete`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
   });
 };

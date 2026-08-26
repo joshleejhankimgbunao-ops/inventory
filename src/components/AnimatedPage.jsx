@@ -7,7 +7,7 @@ const animations = {
     exit: { opacity: 0, y: -15, scale: 0.99 }
 };
 
-const AnimatedPage = ({ children }) => {
+const AnimatedPage = ({ children, allowPageScroll = false }) => {
     return (
         <motion.div
             variants={animations}
@@ -15,7 +15,7 @@ const AnimatedPage = ({ children }) => {
             animate="animate"
             exit="exit"
             transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-            className="w-full h-full flex flex-col overflow-hidden"
+            className={`w-full flex flex-col ${allowPageScroll ? 'h-full' : 'h-full overflow-hidden'}`}
         >
             {children}
         </motion.div>

@@ -50,6 +50,7 @@ const listActivityLogs = async (req, res, next) => {
     }
 
     const logs = await ActivityLog.find(query)
+      .populate('userRef', 'name displayName username role')
       .sort({ createdAt: -1 })
       .limit(limit);
 
@@ -85,6 +86,7 @@ const listInventoryLogs = async (req, res, next) => {
     }
 
     const logs = await InventoryLog.find(query)
+      .populate('userRef', 'name displayName username role')
       .sort({ createdAt: -1 })
       .limit(limit);
 

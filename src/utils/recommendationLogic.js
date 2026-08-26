@@ -97,7 +97,7 @@ const _getSystemSuggestions = (targetItem, inventory, settings) => {
         if (item.stock === 0) return false;
 
         // Matching Logic
-        const sameCategory = item.category === targetItem.category;
+        const sameCategory = item.category === targetItem.category; 
         
         const targetName = targetItem.name || '';
         const itemName = item.name || '';
@@ -299,28 +299,37 @@ export const getStockStatus = (item, settings) => {
 
 // NEW: Smart Restock Recommendation for Suppliers
 export const getSupplierRestockRecommendations = (supplier, inventory, settings) => {
-    if (!supplier || !inventory || !supplier.products) return [];
+    if (!supplier || !inventory) return [];
 
-    // 1. Parse Supplier's Product Keywords (e.g. 'Tiles, Paints' -> ['tiles', 'paints'])
     const keywords = supplier.products ? supplier.products.toLowerCase().split(',').map(s => s.trim()).filter(Boolean) : [];
     const supplierName = (supplier?.name || '').toLowerCase();
+    const capabilities = Array.isArray(supplier?.supplierCapabilities)
+        ? supplier.supplierCapabilities
+            .map((entry) => ({
+                category: String(entry?.category || '').trim().toLowerCase(),
+                brand: String(entry?.brand || '').trim().toLowerCase(),
+            }))
+            .filter((entry) => entry.category)
+        : [];
 
     return inventory.filter(item => {
-        // Resolve Threshold
         const lowStockThreshold = getLowStockThreshold(item, settings);
 
-        // Check if item matches any supplier keyword (Category or Name)
         const itemCategory = (item.category || '').toLowerCase();
         const itemName = (item.name || '').toLowerCase();
-        const itemSupplier = (item.supplier || '').toLowerCase(); // Added direct supplier check
+        const itemBrand = (item.brand || '').toLowerCase();
+        const itemSupplier = (item.supplier || '').toLowerCase();
 
-        // Match Logic: 
-        // 1. Direct Supplier Name Match (Strongest)
-        // 2. Keyword Match in Category or Name (Fallback)
-        const isMatch = (itemSupplier && itemSupplier === supplierName) || 
-                        keywords.some(keyword => itemCategory.includes(keyword) || itemName.includes(keyword));
+        const matchesCapabilities = capabilities.length > 0 && capabilities.some((entry) => {
+            if (entry.category !== itemCategory) return false;
+            if (!entry.brand) return true;
+            return entry.brand === itemBrand;
+        });
 
-        // Filter: Match Found AND Stock is Low (using dynamic threshold)
+        const matchesLegacyKeywords = keywords.some(keyword => itemCategory.includes(keyword) || itemName.includes(keyword));
+
+        const isMatch = (itemSupplier && itemSupplier === supplierName) || matchesCapabilities || matchesLegacyKeywords;
+
         return isMatch && item.stock <= lowStockThreshold;
     }).map(item => {
         const itemMaxStock = getTargetStock(item, settings);

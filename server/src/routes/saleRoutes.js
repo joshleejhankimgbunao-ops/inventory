@@ -11,7 +11,7 @@ const { requireAuth, authorizeRoles } = require('../middleware/authMiddleware');
 const router = express.Router();
 
 router.get('/', requireAuth, authorizeRoles('superadmin', 'admin'), listSales);
-router.get('/history-view', requireAuth, authorizeRoles('superadmin', 'admin'), listSalesHistoryView);
+router.get('/history-view', requireAuth, authorizeRoles('superadmin', 'admin', 'cashier'), listSalesHistoryView);
 router.post('/', requireAuth, authorizeRoles('superadmin', 'admin', 'cashier'), createSale);
 router.patch('/:id/archive', requireAuth, authorizeRoles('superadmin', 'admin'), archiveSale);
 router.patch('/:id/restore', requireAuth, authorizeRoles('superadmin', 'admin'), restoreSale);

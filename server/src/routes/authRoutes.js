@@ -1,6 +1,7 @@
 const express = require('express');
 const {
 	login,
+	logout,
 	register,
 	me,
 	updateMyPreferences,
@@ -26,8 +27,7 @@ const {
 
 const router = express.Router();
 
-const isPublicRegisterEnabled =
-	process.env.ALLOW_PUBLIC_REGISTER === 'true' || process.env.NODE_ENV !== 'production';
+const isPublicRegisterEnabled = process.env.ALLOW_PUBLIC_REGISTER === 'true';
 
 if (isPublicRegisterEnabled) {
 	router.post('/register', optionalAuth, register);
@@ -35,6 +35,7 @@ if (isPublicRegisterEnabled) {
 	router.post('/register', requireAuth, authorizeRoles('superadmin'), register);
 }
 router.post('/login', login);
+router.post('/logout', requireAuth, logout);
 router.post('/forgot-password', forgotPasswordLimiter, requestPasswordReset);
 router.post('/reset-password', resetPasswordLimiter, resetPassword);
 router.post('/forgot-pin', forgotPinLimiter, requestPinReset);
@@ -45,8 +46,8 @@ router.post('/me/verify-password', requireAuth, verifyMyCurrentPassword);
 router.post('/me/verify-pin', requireAuth, verifyMyCurrentPin);
 router.patch('/me/profile', requireAuth, updateMyProfile);
 router.patch('/me/email', requireAuth, updateMyEmail);
-router.get('/users', requireAuth, authorizeRoles('superadmin', 'admin'), listUsers);
-router.patch('/users/:username', requireAuth, authorizeRoles('superadmin', 'admin'), updateUserByUsername);
-router.delete('/users/:username', requireAuth, authorizeRoles('superadmin', 'admin'), deleteUserByUsername);
+router.get('/users', requireAuth, authorizeRoles('superadmin'), listUsers);
+router.patch('/users/:username', requireAuth, authorizeRoles('superadmin'), updateUserByUsername);
+router.delete('/users/:username', requireAuth, authorizeRoles('superadmin'), deleteUserByUsername);
 
 module.exports = router;

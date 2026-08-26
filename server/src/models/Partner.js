@@ -34,6 +34,39 @@ const partnerSchema = new mongoose.Schema(
       trim: true,
       default: '',
     },
+    supplierCapabilities: {
+      type: [
+        {
+          category: {
+            type: String,
+            trim: true,
+            default: '',
+          },
+          brand: {
+            type: String,
+            trim: true,
+            default: '',
+          },
+        },
+      ],
+      default: [],
+    },
+    customerType: {
+      type: String,
+      enum: ['regular', 'walk-in', 'vip'],
+      default: 'regular',
+      index: true,
+    },
+    isVerifiedCustomer: {
+      type: Boolean,
+      default: true,
+      index: true,
+    },
+    isVatExempt: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
     isArchived: {
       type: Boolean,
       default: false,

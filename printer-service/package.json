@@ -1,0 +1,17 @@
+{
+  "name": "inventory-receipt-printer-service",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local Windows thermal receipt print bridge for the inventory POS system.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node src/server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "inventory": "file:..",
+    "node-thermal-printer": "^4.6.0"
+  }
+}

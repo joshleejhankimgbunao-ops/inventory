@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const { getJwtSecret } = require('../config/security');
 
 const resolveUserFromAuthorizationHeader = async (authHeader = '') => {
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
@@ -8,7 +9,7 @@ const resolveUserFromAuthorizationHeader = async (authHeader = '') => {
     return null;
   }
 
-  const decoded = jwt.verify(token, process.env.JWT_SECRET);
+  const decoded = jwt.verify(token, getJwtSecret(), { algorithms: ['HS256'] });
   const user = await User.findById(decoded.id).select('-password');
 
   if (!user || !user.isActive) {

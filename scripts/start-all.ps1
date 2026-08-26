@@ -1,10 +1,8 @@
 <#
 Start-All.ps1
 
-Opens three separate PowerShell windows to run:
- - MongoDB (using scripts/powershell/start-mongo.ps1)
- - Backend (server) with `npm run dev`
- - Frontend (root) with `npm run dev`
+Opens backend and frontend PowerShell windows. The backend first verifies the
+configured MongoDB Windows service and `inventory-rs` replica set through `mongo:ensure`.
 
 Usage:
   From project root:
@@ -22,22 +20,25 @@ param(
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $projectRoot = (Resolve-Path (Join-Path $scriptDir '..'))
 $projectRoot = $projectRoot.ProviderPath
-$mongoScript = Join-Path $projectRoot 'scripts\powershell\start-mongo.ps1'
 $backendDir = Join-Path $projectRoot 'server'
+$printerServiceDir = Join-Path $projectRoot 'printer-service'
+$printerServiceLauncher = Join-Path $printerServiceDir 'Start_Printer_Service.bat'
 $frontendDir = $projectRoot
 
 Write-Host "Project root: $projectRoot"
 
 if (-not $UseAtlas) {
-    if (Test-Path $mongoScript) {
-        Write-Host "Starting local MongoDB in a new PowerShell window..."
-        Start-Process -FilePath pwsh -ArgumentList @('-NoExit','-ExecutionPolicy','Bypass','-File',"$mongoScript")
-        Start-Sleep -Seconds 2
-    } else {
-        Write-Warning "Mongo start script not found at: $mongoScript. If you use Atlas, run with -UseAtlas or provide your own mongod." 
-    }
+    Write-Host "The backend will verify the configured MongoDB Windows service and inventory-rs replica set."
 } else {
     Write-Host "Skipping local Mongo startup because -UseAtlas was provided. Ensure MONGO_URI in server/.env points to Atlas."
+}
+
+if (Test-Path $printerServiceLauncher) {
+    Write-Host "Starting receipt printer service in a new PowerShell window..."
+    Start-Process -FilePath $printerServiceLauncher -WorkingDirectory $printerServiceDir
+    Start-Sleep -Seconds 1
+} else {
+    Write-Warning "Printer service launcher not found at: $printerServiceLauncher. Receipt printing will fail until the local printer service is started."
 }
 
 # Start backend in a new PowerShell window

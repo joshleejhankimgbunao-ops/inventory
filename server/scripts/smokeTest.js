@@ -1,9 +1,11 @@
 require('dotenv').config({ quiet: true });
+const { requireExplicitEnv, requireExplicitPinEnv } = require('../src/config/security');
+
 
 const baseUrl = process.env.SMOKE_BASE_URL || 'http://127.0.0.1:5000';
-const username = process.env.SMOKE_USERNAME || 'joshlee';
-const password = process.env.SMOKE_PASSWORD || 'Bunao123.';
-const pin = process.env.SMOKE_PIN || '111111';
+const username = requireExplicitEnv('SMOKE_USERNAME');
+const password = requireExplicitEnv('SMOKE_PASSWORD');
+const pin = requireExplicitPinEnv('SMOKE_PIN');
 
 const fail = (message, details) => {
   console.error(`FAILED: ${message}`);
@@ -202,10 +204,33 @@ const run = async () => {
   if (!publicSettings.ok || !publicSettings.payload?.storeName) {
     fail('/api/settings (public GET) failed.', publicSettings.payload);
   }
+  const allowedPublicSettingKeys = new Set([
+    'storeName',
+    'storeAddress',
+    'contactPhone',
+    'contactPhoneSecondary',
+    'storeMapLink',
+  ]);
+  const unexpectedPublicSettingKeys = Object.keys(publicSettings.payload || {})
+    .filter((key) => !allowedPublicSettingKeys.has(key));
+  if (unexpectedPublicSettingKeys.length > 0) {
+    fail('/api/settings exposed fields outside the public allowlist.', {
+      unexpectedFieldCount: unexpectedPublicSettingKeys.length,
+    });
+  }
   console.log('PASS: Public settings GET check passed.');
 
+  const authenticatedSettings = await requestJson('/api/settings', {
+    method: 'GET',
+    headers: authHeaders,
+  });
+  if (!authenticatedSettings.ok || typeof authenticatedSettings.payload?.autoSync !== 'boolean') {
+    fail('/api/settings (authenticated GET) failed.', authenticatedSettings.payload);
+  }
+  console.log('PASS: Authenticated settings GET check passed.');
+
   const patchPayload = {
-    autoSync: Boolean(publicSettings.payload.autoSync),
+    autoSync: authenticatedSettings.payload.autoSync,
   };
 
   const patchedSettings = await requestJson('/api/settings', {

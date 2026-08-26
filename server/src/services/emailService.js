@@ -94,7 +94,7 @@ const sendResetEmail = async ({ to, purpose, resetUrl, expiresMinutes, recipient
       throw new Error('Mail service is not configured in production.');
     }
 
-    console.warn('[MAIL DEV MODE] SMTP is not configured. Reset link:', resetUrl);
+    console.warn('[MAIL DEV MODE] SMTP is not configured. Reset email was not sent.');
     return { simulated: true };
   }
 

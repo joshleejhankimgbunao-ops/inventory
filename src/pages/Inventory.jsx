@@ -1,4 +1,6 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
+import Pagination from '../components/Pagination';
+import IdentifierChip from '../components/IdentifierChip';
 import toast from 'react-hot-toast';
 import { showToast } from '../utils/toastHelper';
 import { useInventory } from '../context/InventoryContext';
@@ -6,8 +8,16 @@ import { useAuth } from '../context/AuthContext';
 import { getAuthToken } from '../services/apiClient';
 import { updateProductStockApi } from '../services/inventoryApi';
 import { getStockStatus } from '../utils/recommendationLogic';
+import { formatNumber } from '../utils/numberFormat';
+import {
+    isWholeNumberInput,
+    preventInvalidWholeNumberKeyDown,
+    preventInvalidWholeNumberPaste,
+    sanitizeWholeNumberInput,
+} from '../utils/numericInput';
 
 const Inventory = () => {
+    const listContainerRef = useRef(null);
     const { inventory, setInventory, logAction, logActivity } = useInventory();
     const { appSettings, currentUserName } = useAuth();
 
@@ -74,15 +84,27 @@ const Inventory = () => {
     const [isStockModalOpen, setIsStockModalOpen] = useState(false);
     const [modalAction, setModalAction] = useState('IN'); // 'IN' (Add Stock) or 'OUT' (Remove/Adjust)
     const [selectedItem, setSelectedItem] = useState(null);
-    const [stockForm, setStockForm] = useState({ quantity: '', reason: '', notes: '' });
+    const [stockForm, setStockForm] = useState({ quantity: '', reason: '', notes: '', otherReason: '' });
 
     const [statusFilter, setStatusFilter] = useState('All');
     const [categoryFilter, setCategoryFilter] = useState('All');
     const [sortBy, setSortBy] = useState('off'); 
     const [searchQuery, setSearchQuery] = useState('');
+    const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
+    const [enlargedProductImage, setEnlargedProductImage] = useState(null);
     
     // UI State for Filter Panel
     const [isFilterPanelOpen, setIsFilterPanelOpen] = useState(false);
+
+    useEffect(() => {
+        const timeoutId = window.setTimeout(() => {
+            setDebouncedSearchQuery(searchQuery);
+        }, 250);
+
+        return () => {
+            window.clearTimeout(timeoutId);
+        };
+    }, [searchQuery]);
 
     const deriveStatus = (item) => getStockStatus(item, appSettings);
 
@@ -102,11 +124,35 @@ const Inventory = () => {
     // Derived Categories
     const categories = ['All', ...Array.from(new Set(normalizedInventory.map(item => item.category).filter(Boolean))).sort((a, b) => a.localeCompare(b))];
 
+    const inventorySearchSuggestions = useMemo(() => {
+        const terms = new Set();
+
+        normalizedInventory.forEach((item) => {
+            [
+                item?._displayName,
+                item?.code,
+                item?.brand,
+                item?.color,
+                item?._displaySize,
+                item?.category,
+            ].forEach((value) => {
+                const text = String(value || '').trim();
+                if (text) {
+                    terms.add(text);
+                }
+            });
+        });
+
+        return Array.from(terms)
+            .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+            .slice(0, 120);
+    }, [normalizedInventory]);
+
     // Pagination State
     const [currentPage, setCurrentPage] = useState(1);
     const itemsPerPage = 15; 
 
-    // Active filter count for badge
+    // Active filter count for Clear All visibility
     const activeFilterCount = (statusFilter !== 'All' ? 1 : 0) + (categoryFilter !== 'All' ? 1 : 0) + (sortBy !== 'off' ? 1 : 0);
 
     // Filtered & Sorted Logic
@@ -124,7 +170,7 @@ const Inventory = () => {
                 if (categoryFilter !== 'All' && item.category !== categoryFilter) return false;
 
                 // Search
-                const q = searchQuery.toLowerCase();
+                const q = debouncedSearchQuery.toLowerCase();
                 const matchesSearch = !q || item._displayName.toLowerCase().includes(q) || 
                                     item.code.toLowerCase().includes(q) ||
                                     (item.brand || '').toLowerCase().includes(q) ||
@@ -142,40 +188,118 @@ const Inventory = () => {
                     default: return 0;
                 }
             });
-    }, [normalizedInventory, statusFilter, categoryFilter, searchQuery, sortBy, appSettings]);
+    }, [normalizedInventory, statusFilter, categoryFilter, debouncedSearchQuery, sortBy, appSettings]);
 
     useEffect(() => {
         setCurrentPage(1);
-    }, [statusFilter, categoryFilter, searchQuery, sortBy]);
+    }, [statusFilter, categoryFilter, debouncedSearchQuery, sortBy]);
+
+    useEffect(() => {
+        if (!listContainerRef.current) return;
+        listContainerRef.current.scrollTop = 0;
+    }, [currentPage]);
 
     // Pagination Logic
     const indexOfLastItem = currentPage * itemsPerPage;
     const indexOfFirstItem = indexOfLastItem - itemsPerPage;
     const currentItems = filteredInventory.slice(indexOfFirstItem, indexOfLastItem);
     const totalPages = Math.ceil(filteredInventory.length / itemsPerPage);
+    const getProductImageUrl = (item) => String(item?.imageUrl || '').trim();
+    const previewableInventoryItems = useMemo(() => {
+        return filteredInventory.filter((item) => getProductImageUrl(item));
+    }, [filteredInventory]);
 
     const getStatusColor = (status) => {
         switch(status) {
-            case 'Out of Stock': return 'bg-red-50 text-red-600 border border-red-200 font-bold';
-            case 'Low Stock': return 'bg-yellow-50 text-yellow-600 border border-yellow-200 font-bold'; 
-            default: return 'bg-emerald-50 text-emerald-600 border border-emerald-200 font-bold'; 
+            case 'Out of Stock': return 'bg-red-50 text-red-600 border border-red-200 font-semibold';
+            case 'Low Stock': return 'bg-yellow-50 text-yellow-600 border border-yellow-200 font-semibold'; 
+            default: return 'bg-emerald-50 text-emerald-600 border border-emerald-200 font-semibold'; 
         }
     };
+
+    const openProductImagePreview = (item) => {
+        const imageUrl = getProductImageUrl(item);
+        if (!imageUrl) return;
+
+        setEnlargedProductImage({
+            src: imageUrl,
+            alt: item?._displayName || item?.name || item?.code || 'Product image',
+            code: item?.code || imageUrl,
+        });
+    };
+
+    const navigateProductImagePreview = (direction) => {
+        if (!enlargedProductImage || previewableInventoryItems.length <= 1) return;
+
+        const currentIndex = previewableInventoryItems.findIndex((item) => {
+            const itemImageUrl = getProductImageUrl(item);
+            return item.code === enlargedProductImage.code || itemImageUrl === enlargedProductImage.src;
+        });
+
+        if (currentIndex < 0) return;
+
+        const nextIndex = (currentIndex + direction + previewableInventoryItems.length) % previewableInventoryItems.length;
+        const nextItem = previewableInventoryItems[nextIndex];
+
+        setEnlargedProductImage({
+            src: getProductImageUrl(nextItem),
+            alt: nextItem?._displayName || nextItem?.name || nextItem?.code || 'Product image',
+            code: nextItem?.code || getProductImageUrl(nextItem),
+        });
+    };
+
+    const closeProductImagePreview = () => {
+        setEnlargedProductImage(null);
+    };
+
+    useEffect(() => {
+        if (!enlargedProductImage) return;
+
+        const handleKeyDown = (event) => {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                closeProductImagePreview();
+                return;
+            }
+
+            if (event.key === 'ArrowLeft') {
+                event.preventDefault();
+                navigateProductImagePreview(-1);
+                return;
+            }
+
+            if (event.key === 'ArrowRight') {
+                event.preventDefault();
+                navigateProductImagePreview(1);
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [enlargedProductImage, previewableInventoryItems]);
 
     // --- STOCK MANAGEMENT LOGIC ---
 
     const handleOpenStockModal = (item, action) => {
         setSelectedItem(item);
         setModalAction(action);
-        setStockForm({ quantity: '', reason: action === 'IN' ? 'Delivery' : 'Damage', notes: '' });
+        setStockForm({ quantity: '', reason: action === 'IN' ? 'Delivery' : 'Damage', notes: '', otherReason: '' });
         setIsStockModalOpen(true);
     };
 
     const handleStockSubmit = async (e) => {
         e.preventDefault();
-        const qty = Number(stockForm.quantity);
-        if (!selectedItem || !Number.isInteger(qty) || qty <= 0) {
+        const hasValidQuantity = isWholeNumberInput(stockForm.quantity, { min: 1 });
+        const qty = hasValidQuantity ? Number(stockForm.quantity) : 0;
+        const reasonValue = stockForm.reason === 'Other'
+            ? String(stockForm.otherReason || '').trim()
+            : String(stockForm.reason || '').trim();
+        if (!selectedItem || !hasValidQuantity) {
             showToast('Invalid Quantity', 'Please enter a valid quantity (whole number).', 'error', 'stock-qty');
+            return;
+        }
+        if (!reasonValue) {
+            showToast('Missing Reason', 'Please select or enter a reason.', 'error', 'stock-reason');
             return;
         }
 
@@ -221,17 +345,22 @@ const Inventory = () => {
         const token = getAuthToken();
         if (token && selectedItem.id && selectedUpdatedItem) {
             try {
-                await updateProductStockApi(selectedItem.id, selectedUpdatedItem.stock);
+                await updateProductStockApi(selectedItem.id, selectedUpdatedItem.stock, {
+                    adjustmentReason: reasonValue,
+                });
             } catch (error) {
                 showToast('Sync Failed', error.message || 'Stock change was not synced to server.', 'error', 'stock-sync');
             }
         }
         
         // Detailed Logging
-        const logAction = modalAction === 'IN' ? 'STOCK_IN' : 'STOCK_OUT';
-        const logDesc = modalAction === 'IN' 
-            ? `Received ${qty} Qty via ${stockForm.reason}` 
-            : `Removed ${qty} Qty due to ${stockForm.reason}`;
+        const actualQuantityChanged = Math.abs(Number(selectedUpdatedItem?.stock || 0) - currentStock);
+        const logAction = actualQuantityChanged === 0 ? 'UPDATE' : (modalAction === 'IN' ? 'ADD' : 'DEDUCT');
+        const logDesc = actualQuantityChanged === 0
+            ? `Updated product ${selectedItem.name}`
+            : modalAction === 'IN'
+                ? `Added ${actualQuantityChanged} of ${selectedItem.name} — Reason: ${reasonValue}`
+                : `Deducted ${actualQuantityChanged} of ${selectedItem.name} — Reason: ${reasonValue}`;
             
         log(logAction, selectedItem.code, logDesc);
         logActivity(currentUserName || 'System', modalAction === 'IN' ? 'Stock In' : 'Stock Out', `${selectedItem.code}: ${logDesc}`);
@@ -245,36 +374,35 @@ const Inventory = () => {
     };
 
     return (
-        <div className="h-auto md:h-[calc(100vh-80px)] flex flex-col gap-2 md:overflow-hidden p-2">
-            <div className="bg-slate-200/50 rounded-xl border border-gray-100 shadow-sm flex flex-col md:h-full md:overflow-hidden relative border-t-8 border-t-[#111827] transition-colors">
+        <div className="h-auto md:h-[calc(100vh-80px)] flex flex-col gap-2 md:overflow-hidden">
+            <div className="bg-slate-200/50 rounded-2xl border border-slate-300 shadow-inner flex flex-col md:h-full md:overflow-hidden relative transition-colors">
 
             {/* Header Area */}
             <div className="p-3 pb-0 md:shrink-0">
-                <div className="flex items-center gap-2 mb-4">
-                    <div className="hidden sm:block">
-                        <svg className="w-6 h-6 text-gray-900" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
-                        </svg>
-                    </div>
-                    <div>
-                        <h1 className="text-4xl md:text-5xl font-black text-gray-900 leading-tight">Stock Operations</h1>
-                        <p className="text-gray-500 dark:text-gray-400 text-xs font-medium mt-1">Manage stock in/out flow and adjustments</p>
-                    </div>
+                <div className="mb-4">
+                    <p className="text-3xl md:text-4xl font-bold text-gray-900 leading-tight">Stock Operations</p>
+                    <p className="text-gray-500 dark:text-gray-400 text-[11px] md:text-xs font-medium mt-1">Manage stock in/out flow and adjustments</p>
                 </div>
 
                 {/* Toolbar */}
                 <div className="flex items-center gap-2 mb-3">
                      {/* Search */}
-                     <div className="relative flex-1 md:flex-none md:w-64 group">
+                     <div className="main-toolbar-search group">
                         <input
                             type="text"
                             placeholder="Search items..."
                             value={searchQuery}
+                            list="inventory-search-suggestions"
                             onChange={(e) => setSearchQuery(e.target.value)}
-                            className="w-full pl-10 pr-3 py-1.5 bg-gray-50 dark:bg-gray-700 border-2 border-gray-100 dark:border-gray-600 rounded-xl text-sm focus:bg-white dark:focus:bg-gray-600 focus:border-gray-900 dark:focus:border-gray-400 focus:ring-0 transition-all shadow-sm placeholder:text-gray-400 font-bold text-gray-800 dark:text-gray-200"
+                            className="main-toolbar-search-input"
                         />
-                         <div className="absolute left-3 top-1/2 -translate-y-1/2 p-0.5 bg-white dark:bg-gray-600 rounded-lg shadow-sm border border-gray-100 dark:border-gray-500 group-focus-within:border-gray-900 group-focus-within:bg-gray-900 dark:group-focus-within:border-gray-400 dark:group-focus-within:bg-gray-400 transition-all duration-300">
-                            <svg className="w-3.5 h-3.5 text-gray-400 dark:text-gray-300 group-focus-within:text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <datalist id="inventory-search-suggestions">
+                            {inventorySearchSuggestions.map((term) => (
+                                <option key={term} value={term} />
+                            ))}
+                        </datalist>
+                         <div className="main-toolbar-search-icon">
+                            <svg className="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                             </svg>
                         </div>
@@ -284,13 +412,10 @@ const Inventory = () => {
                      <div className="relative z-30 inline-flex items-center gap-3">
                         <button 
                             onClick={() => setIsFilterPanelOpen(!isFilterPanelOpen)}
-                            className="px-3 py-2 rounded-xl font-bold text-xs shadow-sm flex items-center gap-1.5 transition-all border-2 bg-gray-900 dark:bg-gray-600 text-white border-gray-900 dark:border-gray-500 hover:opacity-90"
+                            className="shrink-0 whitespace-nowrap px-3 py-2 rounded-xl font-semibold text-xs shadow-sm flex items-center gap-1.5 transition-all border-2 bg-gray-900 dark:bg-gray-600 text-white border-gray-900 dark:border-gray-500 hover:opacity-90"
                         >
                             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"></path></svg>
                             <span>Filter & Sort</span>
-                            {activeFilterCount > 0 && (
-                                <span className="bg-white text-gray-900 dark:bg-gray-300 dark:text-gray-800 text-[10px] font-black w-4 h-4 rounded-full flex items-center justify-center">{activeFilterCount}</span>
-                            )}
                             <svg className={`w-3 h-3 transition-transform ${isFilterPanelOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
                         </button>
 
@@ -299,7 +424,7 @@ const Inventory = () => {
                                 <select
                                     value={categoryFilter}
                                     onChange={(e) => setCategoryFilter(e.target.value)}
-                                    className="appearance-none px-3 py-1.5 rounded-xl text-sm font-bold inline-flex items-center transition-all border-2 bg-gray-900 dark:bg-gray-600 text-white border-gray-900 dark:border-gray-500 hover:opacity-90"
+                                    className="appearance-none px-3 py-1.5 rounded-xl text-sm font-semibold inline-flex items-center transition-all border-2 bg-gray-900 dark:bg-gray-600 text-white border-gray-900 dark:border-gray-500 hover:opacity-90"
                                 >
                                     {categories.map(c => (
                                         <option key={c} value={c}>{c}</option>
@@ -313,12 +438,12 @@ const Inventory = () => {
                                 
                                 {/* Status Section */}
                                 <div className="px-3 pt-2 pb-1">
-                                    <div className="text-[10px] font-black text-gray-400 dark:text-gray-500 uppercase tracking-wider">Status</div>
+                                    <div className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">Status</div>
                                 </div>
                                 <div className="px-2 pb-2 flex flex-wrap gap-1">
                                     {['All', 'In Stock', 'Low Stock', 'Out of Stock'].map(status => (
                                         <button key={status} onClick={() => setStatusFilter(status)}
-                                            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all ${
+                                            className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all ${
                                                 statusFilter === status
                                                 ? 'bg-gray-900 dark:bg-gray-600 text-white shadow-sm'
                                                 : status === 'Low Stock' ? 'bg-yellow-50 text-yellow-600 hover:bg-yellow-100 dark:bg-yellow-900/20 dark:text-yellow-400'
@@ -334,12 +459,12 @@ const Inventory = () => {
 
                                 {/* Sort Section */}
                                 <div className="px-3 pt-2 pb-1">
-                                    <div className="text-[10px] font-black text-gray-400 dark:text-gray-500 uppercase tracking-wider">Sort By</div>
+                                    <div className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">Sort By</div>
                                 </div>
                                 <div className="px-2 pb-2">
-                                    {[{key: 'off', label: 'OFF (No Sorting)'}, {key: 'stock-asc', label: 'Stock ↑ Lowest'}, {key: 'stock-desc', label: 'Stock ↓ Highest'}, {key: 'name-asc', label: 'Name A→Z'}, {key: 'name-desc', label: 'Name Z→A'}].map(opt => (
+                                    {[{key: 'off', label: 'Default'}, {key: 'stock-asc', label: 'Stock ↑ Lowest'}, {key: 'stock-desc', label: 'Stock ↓ Highest'}, {key: 'name-asc', label: 'Name A→Z'}, {key: 'name-desc', label: 'Name Z→A'}].map(opt => (
                                         <button key={opt.key} onClick={() => setSortBy(opt.key)}
-                                            className={`w-full text-left px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center justify-between ${
+                                            className={`w-full text-left px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center justify-between ${
                                                 sortBy === opt.key
                                                 ? 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white'
                                                 : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50'
@@ -356,7 +481,7 @@ const Inventory = () => {
                                         <div className="border-t border-gray-100 dark:border-gray-700 mx-3"></div>
                                         <div className="px-2 pt-2 pb-1">
                                             <button onClick={() => { setStatusFilter('All'); setCategoryFilter('All'); setSortBy('off'); }}
-                                                className="w-full text-center px-3 py-1.5 rounded-lg text-xs font-bold text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20 transition-all">
+                                                className="w-full text-center px-3 py-1.5 rounded-lg text-xs font-semibold text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20 transition-all">
                                                 Clear All Filters
                                             </button>
                                         </div>
@@ -369,7 +494,7 @@ const Inventory = () => {
                      {/* Hint Text */}
                      <div className="ml-auto hidden md:block">
                         <span className="text-[10px] text-gray-400 font-medium bg-gray-50 dark:bg-gray-700/50 px-2 py-1 rounded-md border border-gray-100 dark:border-gray-700">
-                            💡 Use <span className="font-bold text-gray-700 dark:text-gray-300">Product List</span> to add new items
+                             Use <span className="font-semibold text-gray-700 dark:text-gray-300">Product Master List</span> to add new items
                         </span>
                      </div>
                 </div>
@@ -381,22 +506,23 @@ const Inventory = () => {
             </div>
 
             {/* Inventory Table */}
-            <div className="flex-1 overflow-x-auto md:overflow-y-auto px-4 pb-4">
-                <table className="w-full text-left border-separate border-spacing-0 table-fixed min-w-[700px]">
+            <div ref={listContainerRef} className="flex-1 overflow-x-auto md:overflow-y-auto px-4 pb-4">
+                <table className="main-data-table w-full text-left border-separate border-spacing-0 table-fixed min-w-205">
                     <thead className="sticky top-0 z-10 shadow-sm">
                         <tr className="bg-gray-900 dark:bg-gray-700 text-white uppercase tracking-wider">
-                            <th className="py-2 px-3 w-[15%] text-center text-xs font-bold border border-gray-700">Item Code</th>
-                            <th className="py-2 px-3 w-[25%] text-center text-xs font-bold border border-gray-700">Product</th>
-                            <th className="py-2 px-3 w-[15%] text-center text-xs font-bold border border-gray-700">Category</th>
-                            <th className="py-2 px-3 w-[15%] text-center text-xs font-bold border border-gray-700">Current Stock</th>
-                            <th className="py-2 px-3 w-[15%] text-center text-xs font-bold border border-gray-700">Status</th>
-                            <th className="py-2 px-3 w-[15%] text-center text-xs font-bold border border-gray-700">Actions</th>
+                            <th className="py-2 px-3 w-[15%] text-center text-[11px] font-semibold border border-gray-700">SKU</th>
+                            <th className="py-2 px-3 w-[10%] text-center text-[11px] font-semibold border border-gray-700">Photo</th>
+                            <th className="py-2 px-3 w-[25%] text-center text-[11px] font-semibold border border-gray-700">Product</th>
+                            <th className="py-2 px-3 w-[15%] text-center text-[11px] font-semibold border border-gray-700">Category</th>
+                            <th className="py-2 px-3 w-[15%] text-center text-[11px] font-semibold border border-gray-700">Current Stock</th>
+                            <th className="py-2 px-3 w-[10%] text-center text-[11px] font-semibold border border-gray-700">Status</th>
+                            <th className="py-2 px-3 w-[10%] text-center text-[11px] font-semibold border border-gray-700">Actions</th>
                         </tr>
                     </thead>
                     <tbody className="text-sm divide-y divide-gray-100 dark:divide-gray-700">
                         {filteredInventory.length === 0 ? (
                             <tr>
-                                <td colSpan="6" className="p-12 text-center text-gray-400 dark:text-gray-500">
+                                <td colSpan="7" className="p-12 text-center text-gray-400 dark:text-gray-500">
                                     <div className="flex flex-col items-center">
                                         <svg className="w-12 h-12 mb-3 text-gray-200 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"></path></svg>
                                         <p className="font-medium">No inventory items found matching your filters.</p>
@@ -407,11 +533,39 @@ const Inventory = () => {
                             currentItems.map((item) => (
                                 <tr key={item.code} className="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors group">
                                     <td className="py-2 px-3 text-center border border-gray-200 dark:border-gray-700">
-                                        <span className="font-mono text-gray-500 dark:text-gray-400 font-bold text-xs">{item.code}</span>
+                                        <IdentifierChip>{item.code}</IdentifierChip>
+                                    </td>
+                                    <td className="py-2 px-3 text-center border border-gray-200 dark:border-gray-700">
+                                        {getProductImageUrl(item) ? (
+                                            <button
+                                                type="button"
+                                                onClick={() => openProductImagePreview(item)}
+                                                className="group/photo mx-auto relative h-12 w-12 rounded-xl overflow-hidden border flex items-center justify-center transition-transform duration-150 hover:scale-105 focus:outline-none focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-300 bg-gray-100 border-gray-200 dark:bg-gray-700 dark:border-gray-600"
+                                                aria-label={`Enlarge image for ${item._displayName || item.name || item.code || 'product'}`}
+                                            >
+                                                <img
+                                                    src={getProductImageUrl(item)}
+                                                    alt={item._displayName || item.name || item.code || 'Product'}
+                                                    className="h-full w-full object-cover transition-all duration-200 group-hover/photo:scale-110 group-hover/photo:opacity-35 group-hover/photo:blur-[1.5px]"
+                                                    loading="lazy"
+                                                />
+                                                <div className="absolute inset-0 flex items-center justify-center pointer-events-none bg-black/0 opacity-0 transition-all duration-150 group-hover/photo:bg-black/45 group-hover/photo:opacity-100">
+                                                    <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-white/92 text-gray-900 shadow-md ring-1 ring-black/5">
+                                                        <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 3H3v5M3 3l6 6M16 3h5v5m0-5l-6 6M8 21H3v-5m0 5l6-6M16 21h5v-5m0 5l-6-6"></path>
+                                                        </svg>
+                                                    </span>
+                                                </div>
+                                            </button>
+                                        ) : (
+                                            <div className="mx-auto h-12 w-12 rounded-xl border border-dashed border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 flex items-center justify-center text-[11px] font-semibold text-gray-400 dark:text-gray-500">
+                                                IMG
+                                            </div>
+                                        )}
                                     </td>
                                     <td className="py-2 px-3 text-center border border-gray-200 dark:border-gray-700">
                                         <div className="flex flex-col items-center">
-                                            <span className="font-bold text-gray-900 dark:text-white text-sm">{item.brand ? `${item.brand} ` : ''}{item._displayName || item.name}</span>
+                                            <span className="font-semibold text-gray-900 dark:text-white text-sm">{item.brand ? `${item.brand} ` : ''}{item._displayName || item.name}</span>
                                             <span className="text-xs text-gray-500 dark:text-gray-400">{item._displaySize || item.size || '-'} {item.color ? `• ${item.color}` : ''}</span>
                                         </div>
                                     </td>
@@ -419,10 +573,10 @@ const Inventory = () => {
                                         <span className="text-xs font-medium text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded">{item.category}</span>
                                     </td>
                                     <td className="py-2 px-3 text-center border border-gray-200 dark:border-gray-700">
-                                        <span className="font-bold text-gray-900 dark:text-white text-base">{item.stock.toLocaleString()}</span>
+                                        <span className="font-semibold text-gray-900 dark:text-white text-base">{formatNumber(item.stock)}</span>
                                     </td>
                                     <td className="py-2 px-3 text-center border border-gray-200 dark:border-gray-700">
-                                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${getStatusColor(deriveStatus(item))}`}>
+                                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${getStatusColor(deriveStatus(item))}`}>
                                             {deriveStatus(item)}
                                         </span>
                                     </td>
@@ -430,7 +584,7 @@ const Inventory = () => {
                                         <div className="flex justify-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
                                             <button 
                                                 onClick={() => handleOpenStockModal(item, 'IN')}
-                                                className="flex items-center gap-0.5 px-1.5 py-1 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 rounded text-[10px] font-bold transition-colors border border-emerald-100 dark:border-emerald-900/30"
+                                                className="flex items-center gap-0.5 px-1.5 py-1 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 rounded text-[10px] font-semibold transition-colors border border-emerald-100 dark:border-emerald-900/30"
                                                 title="Received Stock"
                                             >
                                                 <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
@@ -440,7 +594,7 @@ const Inventory = () => {
                                                 onClick={() => item.stock > 0 && handleOpenStockModal(item, 'OUT')}
                                                 disabled={item.stock <= 0}
                                                 title={item.stock <= 0 ? 'No stock available' : 'Remove/Adjust Stock'}
-                                                className={`flex items-center gap-0.5 px-1.5 py-1 rounded text-[10px] font-bold transition-colors border ${
+                                                className={`flex items-center gap-0.5 px-1.5 py-1 rounded text-[10px] font-semibold transition-colors border ${
                                                     item.stock <= 0
                                                     ? 'opacity-40 cursor-not-allowed bg-rose-50/50 text-rose-300 border-rose-100'
                                                     : 'bg-rose-50 dark:bg-rose-900/20 text-rose-700 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-900/40 border-rose-100 dark:border-rose-900/30'
@@ -459,107 +613,102 @@ const Inventory = () => {
             </div>
 
             {/* Pagination Controls */}
-            <div className="shrink-0 flex justify-between items-center p-4 border-t border-gray-100 bg-slate-200/50">
+            <div className="flex shrink-0 flex-col items-start gap-3 border-t border-gray-100 bg-slate-200/50 p-4 sm:flex-row sm:items-center sm:justify-between">
                     <div className="text-gray-500 dark:text-gray-400 text-xs font-medium">
-                        Showing <span className="font-bold text-gray-900 dark:text-white">{filteredInventory.length === 0 ? 0 : indexOfFirstItem + 1}</span> to <span className="font-bold text-gray-900 dark:text-white">{Math.min(indexOfLastItem, filteredInventory.length)}</span> of <span className="font-bold text-gray-900 dark:text-white">{filteredInventory.length}</span> results
+                        Showing <span className="font-semibold text-gray-900 dark:text-white">{filteredInventory.length === 0 ? 0 : indexOfFirstItem + 1}</span> to <span className="font-semibold text-gray-900 dark:text-white">{Math.min(indexOfLastItem, filteredInventory.length)}</span> of <span className="font-semibold text-gray-900 dark:text-white">{filteredInventory.length}</span> results
                     </div>
-                    <div className="flex items-center gap-1">
-                        <button
-                            onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
-                            disabled={currentPage === 1}
-                            className={`p-1.5 rounded-lg border border-gray-200 dark:border-gray-600 transition-all ${currentPage === 1 ? 'text-gray-300 dark:text-gray-600 cursor-not-allowed' : 'text-gray-600 dark:text-gray-300 hover:bg-white dark:hover:bg-gray-700'}`}
-                        >
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7"></path></svg>
-                        </button>
-                        {(() => {
-                            const maxVisible = 5;
-                            let start = Math.max(1, currentPage - Math.floor(maxVisible / 2));
-                            let end = start + maxVisible - 1;
-                            if (end > totalPages) { end = totalPages; start = Math.max(1, end - maxVisible + 1); }
-                            const pages = [];
-                            if (start > 1) pages.push(<button key="first" onClick={() => setCurrentPage(1)} className="w-7 h-7 rounded-lg text-xs font-bold text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-all">1</button>);
-                            if (start > 2) pages.push(<span key="dots-start" className="text-gray-400 text-xs px-0.5">...</span>);
-                            for (let i = start; i <= end; i++) {
-                                pages.push(
-                                    <button key={i} onClick={() => setCurrentPage(i)}
-                                        className={`w-7 h-7 rounded-lg text-xs font-bold transition-all ${
-                                            currentPage === i
-                                            ? 'bg-gray-900 dark:bg-gray-600 text-white shadow-sm'
-                                            : 'text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
-                                        }`}
-                                    >{i}</button>
-                                );
-                            }
-                            if (end < totalPages - 1) pages.push(<span key="dots-end" className="text-gray-400 text-xs px-0.5">...</span>);
-                            if (end < totalPages) pages.push(<button key="last" onClick={() => setCurrentPage(totalPages)} className="w-7 h-7 rounded-lg text-xs font-bold text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-all">{totalPages}</button>);
-                            return pages;
-                        })()}
-                        <button
-                            onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
-                            disabled={currentPage === totalPages}
-                            className={`p-1.5 rounded-lg border border-gray-200 dark:border-gray-600 transition-all ${currentPage === totalPages ? 'text-gray-300 dark:text-gray-600 cursor-not-allowed' : 'text-gray-600 dark:text-gray-300 hover:bg-white dark:hover:bg-gray-700'}`}
-                        >
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7"></path></svg>
-                        </button>
-                    </div>
-                </div>
+                    <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} />
             </div>
 
-            {/* Stock Adjustment Modal */}
             {isStockModalOpen && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-                    <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-xs md:max-w-sm overflow-hidden transform transition-all scale-100">
-                        <div className={`p-4 flex items-center justify-between ${modalAction === 'IN' ? 'bg-emerald-50 dark:bg-emerald-900/30' : 'bg-rose-50 dark:bg-rose-900/30'}`}>
-                            <div className="flex items-center gap-3">
-                                <div className={`p-2 rounded-full ${modalAction === 'IN' ? 'bg-emerald-100 text-emerald-600 dark:bg-emerald-900 dark:text-emerald-300' : 'bg-rose-100 text-rose-600 dark:bg-rose-900 dark:text-rose-300'}`}>
-                                    {modalAction === 'IN' 
-                                        ? <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"></path></svg>
-                                        : <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20 12H4"></path></svg>
-                                    }
-                                </div>
-                                <div>
-                                    <h3 className="text-lg font-black text-gray-900 dark:text-white">{modalAction === 'IN' ? 'Stock In' : 'Stock Out'}</h3>
-                                    <p className="text-xs text-gray-500 dark:text-gray-400 font-medium">{selectedItem?.name}</p>
-                                </div>
+                    <div className="w-full max-w-xs overflow-hidden rounded-2xl bg-white shadow-2xl transition-all dark:bg-gray-800 sm:max-w-sm">
+                        <div className="flex items-center justify-between border-b-2 border-gray-200 px-4 py-4 dark:border-gray-700 sm:px-6">
+                            <div className="min-w-0">
+                                <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+                                    {modalAction === 'IN' ? 'Stock In' : 'Stock Out'}
+                                </h2>
+                                <p className="mt-0.5 truncate text-xs font-medium text-gray-500 dark:text-gray-400">
+                                    {selectedItem?.name || selectedItem?.code || 'Inventory item'}
+                                </p>
                             </div>
-                            <button onClick={() => setIsStockModalOpen(false)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
-                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                            <button
+                                type="button"
+                                onClick={() => setIsStockModalOpen(false)}
+                                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-gray-400 transition-all hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+                                aria-label={`Close ${modalAction === 'IN' ? 'stock in' : 'stock out'} modal`}
+                            >
+                                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                                </svg>
                             </button>
                         </div>
-                        
-                        <form onSubmit={handleStockSubmit} className="p-6 space-y-4">
+                        <form onSubmit={handleStockSubmit} className="space-y-4 p-4 sm:p-6">
                             <div>
-                                <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Quantity</label>
-                                <input 
-                                    type="number"
-                                    min="1"
-                                    step="1"
-                                    autoFocus
-                                    required
-                                    value={stockForm.quantity}
-                                    onChange={e => {
-                                        const next = e.target.value;
-                                        if (next === '' || /^\d+$/.test(next)) {
-                                            setStockForm({ ...stockForm, quantity: next });
-                                        }
-                                    }}
-                                    className="w-full text-xl font-black text-center p-2.5 bg-gray-50 dark:bg-gray-700 border-2 border-gray-200 dark:border-gray-600 rounded-xl focus:border-gray-900 dark:focus:border-gray-400 outline-none transition-colors text-gray-900 dark:text-white placeholder-gray-300"
-                                    placeholder="0"
-                                />
+                                <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Quantity</label>
+                                <div className="flex min-w-0 items-center gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            const current = Number(stockForm.quantity || 0);
+                                            const next = Math.max(1, Math.floor(current || 1) - 1);
+                                            setStockForm({ ...stockForm, quantity: String(next) });
+                                        }}
+                                        className="h-10 w-10 shrink-0 rounded-xl border border-gray-200 bg-white text-lg font-semibold text-gray-700 transition-colors hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+                                        aria-label="Decrease quantity"
+                                    >
+                                        -
+                                    </button>
+                                    <input 
+                                        type="text"
+                                        inputMode="numeric"
+                                        pattern="[0-9]*"
+                                        min="1"
+                                        step="1"
+                                        autoFocus
+                                        required
+                                        value={stockForm.quantity}
+                                        onKeyDown={preventInvalidWholeNumberKeyDown}
+                                        onPaste={preventInvalidWholeNumberPaste}
+                                        onChange={e => setStockForm({ ...stockForm, quantity: sanitizeWholeNumberInput(e.target.value) })}
+                                        className="min-w-0 flex-1 rounded-xl border-2 border-gray-200 bg-gray-50 p-2.5 text-center text-xl font-semibold text-gray-900 outline-none transition-colors placeholder-gray-300 focus:border-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:focus:border-gray-400"
+                                        placeholder="0"
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            const current = Number(stockForm.quantity || 0);
+                                            const next = Math.max(1, Math.floor(current || 0) + 1);
+                                            setStockForm({ ...stockForm, quantity: String(next) });
+                                        }}
+                                        className="h-10 w-10 shrink-0 rounded-xl border border-gray-200 bg-white text-lg font-semibold text-gray-700 transition-colors hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+                                        aria-label="Increase quantity"
+                                    >
+                                        +
+                                    </button>
+                                </div>
                             </div>
 
                             <div>
-                                <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Reason</label>
+                                <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Reason</label>
                                 <select 
                                     className="w-full p-2.5 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
                                     value={stockForm.reason}
-                                    onChange={e => setStockForm({...stockForm, reason: e.target.value})}
+                                    onChange={(e) => {
+                                        const nextValue = e.target.value;
+                                        setStockForm((prev) => ({
+                                            ...prev,
+                                            reason: nextValue,
+                                            otherReason: nextValue === 'Other' ? prev.otherReason : '',
+                                        }));
+                                    }}
                                 >
                                     {modalAction === 'IN' ? (
                                         <>
                                             <option>Delivery</option>
                                             <option>Return</option>
                                             <option>Adjustment (Found)</option>
+                                            <option>Other</option>
                                         </>
                                     ) : (
                                         <>
@@ -568,14 +717,27 @@ const Inventory = () => {
                                             <option>Loss / Theft</option>
                                             <option>Store Use</option>
                                             <option>Adjustment (Correction)</option>
+                                            <option>Other</option>
                                         </>
                                     )}
                                 </select>
                             </div>
+                            {stockForm.reason === 'Other' && (
+                                <div>
+                                    <label className="block text-[11px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Other Reason</label>
+                                    <input
+                                        type="text"
+                                        value={stockForm.otherReason}
+                                        onChange={(e) => setStockForm((prev) => ({ ...prev, otherReason: e.target.value }))}
+                                        className="w-full p-2.5 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
+                                        placeholder="Enter reason"
+                                    />
+                                </div>
+                            )}
 
                             <button 
                                 type="submit"
-                                className="w-full py-3 rounded-xl font-bold uppercase tracking-widest text-white shadow-lg transition-transform transform hover:-translate-y-0.5 mt-2"
+                                className="w-full py-3 rounded-xl font-semibold tracking-widest text-white shadow-lg transition-transform transform hover:-translate-y-0.5 mt-2"
                                 style={{ backgroundColor: '#111827' }}
                             >
                                 Confirm {modalAction === 'IN' ? 'Stock' : 'Removal'}
@@ -584,7 +746,60 @@ const Inventory = () => {
                     </div>
                 </div>
             )}
+
+            {enlargedProductImage && (
+                <div
+                    className="fixed inset-0 z-60 flex items-center justify-center bg-black/90 backdrop-blur-lg p-4 animate-in fade-in duration-200"
+                    onClick={closeProductImagePreview}
+                >
+                    <div
+                        className="relative w-full max-w-5xl h-[78vh] md:h-[80vh] flex items-center justify-center animate-in zoom-in-90 fade-in duration-250 overflow-visible px-12 md:px-16 py-12"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <button
+                            type="button"
+                            onClick={closeProductImagePreview}
+                            className="absolute top-3 right-3 z-10 h-10 w-10 rounded-full bg-white text-gray-900 shadow-lg flex items-center justify-center hover:bg-gray-100 transition-colors"
+                            aria-label="Close image preview"
+                        >
+                            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path>
+                            </svg>
+                        </button>
+                        {previewableInventoryItems.length > 1 && (
+                            <>
+                                <button
+                                    type="button"
+                                    onClick={() => navigateProductImagePreview(-1)}
+                                    className="absolute left-3 md:left-4 top-1/2 -translate-y-1/2 z-10 h-11 w-11 rounded-full bg-white/95 text-gray-900 shadow-lg flex items-center justify-center hover:bg-white transition-colors border border-black/5"
+                                    aria-label="Previous image"
+                                >
+                                    <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7"></path>
+                                    </svg>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => navigateProductImagePreview(1)}
+                                    className="absolute right-3 md:right-4 top-1/2 -translate-y-1/2 z-10 h-11 w-11 rounded-full bg-white/95 text-gray-900 shadow-lg flex items-center justify-center hover:bg-white transition-colors border border-black/5"
+                                    aria-label="Next image"
+                                >
+                                    <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 5l7 7-7 7"></path>
+                                    </svg>
+                                </button>
+                            </>
+                        )}
+                        <img
+                            src={enlargedProductImage.src}
+                            alt={enlargedProductImage.alt}
+                            className="max-h-full max-w-full rounded-2xl object-contain shadow-2xl border border-white/10 bg-white"
+                        />
+                    </div>
+                </div>
+            )}
         </div>
+    </div>
     );
 };
 
