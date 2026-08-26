@@ -7,10 +7,12 @@ const { writeActivityLog } = require('../services/logService');
 const { publishCreditTransactionsUpdated } = require('../services/realtimeService');
 const { parseStrictWholeNumber } = require('../utils/numericValidation');
 const { isMoneyInputTooLarge, parseSafeMoney } = require('../utils/moneyValidation');
+const { R2StorageError, isObjectNotFoundError, r2Storage } = require('../services/r2StorageService');
 
 const normalizeString = (value) => String(value || '').trim();
 const MAX_CREDIT_TERM_DAYS = 60;
 const PROOF_OF_PAYMENT_DIRECTORY = path.resolve(__dirname, '../../uploads/payment-proofs');
+const PAYMENT_PROOF_PREFIX = 'payment-proofs/';
 const JPEG_SIGNATURE = [0xff, 0xd8, 0xff];
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
@@ -40,12 +42,36 @@ const getProofImageMetadata = (file) => {
   };
 };
 
-const persistProofOfPayment = async ({ file, user }) => {
-  const { extension, mimeType } = getProofImageMetadata(file);
-  await fs.mkdir(PROOF_OF_PAYMENT_DIRECTORY, { recursive: true });
+const isLocalProofStorageAllowed = () => process.env.NODE_ENV !== 'production';
 
+const toProofObjectKey = (storageKey) => `${PAYMENT_PROOF_PREFIX}${storageKey}`;
+
+const assertValidProofStorageKey = (storageKey) => /^[a-f0-9-]+\.(jpg|png)$/i.test(String(storageKey || ''));
+
+const persistProofOfPayment = async ({ file, user }, {
+  storage = r2Storage,
+  allowLocalStorage = isLocalProofStorageAllowed(),
+} = {}) => {
+  const { extension, mimeType } = getProofImageMetadata(file);
   const storageKey = `${randomUUID()}.${extension}`;
-  await fs.writeFile(path.join(PROOF_OF_PAYMENT_DIRECTORY, storageKey), file.buffer, { flag: 'wx' });
+
+  if (storage.isConfigured()) {
+    await storage.putObject({
+      key: toProofObjectKey(storageKey),
+      body: file.buffer,
+      contentType: mimeType,
+      metadata: {
+        originalfilename: path.basename(String(file.originalname || `proof.${extension}`)),
+      },
+    });
+  } else if (allowLocalStorage) {
+    await fs.mkdir(PROOF_OF_PAYMENT_DIRECTORY, { recursive: true });
+    await fs.writeFile(path.join(PROOF_OF_PAYMENT_DIRECTORY, storageKey), file.buffer, { flag: 'wx' });
+  } else {
+    throw new R2StorageError('Cloud storage is required for payment proofs in production.', {
+      code: 'R2_NOT_CONFIGURED',
+    });
+  }
 
   return {
     storageKey,
@@ -56,14 +82,63 @@ const persistProofOfPayment = async ({ file, user }) => {
   };
 };
 
-const removeStoredProof = async (storageKey) => {
-  if (!/^[a-f0-9-]+\.(jpg|png)$/i.test(String(storageKey || ''))) return;
+const removeStoredProof = async (storageKey, {
+  storage = r2Storage,
+  allowLocalStorage = isLocalProofStorageAllowed(),
+} = {}) => {
+  if (!assertValidProofStorageKey(storageKey)) return;
+
+  if (storage.isConfigured()) {
+    await storage.deleteObject(toProofObjectKey(storageKey));
+    return;
+  }
+
+  if (!allowLocalStorage) {
+    return;
+  }
 
   try {
     await fs.unlink(path.join(PROOF_OF_PAYMENT_DIRECTORY, storageKey));
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
   }
+};
+
+const getStoredProof = async (storageKey, {
+  storage = r2Storage,
+  allowLocalStorage = isLocalProofStorageAllowed(),
+} = {}) => {
+  if (!assertValidProofStorageKey(storageKey)) {
+    return null;
+  }
+
+  if (storage.isConfigured()) {
+    try {
+      const object = await storage.getObject(toProofObjectKey(storageKey));
+      return { type: 'r2', object };
+    } catch (error) {
+      if (!isObjectNotFoundError(error) || !allowLocalStorage) {
+        throw error;
+      }
+      // Keep previously stored local proof files accessible during local migration work.
+    }
+  } else if (!allowLocalStorage) {
+    throw new R2StorageError('Cloud storage is required for payment proofs in production.', {
+      code: 'R2_NOT_CONFIGURED',
+    });
+  }
+
+  const filePath = path.resolve(PROOF_OF_PAYMENT_DIRECTORY, storageKey);
+  if (!filePath.startsWith(`${PROOF_OF_PAYMENT_DIRECTORY}${path.sep}`)) {
+    return null;
+  }
+
+  try {
+    await fs.access(filePath);
+  } catch {
+    return null;
+  }
+  return { type: 'local', filePath };
 };
 
 const ensureCashierOwnsCreditTransaction = async ({ transaction, user }) => {
@@ -477,25 +552,31 @@ const recordCreditPayment = async (req, res, next) => {
   }
 };
 
-const markCreditTransactionFullyPaid = async (req, res, next) => {
+const markCreditTransactionFullyPaid = async (req, res, next, dependencies = {}) => {
   let savedProof = null;
   let isProofReferenced = false;
+  const findTransaction = dependencies.findTransaction || ((id) => CreditTransaction.findById(id));
+  const ensureOwnership = dependencies.ensureOwnership || ensureCashierOwnsCreditTransaction;
+  const persistProof = dependencies.persistProof || persistProofOfPayment;
+  const applyPayment = dependencies.applyPayment || applyPaymentToCreditTransaction;
+  const removeProof = dependencies.removeProof || removeStoredProof;
+  const findSale = dependencies.findSale || ((id) => Sale.findById(id));
 
   try {
     const { id } = req.params;
-    const transaction = await CreditTransaction.findById(id);
+    const transaction = await findTransaction(id);
     if (!transaction) {
       return res.status(404).json({ message: 'Credit transaction not found.' });
     }
 
-    await ensureCashierOwnsCreditTransaction({ transaction, user: req.user });
+    await ensureOwnership({ transaction, user: req.user });
 
     const remaining = Number(transaction.remainingBalance || 0);
     if (remaining <= 0) {
       return res.json(transaction);
     }
 
-    const proofOfPayment = await persistProofOfPayment({ file: req.file, user: req.user });
+    const proofOfPayment = await persistProof({ file: req.file, user: req.user });
     savedProof = proofOfPayment;
 
     const extensionRaw = Object.prototype.hasOwnProperty.call(req.body || {}, 'extensionDays')
@@ -517,7 +598,7 @@ const markCreditTransactionFullyPaid = async (req, res, next) => {
 
     transaction.proofOfPayment = proofOfPayment;
 
-    const updated = await applyPaymentToCreditTransaction({
+    const updated = await applyPayment({
       transaction,
       amount: remaining,
       method: req.body?.method || 'cash',
@@ -532,7 +613,7 @@ const markCreditTransactionFullyPaid = async (req, res, next) => {
     });
 
     if (extensionDays > 0) {
-      const saleForTermSync = await Sale.findById(transaction.orderId);
+      const saleForTermSync = await findSale(transaction.orderId);
       if (saleForTermSync) {
         saleForTermSync.creditTermDays = Number(transaction.termDays || 0);
         saleForTermSync.dueDate = transaction.dueDate;
@@ -544,7 +625,7 @@ const markCreditTransactionFullyPaid = async (req, res, next) => {
   } catch (error) {
     if (savedProof?.storageKey && !isProofReferenced) {
       try {
-        await removeStoredProof(savedProof.storageKey);
+        await removeProof(savedProof.storageKey);
       } catch (cleanupError) {
         console.error('Unable to remove unreferenced payment proof:', cleanupError.message);
       }
@@ -556,35 +637,59 @@ const markCreditTransactionFullyPaid = async (req, res, next) => {
   }
 };
 
-const getCreditTransactionProofOfPayment = async (req, res, next) => {
+const getCreditTransactionProofOfPayment = async (req, res, next, dependencies = {}) => {
+  const findTransaction = dependencies.findTransaction
+    || ((id) => CreditTransaction.findById(id).select('orderId proofOfPayment'));
+  const ensureOwnership = dependencies.ensureOwnership || ensureCashierOwnsCreditTransaction;
+  const getProof = dependencies.getProof || getStoredProof;
+
   try {
-    const transaction = await CreditTransaction.findById(req.params.id).select('orderId proofOfPayment');
+    const transaction = await findTransaction(req.params.id);
     if (!transaction) {
       return res.status(404).json({ message: 'Credit transaction not found.' });
     }
 
-    await ensureCashierOwnsCreditTransaction({ transaction, user: req.user });
+    await ensureOwnership({ transaction, user: req.user });
 
     const proof = transaction.proofOfPayment;
     const storageKey = String(proof?.storageKey || '');
-    if (!proof || !/^[a-f0-9-]+\.(jpg|png)$/i.test(storageKey)) {
-      return res.status(404).json({ message: 'Proof of Payment is not available.' });
-    }
-
-    const filePath = path.resolve(PROOF_OF_PAYMENT_DIRECTORY, storageKey);
-    if (!filePath.startsWith(`${PROOF_OF_PAYMENT_DIRECTORY}${path.sep}`)) {
+    if (!proof || !assertValidProofStorageKey(storageKey)) {
       return res.status(404).json({ message: 'Proof of Payment is not available.' });
     }
 
     try {
-      await fs.access(filePath);
-    } catch {
-      return res.status(404).json({ message: 'Proof of Payment is not available.' });
-    }
+      const storedProof = await getProof(storageKey);
+      if (!storedProof) {
+        return res.status(404).json({ message: 'Proof of Payment is not available.' });
+      }
 
-    res.set('Cache-Control', 'private, no-store');
-    res.type(proof.mimeType);
-    return res.sendFile(filePath);
+      res.set('Cache-Control', 'private, no-store');
+      res.type(proof.mimeType);
+
+      if (storedProof.type === 'local') {
+        return res.sendFile(storedProof.filePath);
+      }
+
+      const body = storedProof.object?.Body;
+      if (!body) {
+        return res.status(404).json({ message: 'Proof of Payment is not available.' });
+      }
+      if (typeof body.pipe === 'function') {
+        body.on('error', (error) => next(error));
+        body.pipe(res);
+        return undefined;
+      }
+      if (typeof body.transformToByteArray === 'function') {
+        const bytes = await body.transformToByteArray();
+        return res.send(Buffer.from(bytes));
+      }
+      return res.status(404).json({ message: 'Proof of Payment is not available.' });
+    } catch (error) {
+      if (isObjectNotFoundError(error)) {
+        return res.status(404).json({ message: 'Proof of Payment is not available.' });
+      }
+      throw error;
+    }
   } catch (error) {
     if (error?.status) {
       return res.status(error.status).json({ message: error.message });
@@ -711,4 +816,10 @@ module.exports = {
   getCreditTransactionProofOfPayment,
   extendCreditTransactionTerm,
   cancelCreditTransaction,
+  __test: {
+    getStoredProof,
+    persistProofOfPayment,
+    removeStoredProof,
+    toProofObjectKey,
+  },
 };

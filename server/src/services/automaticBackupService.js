@@ -2,10 +2,12 @@ const fs = require('fs/promises');
 const path = require('path');
 const Setting = require('../models/Setting');
 const { generateSystemBackup } = require('./systemBackupService');
+const { R2StorageError, r2Storage } = require('./r2StorageService');
 
 const AUTOMATIC_BACKUP_DIRECTORY = path.resolve(__dirname, '../../backups');
 const AUTOMATIC_BACKUP_FILE_PREFIX = 'automatic-inventory-backup-';
 const AUTOMATIC_BACKUP_FILE_PATTERN = /^automatic-inventory-backup-\d{4}-\d{2}-\d{2}_\d{6}\.json$/;
+const AUTOMATIC_BACKUP_R2_PREFIX = 'database-backups/automatic/';
 const AUTOMATIC_BACKUP_RETENTION_COUNT = 30;
 const MAX_TIMER_DELAY_MS = 24 * 60 * 60 * 1000;
 
@@ -60,6 +62,10 @@ const formatBackupFileTimestamp = (date = new Date()) => {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 };
 
+const isLocalAutomaticBackupStorageAllowed = () => process.env.NODE_ENV !== 'production';
+
+const toAutomaticBackupObjectKey = (fileName) => `${AUTOMATIC_BACKUP_R2_PREFIX}${fileName}`;
+
 const ensureSettingsDocument = async () => {
   const existing = await Setting.findOne({ singletonKey: 'default' });
   if (existing) return existing;
@@ -97,6 +103,18 @@ const pruneAutomaticBackupFiles = async (backupDirectory = AUTOMATIC_BACKUP_DIRE
   return automaticFiles.length - filesToDelete.length;
 };
 
+const pruneAutomaticBackupObjects = async (storage = r2Storage) => {
+  const objects = await storage.listObjectsByPrefix(AUTOMATIC_BACKUP_R2_PREFIX);
+  const automaticFiles = objects
+    .filter((object) => AUTOMATIC_BACKUP_FILE_PATTERN.test(path.basename(String(object.key || ''))))
+    .sort((left, right) => String(right.key).localeCompare(String(left.key)));
+
+  const objectsToDelete = automaticFiles.slice(AUTOMATIC_BACKUP_RETENTION_COUNT);
+  await Promise.all(objectsToDelete.map((object) => storage.deleteObject(object.key)));
+
+  return automaticFiles.length - objectsToDelete.length;
+};
+
 const writeAutomaticBackupFile = async (backup) => {
   await fs.mkdir(AUTOMATIC_BACKUP_DIRECTORY, { recursive: true });
 
@@ -111,9 +129,44 @@ const writeAutomaticBackupFile = async (backup) => {
     await fs.unlink(temporaryDestination).catch(() => {});
     throw error;
   }
-  await pruneAutomaticBackupFiles();
-
   return { fileName, destination };
+};
+
+const storeAutomaticBackup = async (backup, { storage = r2Storage } = {}) => {
+  const fileName = `${AUTOMATIC_BACKUP_FILE_PREFIX}${formatBackupFileTimestamp()}.json`;
+
+  if (storage.isConfigured()) {
+    const objectKey = toAutomaticBackupObjectKey(fileName);
+    await storage.putObject({
+      key: objectKey,
+      body: JSON.stringify(backup, null, 2),
+      contentType: 'application/json',
+      metadata: {
+        schemaversion: String(backup?.schemaVersion || ''),
+        generatedat: String(backup?.generatedAt || ''),
+      },
+    });
+    return { fileName, destination: objectKey, storage: 'r2' };
+  }
+
+  if (isLocalAutomaticBackupStorageAllowed()) {
+    const stored = await writeAutomaticBackupFile(backup);
+    return { ...stored, storage: 'local' };
+  }
+
+  throw new R2StorageError('Cloud storage is required for automatic backups in production.', {
+    code: 'R2_NOT_CONFIGURED',
+  });
+};
+
+const applyAutomaticBackupRetention = async ({ storage = r2Storage, storageType } = {}) => {
+  if (storageType === 'r2') {
+    return pruneAutomaticBackupObjects(storage);
+  }
+  if (storageType === 'local') {
+    return pruneAutomaticBackupFiles();
+  }
+  return 0;
 };
 
 const scheduleBackupCheck = (nextAutomaticBackupAt) => {
@@ -134,7 +187,15 @@ const saveAutomaticBackupState = async (settings, patch, keys) => {
   return settings;
 };
 
-const runAutomaticBackup = async ({ settings, scheduledFor = null } = {}) => {
+const runAutomaticBackup = async ({
+  settings,
+  scheduledFor = null,
+  generateBackup = generateSystemBackup,
+  storeBackup = storeAutomaticBackup,
+  saveState = saveAutomaticBackupState,
+  writeLog,
+  applyRetention = applyAutomaticBackupRetention,
+} = {}) => {
   if (backupInFlight) return;
 
   backupInFlight = true;
@@ -150,10 +211,11 @@ const runAutomaticBackup = async ({ settings, scheduledFor = null } = {}) => {
   });
 
   try {
-    const backup = await generateSystemBackup({ generatedBy: 'system' });
-    const { fileName } = await writeAutomaticBackupFile(backup);
+    const backup = await generateBackup({ generatedBy: 'system' });
+    const storedBackup = await storeBackup(backup);
+    const { fileName } = storedBackup;
 
-    await saveAutomaticBackupState(settings, {
+    await saveState(settings, {
       lastAutomaticBackupAt: now,
       lastAutomaticBackupStatus: 'successful',
       lastAutomaticBackupError: '',
@@ -165,16 +227,22 @@ const runAutomaticBackup = async ({ settings, scheduledFor = null } = {}) => {
       'nextAutomaticBackupAt',
     ]);
 
-    const { writeActivityLog } = require('./logService');
-    await writeActivityLog({
+    const logActivity = writeLog || require('./logService').writeActivityLog;
+    await logActivity({
       action: 'Automatic Backup Completed',
       details: `Saved ${fileName}.`,
     });
+
+    try {
+      await applyRetention({ storageType: storedBackup.storage });
+    } catch (retentionError) {
+      console.error('[AUTOMATIC BACKUP] Retention cleanup failed:', retentionError);
+    }
   } catch (error) {
     const message = String(error?.message || 'Unable to create automatic backup.').slice(0, 240);
     console.error('[AUTOMATIC BACKUP] Failed:', error);
 
-    await saveAutomaticBackupState(settings, {
+    await saveState(settings, {
       lastAutomaticBackupStatus: 'failed',
       lastAutomaticBackupError: message,
       nextAutomaticBackupAt,
@@ -270,11 +338,17 @@ const initializeAutomaticBackupScheduler = async () => {
 module.exports = {
   AUTOMATIC_BACKUP_DIRECTORY,
   AUTOMATIC_BACKUP_FILE_PREFIX,
+  AUTOMATIC_BACKUP_R2_PREFIX,
   AUTOMATIC_BACKUP_RETENTION_COUNT,
   calculateFirstAutomaticBackupAt,
   calculateNextAutomaticBackupAt,
   formatBackupFileTimestamp,
   initializeAutomaticBackupScheduler,
+  applyAutomaticBackupRetention,
   pruneAutomaticBackupFiles,
+  pruneAutomaticBackupObjects,
   reloadAutomaticBackupScheduler,
+  runAutomaticBackup,
+  storeAutomaticBackup,
+  toAutomaticBackupObjectKey,
 };
