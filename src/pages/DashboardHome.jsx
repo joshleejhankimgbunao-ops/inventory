@@ -304,7 +304,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
     const clearSalesTooltipPosition = () => setSalesTooltipPosition(null);
 
     return (
-        <div className="flex flex-col p-4 gap-2 h-auto md:max-h-full md:overflow-y-auto mb-1 bg-slate-200/50 rounded-2xl shadow-inner border border-slate-300">
+        <div className="flex flex-col p-4 gap-2 h-auto md:max-h-full md:overflow-y-auto mb-1 lg:mb-0 lg:h-full lg:min-h-0 bg-slate-200/50 rounded-2xl shadow-inner border border-slate-300">
             {/* Header Section */}
             <div className="flex flex-col md:flex-row md:items-center justify-between mb-4 shrink-0 gap-4 md:gap-0">
                 <div>
@@ -573,8 +573,8 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
 
                 {availableAnalyticsViews.length > 0 && (
                     <div className="flex flex-col gap-4 mb-2 flex-1 min-h-0">
-                        <div className="grid grid-cols-1 lg:grid-cols-10 gap-4 min-h-[420px]">
-                            <div className="lg:col-span-7 bg-white p-0 rounded-xl shadow-sm border border-gray-100 relative overflow-hidden group flex flex-col min-h-[420px]">
+                        <div className="grid min-h-[420px] grid-cols-1 gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-10">
+                            <div className="relative flex min-h-[420px] flex-col overflow-hidden rounded-xl border border-gray-100 bg-white p-0 shadow-sm lg:col-span-7 lg:h-full">
                             <div className="absolute top-0 left-0 right-0 h-1.5 bg-linear-to-r from-gray-700 to-black"></div>
                             <div className="flex flex-col gap-3 px-4 py-3 shrink-0 sm:flex-row sm:items-center sm:justify-between">
                                 <div className="flex items-center gap-2">
@@ -652,7 +652,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                             </div>
                             </div>
 
-                            <div className="lg:col-span-3 bg-white p-0 rounded-xl shadow-sm border border-gray-100 flex flex-col relative overflow-hidden min-h-[420px]">
+                            <div className="relative flex min-h-[420px] flex-col overflow-hidden rounded-xl border border-gray-100 bg-white p-0 shadow-sm lg:col-span-3 lg:h-full">
                                 <div className="absolute top-0 left-0 right-0 h-1.5 bg-linear-to-r from-gray-700 to-black"></div>
                                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 px-3 py-2 shrink-0">
                                     <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wide flex items-center gap-2"><span className="p-1.5 bg-gray-100 rounded-lg text-gray-900"><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg></span>Low/Out of Stock</h3>
