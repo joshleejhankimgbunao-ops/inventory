@@ -52,6 +52,10 @@ const History = () => {
         return getActorDisplayName(trx?.cashierUser, trx?.cashier, adminName || 'Admin');
     };
 
+    const getCreditProcessorDisplayName = (credit) => {
+        return getActorDisplayName(credit?.cashierUser, credit?.cashierName, '-');
+    };
+
     // Internal handler for archiving
     const onArchiveTransaction = (id) => {
         setTransactions(prev => prev.map(t => t.id === id ? { ...t, isArchived: !t.isArchived } : t));
@@ -165,7 +169,7 @@ const History = () => {
     const creditProcessedByOptions = useMemo(() => {
         const unique = new Set(
             creditTransactions
-                .map((row) => String(row?.cashierName || '').trim())
+                .map((row) => getCreditProcessorDisplayName(row))
                 .filter(Boolean)
         );
         return ['ALL', ...Array.from(unique).sort((a, b) => a.localeCompare(b))];
@@ -413,7 +417,7 @@ const History = () => {
             const matchesSearch = String(credit?.creditTransactionId || '').toLowerCase().includes(searchNeedle)
                 || String(credit?.customerName || '').toLowerCase().includes(searchNeedle)
                 || String(credit?.orderReference || '').toLowerCase().includes(searchNeedle)
-                || String(credit?.cashierName || '').toLowerCase().includes(searchNeedle);
+                || getCreditProcessorDisplayName(credit).toLowerCase().includes(searchNeedle);
 
             if (creditStatusFilter !== 'All') {
                 const status = String(credit?.status || '').trim();
@@ -426,7 +430,7 @@ const History = () => {
             }
 
             if (creditProcessedByFilter !== 'ALL') {
-                const cashier = String(credit?.cashierName || '').trim();
+                const cashier = getCreditProcessorDisplayName(credit);
                 if (cashier !== creditProcessedByFilter) return false;
             }
 
@@ -1269,7 +1273,7 @@ const History = () => {
                             <div>
                                 <h3 className="font-semibold text-gray-900">Credit Transaction Details</h3>
                                 <p className="text-xs text-gray-500">{selectedCredit.creditTransactionId} - {selectedCredit.customerName}</p>
-                                <p className="text-[10px] text-gray-400 mt-0.5">Order: {selectedCredit.orderReference || '-'} | Cashier: {selectedCredit.orderId?.cashierName || selectedCredit.cashierName || '-'}</p>
+                                <p className="text-[10px] text-gray-400 mt-0.5">Order: {selectedCredit.orderReference || '-'} | Cashier: {getCreditProcessorDisplayName(selectedCredit)}</p>
                             </div>
                             <button
                                 onClick={() => {
@@ -1376,7 +1380,7 @@ const History = () => {
                                                         <td className="px-2 py-1.5">{payment.paymentDate ? new Date(payment.paymentDate).toLocaleString() : '-'}</td>
                                                         <td className="px-2 py-1.5 font-semibold">₱{formatMoney(payment.amount)}</td>
                                                         <td className="px-2 py-1.5 uppercase">{payment.method || '-'}</td>
-                                                        <td className="px-2 py-1.5">{payment.recordedBy || '-'}</td>
+                                                        <td className="px-2 py-1.5">{getActorDisplayName(payment.recordedByUser || payment.recordedById, payment.recordedBy, '-')}</td>
                                                         <td className="px-2 py-1.5">{payment.note || '-'}</td>
                                                     </tr>
                                                 ))

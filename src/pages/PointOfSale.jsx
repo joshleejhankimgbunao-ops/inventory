@@ -933,11 +933,6 @@ const PointOfSale = () => {
                     setCashAmount('');
                     setLastTransaction(remoteTransaction);
                     setShowReceipt(true);
-                    logActivity(
-                        currentUserName,
-                        isCreditCheckout ? 'Created Credit Sale' : 'Processed Sale',
-                        `${isCreditCheckout ? 'Credit transaction' : 'Transaction'} ${remoteTransaction.id} — ${formatCurrency(remoteTransaction.total)}`
-                    );
                     showToast(
                         isCreditCheckout ? 'Credit Order Created' : 'Transaction Complete',
                         isCreditCheckout ? 'Credit sale recorded with pending payment.' : 'Sale recorded successfully.',

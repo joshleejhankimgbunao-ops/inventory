@@ -5,9 +5,8 @@ export const getActorDisplayName = (actorRef, storedName, fallback = 'System') =
 
   return textValue(reference?.displayName)
     || textValue(reference?.name)
-    || textValue(storedName)
     || textValue(reference?.username)
-    || textValue(reference?.role)
+    || textValue(storedName)
     || fallback;
 };
 

@@ -719,7 +719,25 @@ export const InventoryProvider = ({ children }) => {
 
      // Activity Log Helper (used across pages)
      const logActivity = (user, action, details = '') => {
-       setActivityLogs(prev => [{ id: Date.now(), user, action, details, timestamp: Date.now() }, ...prev]);
+       const actorName = String(user || currentUserName || 'System').trim() || 'System';
+       const actorId = String(currentAuthUserId || '').trim();
+       const actorReference = actorId
+           ? {
+               id: actorId,
+               displayName: actorName,
+               username: String(currentAuthUsername || '').trim(),
+               role: String(userRole || '').trim(),
+           }
+           : null;
+
+       setActivityLogs(prev => [{
+           id: Date.now(),
+           user: actorName,
+           userRef: actorReference,
+           action,
+           details,
+           timestamp: Date.now(),
+       }, ...prev]);
      };
 
     // 5. Log Action Helper

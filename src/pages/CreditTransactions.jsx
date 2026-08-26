@@ -15,6 +15,7 @@ import Pagination from '../components/Pagination';
 import IdentifierChip from '../components/IdentifierChip';
 import { formatCurrency, formatNumber } from '../utils/numberFormat';
 import { getCreditDueStatus } from '../utils/creditDueStatus';
+import { getActorDisplayName } from '../utils/actorDisplay';
 import {
     isWholeNumberInput,
     preventInvalidWholeNumberKeyDown,
@@ -66,6 +67,12 @@ const getCreditPaymentMode = (record) => {
     const modeMatch = String(record?.orderId?.notes || '').trim().match(/preferred mode of payment:\s*(.+)$/i);
     return modeMatch ? String(modeMatch[1] || '').trim() : record?.orderId?.paymentMethod || '-';
 };
+
+const getCreditProcessorDisplayName = (record) => getActorDisplayName(
+    record?.cashierUser,
+    record?.cashierName,
+    '-'
+);
 
 const startOfDay = (value) => {
     const date = new Date(value);
@@ -243,7 +250,7 @@ const CreditTransactions = () => {
     const processedByOptions = useMemo(() => {
         const unique = new Set(
             rows
-                .map((row) => String(row?.cashierName || '').trim())
+                .map((row) => getCreditProcessorDisplayName(row))
                 .filter(Boolean)
         );
         return ['ALL', ...Array.from(unique).sort((a, b) => a.localeCompare(b))];
@@ -256,7 +263,7 @@ const CreditTransactions = () => {
 
         const filtered = rows.filter((row) => {
             if (userRole === ROLES.CASHIER) {
-                const cashierName = String(row?.cashierName || '').trim().toLowerCase();
+                const cashierName = getCreditProcessorDisplayName(row).toLowerCase();
                 const currentCashier = String(currentUserName || 'Cashier').trim().toLowerCase();
                 if (cashierName && cashierName !== currentCashier) {
                     return false;
@@ -278,7 +285,7 @@ const CreditTransactions = () => {
             }
 
             if (processedByFilter !== 'ALL') {
-                const cashierName = String(row?.cashierName || '').trim();
+                const cashierName = getCreditProcessorDisplayName(row);
                 if (cashierName !== processedByFilter) {
                     return false;
                 }
@@ -863,7 +870,7 @@ const CreditTransactions = () => {
                                             </span>
                                         </td>
                                         <td className="py-1.5 px-1 text-center border border-gray-200 leading-tight">
-                                            <span className="text-gray-900 font-semibold text-xs">{row.cashierName || '-'}</span>
+                                            <span className="text-gray-900 font-semibold text-xs">{getCreditProcessorDisplayName(row)}</span>
                                         </td>
                                         <td className="whitespace-nowrap py-1.5 px-1 text-center border border-gray-200">
                                             <div className="flex flex-nowrap items-center justify-center gap-2">
@@ -939,7 +946,7 @@ const CreditTransactions = () => {
                             <div>
                                 <h3 className="font-semibold text-gray-900">Credit Transaction Details</h3>
                                 <p className="text-xs text-gray-500">{selectedRecord.creditTransactionId} - {selectedRecord.customerName}</p>
-                                <p className="text-[10px] text-gray-400 mt-0.5">Order: {selectedRecord.orderReference || '-'} | Cashier: {selectedRecord.orderId?.cashierName || selectedRecord.cashierName || '-'}</p>
+                                <p className="text-[10px] text-gray-400 mt-0.5">Order: {selectedRecord.orderReference || '-'} | Cashier: {getCreditProcessorDisplayName(selectedRecord)}</p>
                             </div>
                             <div className="flex items-center gap-2">
                                 {String(selectedRecord.status || '').toLowerCase() === 'cancelled' && (
@@ -983,7 +990,7 @@ const CreditTransactions = () => {
                                     </div>
                                     <div className="rounded-lg border border-gray-100 bg-gray-50 p-2">
                                         <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Processed By</p>
-                                        <p className="font-semibold text-gray-900">{selectedRecord.orderId?.cashierName || selectedRecord.cashierName || '-'}</p>
+                                        <p className="font-semibold text-gray-900">{getCreditProcessorDisplayName(selectedRecord)}</p>
                                     </div>
                                     <div className="rounded-lg border border-gray-100 bg-gray-50 p-2">
                                         <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Mode of Payment</p>

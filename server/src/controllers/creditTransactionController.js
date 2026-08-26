@@ -87,6 +87,21 @@ const parseBool = (value, fallback = false) => {
   return fallback;
 };
 
+const toUserReference = (user) => {
+  if (!user || typeof user !== 'object') return null;
+
+  const id = String(user._id || user.id || '').trim();
+  if (!id) return null;
+
+  return {
+    id,
+    displayName: String(user.displayName || '').trim(),
+    name: String(user.name || '').trim(),
+    username: String(user.username || '').trim(),
+    role: String(user.role || '').trim(),
+  };
+};
+
 const resolveStatus = ({ remainingBalance, amountPaid, dueDate, status, now = new Date() }) => {
   if (String(status || '').toLowerCase() === 'cancelled') return 'Cancelled';
   const remaining = Number(remainingBalance || 0);
@@ -178,7 +193,15 @@ const listCreditTransactions = async (req, res, next) => {
     }
 
     const rows = await CreditTransaction.find(query)
-      .populate('orderId', 'createdAt paymentMethod notes cashier cashierName')
+      .populate({
+        path: 'orderId',
+        select: 'createdAt paymentMethod notes cashier cashierName',
+        populate: {
+          path: 'cashier',
+          select: 'displayName name username role',
+        },
+      })
+      .populate('paymentHistory.recordedById', 'displayName name username role')
       .sort({ createdAt: -1 });
 
     const records = rows.map((row) => {
@@ -218,12 +241,21 @@ const listCreditTransactions = async (req, res, next) => {
         termDays: Number(row.termDays || 0),
         dueDate: row.dueDate,
         status: statusValue,
-        paymentHistory: Array.isArray(row.paymentHistory) ? row.paymentHistory : [],
+        paymentHistory: Array.isArray(row.paymentHistory)
+          ? row.paymentHistory.map((payment) => {
+            const paymentValue = typeof payment?.toObject === 'function' ? payment.toObject() : payment;
+            return {
+              ...paymentValue,
+              recordedByUser: toUserReference(paymentValue?.recordedById),
+            };
+          })
+          : [],
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
         originalDueDate: row.originalDueDate,
-        cashierId: row.orderId?.cashier || null,
+        cashierId: String(row.orderId?.cashier?._id || row.orderId?.cashier || ''),
         cashierName: row.orderId?.cashierName || '',
+        cashierUser: toUserReference(row.orderId?.cashier),
         isArchived: Boolean(row.isArchived),
       };
     });
@@ -291,7 +323,15 @@ const getCreditTransactionById = async (req, res, next) => {
     await refreshOverdueRecords();
     const { id } = req.params;
 
-    const row = await CreditTransaction.findById(id).populate('orderId');
+    const row = await CreditTransaction.findById(id)
+      .populate({
+        path: 'orderId',
+        populate: {
+          path: 'cashier',
+          select: 'displayName name username role',
+        },
+      })
+      .populate('paymentHistory.recordedById', 'displayName name username role');
     if (!row) {
       return res.status(404).json({ message: 'Credit transaction not found.' });
     }
@@ -310,10 +350,21 @@ const getCreditTransactionById = async (req, res, next) => {
       status: row.status,
     });
 
+    const record = row.toObject();
+
     return res.json({
-      ...row.toObject(),
+      ...record,
       status,
       orderReference: row.orderId?._id ? `TRX-${String(row.orderId._id).slice(-8).toUpperCase()}` : '',
+      cashierId: String(row.orderId?.cashier?._id || row.orderId?.cashier || ''),
+      cashierName: row.orderId?.cashierName || '',
+      cashierUser: toUserReference(row.orderId?.cashier),
+      paymentHistory: Array.isArray(record.paymentHistory)
+        ? record.paymentHistory.map((payment) => ({
+          ...payment,
+          recordedByUser: toUserReference(payment?.recordedById),
+        }))
+        : [],
     });
   } catch (error) {
     return next(error);
