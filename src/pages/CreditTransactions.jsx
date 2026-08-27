@@ -907,6 +907,11 @@ const CreditTransactions = () => {
                                 <tr>
                                     <td className="p-8 text-center border border-gray-200" colSpan={10}>
                                         <div className="flex flex-col items-center justify-center text-gray-500 border-2 border-dashed border-gray-300 rounded-3xl p-8 bg-gray-50/50">
+                                            <div className="bg-white p-4 rounded-full mb-4 shadow-sm ring-1 ring-gray-200">
+                                                <svg className="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M3 7h18M5 5h14a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2zm2 9h4" />
+                                                </svg>
+                                            </div>
                                             <h3 className="text-lg font-semibold text-gray-900 mb-1">No credit transactions found</h3>
                                             <p className="text-gray-500 text-sm">Try a different search keyword or status filter.</p>
                                         </div>

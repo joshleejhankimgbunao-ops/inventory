@@ -570,16 +570,6 @@ const SpecialOrders = () => {
 
         <div className="main-data-table-shell mt-1 flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-gray-100 shadow-sm">
           <div className="flex-1 overflow-auto" aria-busy={initialLoading || refreshing}>
-            {initialLoading ? (
-            <div className="flex min-h-64 items-center justify-center px-4 py-12 text-sm font-medium text-gray-500">Loading special orders...</div>
-          ) : orders.length === 0 ? (
-            <div className="flex min-h-64 flex-col items-center justify-center px-4 py-12 text-center">
-              <div className="rounded-xl border-2 border-dashed border-gray-200 bg-gray-50/60 px-8 py-7">
-              <p className="font-semibold text-gray-800">{searchTerm ? 'No matching special orders' : 'No special orders yet'}</p>
-              <p className="mt-1 text-sm text-gray-500">{searchTerm ? 'Try a different search or status filter.' : 'Create a special order to get started.'}</p>
-              </div>
-            </div>
-          ) : (
             <table className="main-data-table w-full min-w-0 table-fixed border-separate border-spacing-0 text-left max-lg:min-w-[760px]">
               <thead className="sticky top-0 z-10 shadow-sm">
                 <tr className="bg-gray-900 text-white uppercase tracking-wider">
@@ -594,7 +584,25 @@ const SpecialOrders = () => {
                 </tr>
               </thead>
               <tbody className="text-sm">
-                {paginatedOrders.map((order) => {
+                {initialLoading ? (
+                  <tr>
+                    <td colSpan={8} className="p-8 text-center text-sm font-medium text-gray-500">Loading special orders...</td>
+                  </tr>
+                ) : orders.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="border border-gray-200 p-8 text-center">
+                      <div className="flex min-h-48 flex-col items-center justify-center rounded-3xl border-2 border-dashed border-gray-300 bg-gray-50/50 p-8 text-gray-500">
+                        <div className="mb-4 rounded-full bg-white p-4 shadow-sm ring-1 ring-gray-200">
+                          <svg className="h-10 w-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M9 5h6m-6 4h6m-6 4h4m-7 8h12a2 2 0 002-2V5a2 2 0 00-2-2H6a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                          </svg>
+                        </div>
+                        <h3 className="mb-1 text-lg font-semibold text-gray-900">No special orders yet</h3>
+                        <p className="mx-auto max-w-md text-sm text-gray-500">Create a special order to get started.</p>
+                      </div>
+                    </td>
+                  </tr>
+                ) : paginatedOrders.map((order) => {
                   const summary = summarizeOrder(order);
                   const canEdit = canEditSpecialOrder(order);
                   const isInProgress = order.status === 'In Progress';
@@ -667,7 +675,6 @@ const SpecialOrders = () => {
                 })}
               </tbody>
             </table>
-            )}
           </div>
 
           <div className="shrink-0 border-t border-gray-200 bg-slate-200/95 px-4 py-2 shadow-[0_-8px_24px_rgba(0,0,0,0.08)] backdrop-blur-sm md:px-6 md:py-3">
