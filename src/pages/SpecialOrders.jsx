@@ -18,6 +18,8 @@ import { printReceipt } from '../services/receiptPrinter';
 import { subscribeRealtimeEvent } from '../services/realtimeClient';
 import { formatCurrency } from '../utils/numberFormat';
 import { createClientRequestId } from '../utils/clientRequestId';
+import { downloadSpecialOrderTransactionPdf } from '../utils/specialOrderPdf';
+import logo from '../assets/logo.png';
 import {
   formatMoneyInput,
   isMoneyInput,
@@ -496,23 +498,50 @@ const SpecialOrders = () => {
     if (!orderAction) setOrderToComplete(null);
   };
 
+  const loadFinalizedSpecialOrderReceipt = async (order) => {
+    const result = await getSpecialOrderReceiptApi(order._id);
+    if (!result?.receiptTransaction) {
+      throw new Error('Finalized sale data is unavailable for this transaction.');
+    }
+    return {
+      order: result.order || order,
+      receiptTransaction: result.receiptTransaction,
+    };
+  };
+
   const openSpecialOrderReceiptPreview = async (order) => {
     if (orderAction || order?.status !== 'Completed') return;
 
     setOrderAction('load-receipt');
     try {
-      const result = await getSpecialOrderReceiptApi(order._id);
-      if (!result?.receiptTransaction) {
-        throw new Error('Finalized sale data is unavailable for this receipt.');
-      }
+      const finalized = await loadFinalizedSpecialOrderReceipt(order);
       setReceiptPrintStatus('idle');
       setReceiptPreview({
-        order: result.order || order,
-        receiptTransaction: result.receiptTransaction,
+        ...finalized,
         isReprint: true,
       });
     } catch (error) {
       showToast('Receipt Load Failed', error?.message || 'Unable to load the finalized receipt.', 'error', 'special-order-receipt-load-error');
+    } finally {
+      setOrderAction('');
+    }
+  };
+
+  const downloadSpecialOrderPdf = async (order) => {
+    if (orderAction || order?.status !== 'Completed') return;
+
+    setOrderAction('download-pdf');
+    try {
+      const finalized = await loadFinalizedSpecialOrderReceipt(order);
+      const filename = await downloadSpecialOrderTransactionPdf({
+        order: finalized.order,
+        transaction: finalized.receiptTransaction,
+        settings: appSettings,
+        logoSource: logo,
+      });
+      showToast('Download Ready', `${filename} has been downloaded.`, 'success', 'special-order-pdf-success');
+    } catch (error) {
+      showToast('Download Failed', `${error?.message || 'Unable to generate the Special Order PDF.'} The completed order was not changed; please try again.`, 'error', 'special-order-pdf-error');
     } finally {
       setOrderAction('');
     }
@@ -792,7 +821,10 @@ const SpecialOrders = () => {
             <div className="flex shrink-0 justify-end gap-2 border-t border-gray-200 bg-gray-50 px-4 py-2.5">
               <button type="button" onClick={closeDetails} disabled={Boolean(orderAction)} className={SECONDARY_BUTTON_CLASS}>Close</button>
               {selectedOrder.status === 'Completed' && (
-                <button type="button" onClick={() => openSpecialOrderReceiptPreview(selectedOrder)} disabled={Boolean(orderAction)} className={PRIMARY_BUTTON_CLASS}>{orderAction === 'load-receipt' ? 'Loading...' : 'Print Receipt'}</button>
+                <>
+                  <button type="button" onClick={() => openSpecialOrderReceiptPreview(selectedOrder)} disabled={Boolean(orderAction)} className={PRIMARY_BUTTON_CLASS}>{orderAction === 'load-receipt' ? 'Loading...' : 'Print Receipt'}</button>
+                  <button type="button" onClick={() => downloadSpecialOrderPdf(selectedOrder)} disabled={Boolean(orderAction)} className={SECONDARY_BUTTON_CLASS}>{orderAction === 'download-pdf' ? 'Downloading...' : 'Download PDF'}</button>
+                </>
               )}
               {canEditSpecialOrder(selectedOrder) && (
                 <button type="button" onClick={() => openCompleteConfirmation(selectedOrder)} disabled={Boolean(orderAction)} className={PRIMARY_BUTTON_CLASS}>Complete</button>
