@@ -87,8 +87,17 @@ const listPartners = async (req, res, next) => {
   }
 };
 
-const createPartner = async (req, res, next) => {
+const createPartner = async (req, res, next, dependencies = {}) => {
+  const findByRequestId = dependencies.findByRequestId || ((clientRequestId) => Partner.findOne({ clientRequestId }));
+  const createPartnerRecord = dependencies.createPartnerRecord || ((payload) => Partner.create(payload));
+
   try {
+    const clientRequestId = normalizeString(req.body?.clientRequestId);
+    if (clientRequestId) {
+      const existing = await findByRequestId(clientRequestId);
+      if (existing) return res.status(200).json(existing);
+    }
+
     const type = normalizeString(req.body?.type).toLowerCase();
     const name = normalizeString(req.body?.name);
     const contact = normalizeString(req.body?.contact);
@@ -111,7 +120,7 @@ const createPartner = async (req, res, next) => {
       return res.status(400).json({ message: 'email must be valid when provided.' });
     }
 
-    const partner = await Partner.create({
+    const partner = await createPartnerRecord({
       type,
       name,
       contact,
@@ -122,6 +131,7 @@ const createPartner = async (req, res, next) => {
       customerType: type === 'customer' ? customerType : 'regular',
       isVerifiedCustomer: type === 'customer' ? isVerifiedCustomer : true,
       isVatExempt: false,
+      ...(clientRequestId ? { clientRequestId } : {}),
     });
 
     publishPartnersUpdated({
@@ -132,6 +142,10 @@ const createPartner = async (req, res, next) => {
 
     return res.status(201).json(partner);
   } catch (error) {
+    if (error?.code === 11000 && error?.keyPattern?.clientRequestId) {
+      const existing = await findByRequestId(normalizeString(req.body?.clientRequestId));
+      if (existing) return res.status(200).json(existing);
+    }
     return next(error);
   }
 };

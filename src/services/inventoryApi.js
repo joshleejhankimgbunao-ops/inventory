@@ -37,6 +37,7 @@ const mapUiProductToApi = (product) => ({
   supplierName: product.supplier || 'Local Supplier',
   imageUrl: product.imageUrl || '',
   isActive: product.isArchived ? false : true,
+  ...(product.clientRequestId ? { clientRequestId: product.clientRequestId } : {}),
 });
 
 export const listProductsApi = async () => {
@@ -73,6 +74,7 @@ export const updateProductStockApi = async (productId, stock, options = {}) => {
     body: JSON.stringify({
       stock,
       ...(adjustmentReason ? { inventoryAdjustmentReason: adjustmentReason } : {}),
+      ...(options.adjustmentRequestId ? { adjustmentRequestId: options.adjustmentRequestId } : {}),
     }),
   });
 };
@@ -312,4 +314,8 @@ export const completeSpecialOrderApi = async (id, payload = {}) => {
     method: 'PATCH',
     body: JSON.stringify(payload),
   });
+};
+
+export const getSpecialOrderReceiptApi = async (id) => {
+  return apiRequest(`/api/special-orders/${id}/receipt`);
 };

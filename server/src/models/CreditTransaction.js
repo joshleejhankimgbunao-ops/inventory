@@ -38,6 +38,11 @@ const paymentHistorySchema = new mongoose.Schema(
       ref: 'User',
       default: null,
     },
+    clientRequestId: {
+      type: String,
+      default: '',
+      trim: true,
+    },
   },
   { _id: false }
 );
@@ -194,6 +199,15 @@ const creditTransactionSchema = new mongoose.Schema(
     },
     proofOfPayment: {
       type: proofOfPaymentSchema,
+      default: null,
+    },
+    paymentProcessingRequestId: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    paymentProcessingStartedAt: {
+      type: Date,
       default: null,
     },
     isArchived: {

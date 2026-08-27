@@ -74,12 +74,15 @@ test('buildReceiptLines preserves credit receipt details in the compact layout',
       date: '2026-08-17',
       cashier: 'Cashier',
       customerName: 'Verified Regular Customer',
+      orderReference: 'TRX-ORDER-001',
+      paymentReference: 'CHK-001',
       paymentMethod: 'Credit',
       paymentStatus: 'Pending',
       termDays: 30,
       dueDate: '2026-09-16',
       creditPaymentMode: 'Credit + Cheque',
       balance: 75,
+      amountPaid: 25,
       total: 100,
       netAmount: 89.29,
       vatAmount: 10.71,
@@ -92,6 +95,9 @@ test('buildReceiptLines preserves credit receipt details in the compact layout',
   assert.ok(lines.every((line) => line.length <= 30));
   assert.ok(lines.every((line) => /^[\x20-\x7e\u20b1]*$/.test(line)));
   assert.match(output, /Customer:/);
+  assert.match(output, /Order Ref:/);
+  assert.match(output, /TRX-ORDER-001/);
+  assert.match(output, /Payment Ref:\s+CHK-001/);
   assert.match(output, /Verified Regular Customer/);
   assert.match(output, /Method:\s+Credit/);
   assert.match(output, /Status:\s+Pending/);
@@ -99,6 +105,7 @@ test('buildReceiptLines preserves credit receipt details in the compact layout',
   assert.match(output, /Due Date:\s+2026-09-16/);
   assert.match(output, /Mode:\s+Credit \+ Cheque/);
   assert.match(output, /Balance:\s+\u20b175\.00/);
+  assert.match(output, /Amount Paid:\s+\u20b125\.00/);
 });
 
 test('buildReceiptLines safely wraps a long Credit Bank Transfer mode and calculated total above one million', () => {
@@ -225,6 +232,30 @@ test('legacy cash receipts omit unavailable tender values instead of inventing z
   assert.doesNotMatch(output, /^Cash:/m);
   assert.doesNotMatch(output, /^Change:/m);
   assert.match(output, /TOTAL:\s+₱100\.00/);
+});
+
+test('Special Order receipts show the saved order reference and paid status', () => {
+  const lines = buildReceiptLines({
+    store: { name: 'Tableria La Confianza' },
+    receipt: {
+      id: 'TRX-SPECIAL-001',
+      specialOrderNumber: 'SO-001',
+      date: '2026-08-27T03:15:00.000Z',
+      cashier: 'Saved Cashier',
+      customerName: 'Saved Customer',
+      paymentMethod: 'Cash',
+      paymentStatus: 'Paid',
+      items: [{ label: 'Finalized Special Item', qty: 1, unitPrice: 250, subtotal: 250 }],
+      netAmount: 250,
+      grossAmount: 250,
+      total: 250,
+    },
+  });
+
+  const output = lines.join('\n');
+  assert.match(output, /Special Order:\s+SO-001/);
+  assert.match(output, /Status:\s+Paid/);
+  assert.match(output, /Finalized Special Item/);
 });
 
 test('printReceipt sends one job from one receipt payload', async () => {

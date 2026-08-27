@@ -55,6 +55,7 @@ const getFieldErrorsFromMessage = (message = '') => {
 const UserList = () => {
     const isMountedRef = useRef(true);
     const tableContainerRef = useRef(null);
+    const userSubmitInFlightRef = useRef(false);
     const { currentUserName, currentAuthUsername, currentAuthUserId, userRole, applyAuthenticatedSession } = useAuth();
     const { logActivity, renameUserReferences, syncUserIdentityReferences } = useInventory();
 
@@ -416,7 +417,7 @@ const UserList = () => {
     const handleSave = async (e) => {
         e.preventDefault();
 
-        if (isSavingUser) {
+        if (userSubmitInFlightRef.current || isSavingUser) {
             return;
         }
 
@@ -461,6 +462,7 @@ const UserList = () => {
             return;
         }
 
+        userSubmitInFlightRef.current = true;
         setIsSavingUser(true);
 
         try {
@@ -655,6 +657,7 @@ const UserList = () => {
             setIsModalOpen(false);
             setFieldErrors({});
         } finally {
+            userSubmitInFlightRef.current = false;
             setIsSavingUser(false);
         }
     };

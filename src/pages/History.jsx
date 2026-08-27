@@ -3,6 +3,7 @@ import Pagination from '../components/Pagination';
 import IdentifierChip from '../components/IdentifierChip';
 import ArchiveIcon from '../components/ArchiveIcon';
 import ToolbarDropdown from '../components/ToolbarDropdown';
+import ReceiptPreviewModal from '../components/ReceiptPreviewModal';
 import { useLocation } from 'react-router-dom';
 import { showToast } from '../utils/toastHelper';
 import { useAuth } from '../context/AuthContext';
@@ -650,16 +651,6 @@ const History = () => {
     }, [location.state, transactions]);
 
     const isAutoReceipt = autoReceiptMode === 'paid-credit';
-    const isCreditReceipt = String(selectedTransaction?.paymentMethod || '').toLowerCase() === 'credit';
-    const hasSavedCash = selectedTransaction?.cash !== null
-        && selectedTransaction?.cash !== undefined
-        && selectedTransaction?.cash !== ''
-        && Number.isFinite(Number(selectedTransaction.cash));
-    const hasSavedChange = selectedTransaction?.change !== null
-        && selectedTransaction?.change !== undefined
-        && selectedTransaction?.change !== ''
-        && Number.isFinite(Number(selectedTransaction.change));
-
     const handlePrint = async () => {
         if (!selectedTransaction || printRequestInFlightRef.current) {
             return;
@@ -1396,151 +1387,21 @@ const History = () => {
 
 
             {showReceipt && selectedTransaction && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-[58mm] overflow-hidden flex flex-col max-h-[90vh]">
-                            <div className="p-3 border-b border-gray-100 flex justify-between items-center bg-gray-50">
-                                <div>
-                                    <h3 className="font-semibold text-lg text-gray-800">
-                                        {isCreditReceipt ? 'Credit Sales Receipt' : 'Cash Sales Receipt'}
-                                    </h3>
-                                    <p className="text-[11px] text-gray-500 mt-0.5">
-                                        {isAutoReceipt ? 'Payment confirmed. Receipt generated.' : 'Official record copy'}
-                                    </p>
-                                </div>
-                                <button
-                                    onClick={() => {
-                                        setShowReceipt(false);
-                                        setAutoReceiptMode(null);
-                                    }}
-                                    className="text-gray-400 hover:text-gray-600"
-                                >
-                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-                                </button>
-                            </div>
-
-                            <div className="flex-1 overflow-y-auto p-2 bg-white" id="history-receipt-content">
-                            <div className="w-full max-w-[58mm] mx-auto px-1 text-[9px] leading-tight">
-                            <div className="text-center mb-3">
-                                <p className="text-[14px] font-semibold text-gray-900 mb-1 leading-tight">Tableria La Confianza</p>
-                                <div className="text-[9px] text-gray-400 mt-1 space-y-0.5 leading-tight">
-                                    <p>Manila S Rd, Calamba, 4027 Laguna</p>
-                                    <p>Tel: (049) 545-2166 | (049) 545 1929</p>
-                                    <p>Cell: 0917-545-2166</p>
-                                </div>
-                            </div>
-                            
-                            <div className="border-t border-dashed border-gray-200 py-2 mb-2">
-                                <div className="flex justify-between mb-1">
-                                    <span className="text-gray-500">Receipt No.:</span>
-                                    <span className="font-mono font-semibold text-gray-800">{selectedTransaction.id}</span>
-                                </div>
-                                {String(selectedTransaction?.saleType || '').toLowerCase() === 'special-order' && (
-                                    <div className="flex justify-between mb-1">
-                                        <span className="text-gray-500">Type:</span>
-                                        <span className="font-semibold text-amber-700">Special Order</span>
-                                    </div>
-                                )}
-                                <div className="flex justify-between mb-1">
-                                    <span className="text-gray-500">Date:</span>
-                                    <span className="text-gray-800">{formatExact(selectedTransaction.date)}</span>
-                                </div>
-                                <div className="flex justify-between">
-                                    <span className="text-gray-500">Cashier:</span>
-                                    <span className="text-gray-800">{selectedTransaction.cashier}</span>
-                                </div>
-                            </div>
-
-                            <table className="w-full mb-3">
-                                <thead>
-                                    <tr className="border-b-2 border-gray-100">
-                                        <th className="py-1 text-left font-semibold text-gray-700 text-[9px]">Item</th>
-                                        <th className="py-1 text-center font-semibold text-gray-700 text-[9px]">Qty</th>
-                                        <th className="py-1 text-right font-semibold text-gray-700 text-[9px]">Amount</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="text-gray-600 text-[9px] leading-tight">
-                                    {selectedTransaction.items.map((item, i) => (
-                                        <tr key={i} className="border-b border-gray-50">
-                                            <td className="py-1">
-                                                <div className="font-semibold text-gray-800 leading-tight">{item.brand ? `${item.brand} ` : ''}{item.name}{item.color ? ` — ${item.color}` : ''}</div>
-                                                <div className="text-[8px] leading-tight">{item.code}</div>
-                                            </td>
-                                            <td className="py-1 text-center">{item.qty}</td>
-                                            <td className="py-1 text-right">₱{formatMoney(item.price * item.qty)}</td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-
-                            <div className="space-y-1 text-right border-t border-gray-200 pt-2 text-[9px] leading-tight">
-                                <div className="flex justify-between text-[13px] font-semibold text-gray-900 pt-1 border-t border-gray-900 mt-1">
-                                    <span>TOTAL</span>
-                                    <span>₱{formatMoney(selectedTransaction.total)}</span>
-                                </div>
-                                {isCreditReceipt ? (
-                                    <>
-                                        <div className="flex justify-between text-gray-600 pt-1 text-[9px] font-semibold uppercase">
-                                            <span>Credit Status</span>
-                                            <span>{selectedTransaction.paymentStatus || 'Pending'}</span>
-                                        </div>
-                                        <div className="flex justify-between text-gray-500 text-[9px]">
-                                            <span>Due Date</span>
-                                            <span>{selectedTransaction.dueDate ? new Date(selectedTransaction.dueDate).toLocaleDateString() : '-'}</span>
-                                        </div>
-                                        {selectedTransaction.creditPaymentMode && (
-                                            <div className="flex justify-between text-gray-500 text-[9px]">
-                                                <span>Mode of Payment</span>
-                                                <span>{selectedTransaction.creditPaymentMode}</span>
-                                            </div>
-                                        )}
-                                    </>
-                                ) : (
-                                    <>
-                                        {hasSavedCash && (
-                                            <div className="flex justify-between text-gray-600 pt-1 text-[9px] font-semibold uppercase">
-                                                <span>Cash Received</span>
-                                                <span>₱{formatMoney(selectedTransaction.cash)}</span>
-                                            </div>
-                                        )}
-                                        {hasSavedChange && (
-                                            <div className="flex justify-between text-gray-500 text-[9px]">
-                                                <span>Change</span>
-                                                <span>₱{formatMoney(selectedTransaction.change)}</span>
-                                            </div>
-                                        )}
-                                    </>
-                                )}
-                            </div>
-
-                            <div className="mt-3 text-center text-[9px] text-gray-400 leading-tight">
-                                <p>Thank you for your business.</p>
-                                <p>Please keep this receipt for returns and support.</p>
-                                {!isAutoReceipt && <p className="mt-2 font-mono">** REPRINT **</p>}
-                            </div>
-                            </div>
-                        </div>
-
-                        <div className="p-2 bg-gray-50 border-t border-gray-100 grid grid-cols-2 gap-2">
-                            <button 
-                                onClick={() => {
-                                    setShowReceipt(false);
-                                    setAutoReceiptMode(null);
-                                }}
-                                className="py-2 px-4 rounded-xl text-xs font-semibold uppercase tracking-widest hover:bg-gray-100 transition-all duration-300 flex items-center justify-center gap-2 shadow-sm transform hover:-translate-y-0.5 text-gray-600 bg-white"
-                            >
-                                Close
-                            </button>
-                            <button 
-                                onClick={handlePrint}
-                                disabled={printStatus === 'printing'}
-                                className={`py-2 px-4 rounded-xl text-xs font-semibold uppercase tracking-widest transition-all duration-300 flex items-center justify-center gap-2 shadow-sm transform ${printStatus === 'printing' ? 'opacity-80 cursor-wait' : 'hover:opacity-90 hover:-translate-y-0.5'}`}
-                                style={{ backgroundColor: printStatus === 'success' ? '#10B981' : '#111827', color: '#ffffff', border: printStatus === 'success' ? '2px solid #10B981' : '2px solid #111827' }}
-                            >
-                                {printStatus === 'printing' ? 'Printing...' : printStatus === 'success' ? 'Printed!' : 'Reprint'}
-                            </button>
-                        </div>
-                    </div>
-                </div>
+                <ReceiptPreviewModal
+                    transaction={selectedTransaction}
+                    settings={appSettings}
+                    subtitle={isAutoReceipt ? 'Payment confirmed. Receipt generated.' : 'Official record copy'}
+                    isReprint={!isAutoReceipt}
+                    printStatus={printStatus}
+                    printLabel="Reprint"
+                    printedLabel="Printed!"
+                    contentId="history-receipt-content"
+                    onClose={() => {
+                        setShowReceipt(false);
+                        setAutoReceiptMode(null);
+                    }}
+                    onPrint={handlePrint}
+                />
             )}
 
             {/* Archive Confirmation Modal */}

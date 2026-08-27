@@ -67,6 +67,18 @@ const productSchema = new mongoose.Schema(
       trim: true,
       lowercase: true,
     },
+    clientRequestId: {
+      type: String,
+      trim: true,
+      unique: true,
+      sparse: true,
+      index: true,
+    },
+    lastStockAdjustmentRequestId: {
+      type: String,
+      default: '',
+      trim: true,
+    },
     manualAlternatives: {
       type: [String],
       default: [],

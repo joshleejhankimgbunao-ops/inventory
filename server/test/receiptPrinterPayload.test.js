@@ -95,3 +95,46 @@ test('reprint payloads are explicitly marked without changing the saved transact
   assert.equal(reprintPayload.receipt.id, transaction.id);
   assert.deepEqual(reprintPayload.receipt.items, originalPayload.receipt.items);
 });
+
+test('Special Order receipts preserve the finalized reference and payment status', async () => {
+  const { buildReceiptPrintPayload } = await loadReceiptPrinter();
+  const payload = buildReceiptPrintPayload({
+    id: 'TRX-SPECIAL-001',
+    specialOrderNumber: 'SO-001',
+    paymentMethod: 'Cash',
+    paymentStatus: 'Paid',
+    total: 250,
+    items: [{ name: 'Finalized Special Item', qty: 1, price: 250, subtotal: 250 }],
+  });
+
+  assert.equal(payload.receipt.specialOrderNumber, 'SO-001');
+  assert.equal(payload.receipt.paymentStatus, 'Paid');
+  assert.equal(payload.receipt.items[0].label, 'Finalized Special Item');
+});
+
+test('paid Credit receipt payload preserves saved payment and order references', async () => {
+  const { buildReceiptPrintPayload } = await loadReceiptPrinter();
+  const transaction = {
+    id: 'CR-PAID-001',
+    orderReference: 'TRX-ORDER-001',
+    paymentReference: 'CHK-001',
+    paymentMethod: 'Credit',
+    paymentStatus: 'Paid',
+    creditPaymentMode: 'Cheque',
+    amountPaid: 500,
+    remainingBalance: 0,
+    total: 500,
+    items: [{ name: 'Saved Credit Item', qty: 1, price: 500, subtotal: 500 }],
+  };
+
+  const firstPrint = buildReceiptPrintPayload(transaction, {});
+  const reprint = buildReceiptPrintPayload(transaction, {}, { isReprint: true });
+
+  assert.equal(firstPrint.receipt.orderReference, 'TRX-ORDER-001');
+  assert.equal(firstPrint.receipt.paymentReference, 'CHK-001');
+  assert.equal(firstPrint.receipt.amountPaid, 500);
+  assert.equal(firstPrint.receipt.balance, 0);
+  assert.equal(firstPrint.receipt.isReprint, false);
+  assert.deepEqual(reprint.receipt.items, firstPrint.receipt.items);
+  assert.equal(reprint.receipt.isReprint, true);
+});

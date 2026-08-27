@@ -11,6 +11,7 @@ const { R2StorageError, isObjectNotFoundError, r2Storage } = require('../service
 
 const normalizeString = (value) => String(value || '').trim();
 const MAX_CREDIT_TERM_DAYS = 60;
+const PAYMENT_PROCESSING_LOCK_MS = 5 * 60 * 1000;
 const PROOF_OF_PAYMENT_DIRECTORY = path.resolve(__dirname, '../../uploads/payment-proofs');
 const PAYMENT_PROOF_PREFIX = 'payment-proofs/';
 const JPEG_SIGNATURE = [0xff, 0xd8, 0xff];
@@ -453,6 +454,7 @@ const applyPaymentToCreditTransaction = async ({
   reference,
   note,
   paymentDate,
+  clientRequestId = '',
   user,
   req,
   onTransactionSaved,
@@ -489,6 +491,7 @@ const applyPaymentToCreditTransaction = async ({
     note: normalizeString(note),
     recordedBy: user?.displayName || user?.name || user?.username || 'System',
     recordedById: user?._id || null,
+    clientRequestId: normalizeString(clientRequestId),
   });
   transaction.amountPaid = nextAmountPaid;
   transaction.remainingBalance = nextRemaining;
@@ -522,15 +525,57 @@ const applyPaymentToCreditTransaction = async ({
   return transaction;
 };
 
-const recordCreditPayment = async (req, res, next) => {
+const recordCreditPayment = async (req, res, next, dependencies = {}) => {
+  const { id } = req.params;
+  const paymentRequestId = normalizeString(req.body?.clientRequestId) || randomUUID();
+  const findTransaction = dependencies.findTransaction || ((transactionId) => CreditTransaction.findById(transactionId));
+  const claimPayment = dependencies.claimPayment || (async ({ transactionId, requestId }) => CreditTransaction.findOneAndUpdate(
+    {
+      _id: transactionId,
+      remainingBalance: { $gt: 0 },
+      'paymentHistory.clientRequestId': { $ne: requestId },
+      $or: [
+        { paymentProcessingRequestId: '' },
+        { paymentProcessingRequestId: null },
+        { paymentProcessingRequestId: { $exists: false } },
+        { paymentProcessingStartedAt: { $lt: new Date(Date.now() - PAYMENT_PROCESSING_LOCK_MS) } },
+      ],
+    },
+    {
+      $set: {
+        paymentProcessingRequestId: requestId,
+        paymentProcessingStartedAt: new Date(),
+      },
+    },
+    { new: true }
+  ));
+  const releasePayment = dependencies.releasePayment || (async ({ transactionId, requestId }) => CreditTransaction.updateOne(
+    { _id: transactionId, paymentProcessingRequestId: requestId },
+    { $set: { paymentProcessingRequestId: '', paymentProcessingStartedAt: null } }
+  ));
+  let paymentClaimed = false;
+
   try {
-    const { id } = req.params;
-    const transaction = await CreditTransaction.findById(id);
+    let transaction = await findTransaction(id);
     if (!transaction) {
       return res.status(404).json({ message: 'Credit transaction not found.' });
     }
 
     await ensureCashierOwnsCreditTransaction({ transaction, user: req.user });
+    if ((transaction.paymentHistory || []).some((payment) => payment?.clientRequestId === paymentRequestId)) {
+      return res.json(transaction);
+    }
+
+    const claimedTransaction = await claimPayment({ transactionId: id, requestId: paymentRequestId, transaction });
+    if (!claimedTransaction) {
+      transaction = await findTransaction(id);
+      if ((transaction?.paymentHistory || []).some((payment) => payment?.clientRequestId === paymentRequestId)) {
+        return res.json(transaction);
+      }
+      return res.status(409).json({ message: 'This payment is already being processed.' });
+    }
+    transaction = claimedTransaction;
+    paymentClaimed = true;
 
     const updated = await applyPaymentToCreditTransaction({
       transaction,
@@ -539,6 +584,7 @@ const recordCreditPayment = async (req, res, next) => {
       reference: req.body?.reference,
       note: req.body?.note,
       paymentDate: req.body?.paymentDate,
+      clientRequestId: paymentRequestId,
       user: req.user,
       req,
     });
@@ -549,35 +595,74 @@ const recordCreditPayment = async (req, res, next) => {
       return res.status(error.status).json({ message: error.message });
     }
     return next(error);
+  } finally {
+    if (paymentClaimed) {
+      try {
+        await releasePayment({ transactionId: id, requestId: paymentRequestId });
+      } catch (releaseError) {
+        console.error('Unable to release credit payment processing lock:', releaseError.message);
+      }
+    }
   }
 };
 
 const markCreditTransactionFullyPaid = async (req, res, next, dependencies = {}) => {
   let savedProof = null;
   let isProofReferenced = false;
+  let paymentClaimed = false;
+  const paymentRequestId = normalizeString(req.body?.clientRequestId) || randomUUID();
   const findTransaction = dependencies.findTransaction || ((id) => CreditTransaction.findById(id));
   const ensureOwnership = dependencies.ensureOwnership || ensureCashierOwnsCreditTransaction;
   const persistProof = dependencies.persistProof || persistProofOfPayment;
   const applyPayment = dependencies.applyPayment || applyPaymentToCreditTransaction;
   const removeProof = dependencies.removeProof || removeStoredProof;
   const findSale = dependencies.findSale || ((id) => Sale.findById(id));
+  const claimPayment = dependencies.claimPayment || (dependencies.findTransaction
+    ? (async ({ transaction }) => transaction)
+    : (async ({ id, requestId }) => CreditTransaction.findOneAndUpdate(
+      {
+        _id: id,
+        remainingBalance: { $gt: 0 },
+        'paymentHistory.clientRequestId': { $ne: requestId },
+        $or: [
+          { paymentProcessingRequestId: '' },
+          { paymentProcessingRequestId: null },
+          { paymentProcessingRequestId: { $exists: false } },
+          { paymentProcessingStartedAt: { $lt: new Date(Date.now() - PAYMENT_PROCESSING_LOCK_MS) } },
+        ],
+      },
+      {
+        $set: {
+          paymentProcessingRequestId: requestId,
+          paymentProcessingStartedAt: new Date(),
+        },
+      },
+      { new: true }
+    )));
+  const releasePayment = dependencies.releasePayment || (dependencies.findTransaction
+    ? (async () => {})
+    : (async ({ id, requestId }) => CreditTransaction.updateOne(
+      { _id: id, paymentProcessingRequestId: requestId },
+      { $set: { paymentProcessingRequestId: '', paymentProcessingStartedAt: null } }
+    )));
 
   try {
     const { id } = req.params;
-    const transaction = await findTransaction(id);
+    let transaction = await findTransaction(id);
     if (!transaction) {
       return res.status(404).json({ message: 'Credit transaction not found.' });
     }
 
     await ensureOwnership({ transaction, user: req.user });
 
+    if ((transaction.paymentHistory || []).some((payment) => payment?.clientRequestId === paymentRequestId)) {
+      return res.json(transaction);
+    }
+
     const remaining = Number(transaction.remainingBalance || 0);
     if (remaining <= 0) {
       return res.json(transaction);
     }
-
-    const proofOfPayment = await persistProof({ file: req.file, user: req.user });
-    savedProof = proofOfPayment;
 
     const extensionRaw = Object.prototype.hasOwnProperty.call(req.body || {}, 'extensionDays')
       ? req.body.extensionDays
@@ -586,6 +671,16 @@ const markCreditTransactionFullyPaid = async (req, res, next, dependencies = {})
     if (extensionDays === null) {
       return res.status(400).json({ message: 'Extension day must be a whole number greater than or equal to 0.' });
     }
+
+    const claimedTransaction = await claimPayment({ id, requestId: paymentRequestId, transaction });
+    if (!claimedTransaction) {
+      return res.status(409).json({ message: 'This payment is already being processed.' });
+    }
+    transaction = claimedTransaction;
+    paymentClaimed = true;
+
+    const proofOfPayment = await persistProof({ file: req.file, user: req.user });
+    savedProof = proofOfPayment;
 
     if (extensionDays > 0) {
       await applyCreditTermExtension({ transaction, extensionDays });
@@ -605,6 +700,7 @@ const markCreditTransactionFullyPaid = async (req, res, next, dependencies = {})
       reference: req.body?.reference,
       note: noteWithExtension,
       paymentDate: req.body?.paymentDate,
+      clientRequestId: paymentRequestId,
       user: req.user,
       req,
       onTransactionSaved: () => {
@@ -634,6 +730,14 @@ const markCreditTransactionFullyPaid = async (req, res, next, dependencies = {})
       return res.status(error.status).json({ message: error.message });
     }
     return next(error);
+  } finally {
+    if (paymentClaimed) {
+      try {
+        await releasePayment({ id: req.params.id, requestId: paymentRequestId });
+      } catch (releaseError) {
+        console.error('Unable to release credit payment processing lock:', releaseError.message);
+      }
+    }
   }
 };
 

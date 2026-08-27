@@ -9,6 +9,7 @@ import { getAuthToken } from '../services/apiClient';
 import { updateProductStockApi } from '../services/inventoryApi';
 import { getStockStatus } from '../utils/recommendationLogic';
 import { formatNumber } from '../utils/numberFormat';
+import { createClientRequestId } from '../utils/clientRequestId';
 import {
     isWholeNumberInput,
     preventInvalidWholeNumberKeyDown,
@@ -18,6 +19,8 @@ import {
 
 const Inventory = () => {
     const listContainerRef = useRef(null);
+    const stockSubmitInFlightRef = useRef(false);
+    const stockAdjustmentRequestIdRef = useRef('');
     const { inventory, setInventory, logAction, logActivity } = useInventory();
     const { appSettings, currentUserName } = useAuth();
 
@@ -82,6 +85,7 @@ const Inventory = () => {
     }; 
 
     const [isStockModalOpen, setIsStockModalOpen] = useState(false);
+    const [isStockSubmitting, setIsStockSubmitting] = useState(false);
     const [modalAction, setModalAction] = useState('IN'); // 'IN' (Add Stock) or 'OUT' (Remove/Adjust)
     const [selectedItem, setSelectedItem] = useState(null);
     const [stockForm, setStockForm] = useState({ quantity: '', reason: '', notes: '', otherReason: '' });
@@ -281,6 +285,7 @@ const Inventory = () => {
     // --- STOCK MANAGEMENT LOGIC ---
 
     const handleOpenStockModal = (item, action) => {
+        stockAdjustmentRequestIdRef.current = createClientRequestId('stock-adjustment');
         setSelectedItem(item);
         setModalAction(action);
         setStockForm({ quantity: '', reason: action === 'IN' ? 'Delivery' : 'Damage', notes: '', otherReason: '' });
@@ -289,6 +294,7 @@ const Inventory = () => {
 
     const handleStockSubmit = async (e) => {
         e.preventDefault();
+        if (stockSubmitInFlightRef.current) return;
         const hasValidQuantity = isWholeNumberInput(stockForm.quantity, { min: 1 });
         const qty = hasValidQuantity ? Number(stockForm.quantity) : 0;
         const reasonValue = stockForm.reason === 'Other'
@@ -315,6 +321,10 @@ const Inventory = () => {
             }
         }
 
+        stockSubmitInFlightRef.current = true;
+        setIsStockSubmitting(true);
+
+        try {
         const maxStockLimit = (appSettings && appSettings.maxStockLimit) ? parseInt(appSettings.maxStockLimit) : 100;
         const updatedInventory = inventory.map(item => {
             if (item.code === selectedItem.code) {
@@ -347,6 +357,7 @@ const Inventory = () => {
             try {
                 await updateProductStockApi(selectedItem.id, selectedUpdatedItem.stock, {
                     adjustmentReason: reasonValue,
+                    adjustmentRequestId: stockAdjustmentRequestIdRef.current,
                 });
             } catch (error) {
                 showToast('Sync Failed', error.message || 'Stock change was not synced to server.', 'error', 'stock-sync');
@@ -366,10 +377,15 @@ const Inventory = () => {
         logActivity(currentUserName || 'System', modalAction === 'IN' ? 'Stock In' : 'Stock Out', `${selectedItem.code}: ${logDesc}`);
 
         setIsStockModalOpen(false);
+        stockAdjustmentRequestIdRef.current = '';
         if (modalAction === 'IN') {
             showToast('Success', 'Stock received successfully', 'success', 'stock-update');
         } else {
             showToast('Updated', 'Stock adjusted successfully', 'save', 'stock-update');
+        }
+        } finally {
+            stockSubmitInFlightRef.current = false;
+            setIsStockSubmitting(false);
         }
     };
 
@@ -635,6 +651,7 @@ const Inventory = () => {
                             <button
                                 type="button"
                                 onClick={() => setIsStockModalOpen(false)}
+                                disabled={isStockSubmitting}
                                 className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-gray-400 transition-all hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-200"
                                 aria-label={`Close ${modalAction === 'IN' ? 'stock in' : 'stock out'} modal`}
                             >
@@ -737,10 +754,11 @@ const Inventory = () => {
 
                             <button 
                                 type="submit"
+                                disabled={isStockSubmitting}
                                 className="w-full py-3 rounded-xl font-semibold tracking-widest text-white shadow-lg transition-transform transform hover:-translate-y-0.5 mt-2"
                                 style={{ backgroundColor: '#111827' }}
                             >
-                                Confirm {modalAction === 'IN' ? 'Stock' : 'Removal'}
+                                {isStockSubmitting ? 'Processing...' : `Confirm ${modalAction === 'IN' ? 'Stock' : 'Removal'}`}
                             </button>
                         </form>
                     </div>

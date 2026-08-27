@@ -17,6 +17,7 @@ import { subscribeRealtimeEvent } from '../services/realtimeClient';
 import Pagination from '../components/Pagination';
 import ArchiveIcon from '../components/ArchiveIcon';
 import EditIcon from '../components/EditIcon';
+import { createClientRequestId } from '../utils/clientRequestId';
 
 const EMAIL_RULE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PARTNERS_PER_PAGE = 15;
@@ -84,6 +85,9 @@ const Partners = ({ viewOnly = false }) => {
     const [isArchiveModalOpen, setIsArchiveModalOpen] = useState(false);
     const [partnerToArchive, setPartnerToArchive] = useState(null);
     const [isLoadingPartners, setIsLoadingPartners] = useState(false);
+    const [isSavingPartner, setIsSavingPartner] = useState(false);
+    const partnerSubmitInFlightRef = useRef(false);
+    const partnerCreateRequestIdRef = useRef('');
 
     // New State for Restock Recommendations
     const [isRecModalOpen, setIsRecModalOpen] = useState(false);
@@ -333,6 +337,7 @@ const Partners = ({ viewOnly = false }) => {
     const handleAddPartner = async (e) => {
         if (isViewOnly) return;
         e.preventDefault();
+        if (partnerSubmitInFlightRef.current) return;
         const normalizedEmail = (newPartner.email || '').trim().toLowerCase();
 
         if (!EMAIL_RULE.test(normalizedEmail)) {
@@ -365,8 +370,13 @@ const Partners = ({ viewOnly = false }) => {
             supplierCapabilities: activeTab === 'suppliers'
                 ? (Array.isArray(newPartner.supplierCapabilities) ? newPartner.supplierCapabilities : [])
                 : [],
+            ...(!isEditMode ? {
+                clientRequestId: partnerCreateRequestIdRef.current || (partnerCreateRequestIdRef.current = createClientRequestId('partner')),
+            } : {}),
         };
 
+        partnerSubmitInFlightRef.current = true;
+        setIsSavingPartner(true);
         try {
             if (isEditMode && editingId) {
                 await updatePartnerApi(editingId, payload, { expectedUpdatedAt: editingUpdatedAt });
@@ -384,6 +394,7 @@ const Partners = ({ viewOnly = false }) => {
             setCapabilityDraft({ category: '', brand: '' });
             setIsEditMode(false);
             setEditingId(null);
+            partnerCreateRequestIdRef.current = '';
         } catch (error) {
             if (Number(error?.status || 0) === 409) {
                 await loadPartners();
@@ -395,6 +406,9 @@ const Partners = ({ viewOnly = false }) => {
                 return;
             }
             showToast('Save Failed', error.message || 'Unable to save partner.', 'error', 'partner-save');
+        } finally {
+            partnerSubmitInFlightRef.current = false;
+            setIsSavingPartner(false);
         }
     };
 
@@ -424,6 +438,7 @@ const Partners = ({ viewOnly = false }) => {
         setIsEditMode(true);
         setEditingId(item.id);
         setEditingUpdatedAt(item.updatedAt || null);
+        partnerCreateRequestIdRef.current = '';
         setIsAddModalOpen(true);
     };
 
@@ -504,6 +519,7 @@ const Partners = ({ viewOnly = false }) => {
                             <button 
                                 onClick={() => {
                                     setIsEditMode(false);
+                                    partnerCreateRequestIdRef.current = '';
                                     setIsAddModalOpen(true);
                                     setCapabilityDraft({ category: '', brand: '' });
                                     setNewPartner({ name: '', contact: '', email: '', address: '', note: '', supplierCapabilities: [] });
@@ -730,7 +746,7 @@ const Partners = ({ viewOnly = false }) => {
                                         <p className="text-[10px] text-gray-500 mt-0.5">{isEditMode ? 'Update partner details.' : 'Register a new partner to the directory.'}</p>
                                     </div>
                                 </div>
-                                <button onClick={() => setIsAddModalOpen(false)} className="text-gray-400 hover:text-gray-600 p-1 hover:bg-gray-50 rounded-lg transition-colors">
+                                <button type="button" onClick={() => setIsAddModalOpen(false)} disabled={isSavingPartner} className="text-gray-400 hover:text-gray-600 p-1 hover:bg-gray-50 rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-50">
                                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                                 </button>
                             </div>
@@ -871,10 +887,11 @@ const Partners = ({ viewOnly = false }) => {
                                 <div className="pt-1">
                                     <button 
                                         type="submit" 
+                                        disabled={isSavingPartner}
                                         className="w-full py-2 rounded-lg font-semibold tracking-widest hover:opacity-90 transition-all duration-300 shadow-md transform hover:-translate-y-0.5 text-xs text-center"
                                         style={{ backgroundColor: '#111827', color: '#ffffff', border: '2px solid #111827' }}
                                     >
-                                        Save {activeTab === 'suppliers' ? 'Supplier' : 'Customer'}
+                                        {isSavingPartner ? 'Saving...' : `Save ${activeTab === 'suppliers' ? 'Supplier' : 'Customer'}`}
                                     </button>
                                 </div>
                             </form>

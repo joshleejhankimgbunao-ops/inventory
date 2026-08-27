@@ -23,6 +23,7 @@ import {
     sanitizeWholeNumberInput,
 } from '../utils/numericInput';
 import { formatCurrency } from '../utils/numberFormat';
+import { createClientRequestId } from '../utils/clientRequestId';
 
 const getProductImageUrl = (item) => String(item?.imageUrl || '').trim();
 const QUOTATION_NAME_MAX_LENGTH = 32;
@@ -809,9 +810,11 @@ const PointOfSale = () => {
         setIsCheckoutProcessing(true);
 
         const cartSnapshot = [...cart];
+        const saleRequestId = createClientRequestId('sale');
 
         const transactionData = {
-            id: `TRX-${Date.now().toString().slice(-6)}`,
+            id: `TRX-${saleRequestId.slice(-8).toUpperCase()}`,
+            clientRequestId: saleRequestId,
             date: new Date().toLocaleString(),
             items: [...cartSnapshot],
             total,
@@ -862,7 +865,7 @@ const PointOfSale = () => {
                     const savedSale = await createSaleApi(
                         apiItems,
                         isCreditCheckout ? 'credit' : paymentType,
-                        transactionData.id,
+                        transactionData.clientRequestId,
                         isCreditCheckout
                             ? {
                                 customerId: selectedCreditCustomerId,
@@ -956,7 +959,7 @@ const PointOfSale = () => {
             // Ensure items have IDs for backend sync later
             addToSyncQueue({
                 ...transactionData,
-                clientRequestId: transactionData.id,
+                clientRequestId: transactionData.clientRequestId,
                 items: cartSnapshot.map(i => ({ ...i, id: i.id || i._id })),
             });
 

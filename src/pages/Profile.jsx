@@ -214,6 +214,8 @@ const Profile = () => {
     const [activeSection, setActiveSection] = useState('personal');
     const [showSecurityRequirementModal, setShowSecurityRequirementModal] = useState(false);
     const [isProfileHydrating, setIsProfileHydrating] = useState(() => !cachedProfileSnapshot);
+    const [isProfileSaving, setIsProfileSaving] = useState(false);
+    const profileSaveInFlightRef = useRef(false);
 
     const profileSections = [
         { id: 'personal', label: 'Personal Details' },
@@ -490,6 +492,8 @@ const Profile = () => {
     }, [oldPin]);
 
     const handleSave = async () => {
+        if (profileSaveInFlightRef.current) return;
+
         const normalizedEmail = (profileData.email || '').trim().toLowerCase();
         const nextDisplayName = (
             userRole === ROLES.SUPER_ADMIN
@@ -568,6 +572,9 @@ const Profile = () => {
             }
         }
 
+        profileSaveInFlightRef.current = true;
+        setIsProfileSaving(true);
+        try {
         let response;
         try {
             response = await updateMyProfileApi({
@@ -660,6 +667,10 @@ const Profile = () => {
         }
 
         showToast('Success', newPin ? 'Profile and PIN updated successfully.' : 'Profile updated successfully.', 'save', 'profile-save');
+        } finally {
+            profileSaveInFlightRef.current = false;
+            setIsProfileSaving(false);
+        }
     };
 
     const handleFileChange = (e) => {
@@ -1421,14 +1432,14 @@ const Profile = () => {
                                         <button
                                             type="button"
                                             onClick={handleSave}
-                                            disabled={!isModified}
+                                            disabled={!isModified || isProfileSaving}
                                             className={`px-5 py-2 rounded-xl text-xs font-semibold uppercase tracking-wider transition-all ${
-                                                isModified
+                                                isModified && !isProfileSaving
                                                     ? 'bg-gray-900 text-white hover:bg-gray-800 shadow-sm'
                                                     : 'bg-gray-900 text-white/70 cursor-not-allowed'
                                             }`}
                                         >
-                                            Save Changes
+                                            {isProfileSaving ? 'Saving...' : 'Save Changes'}
                                         </button>
                                     </div>
                                 </div>

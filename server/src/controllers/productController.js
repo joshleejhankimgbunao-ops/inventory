@@ -101,6 +101,12 @@ const listProducts = async (req, res, next) => {
 
 const createProduct = async (req, res, next) => {
   try {
+    const clientRequestId = normalizeString(req.body?.clientRequestId);
+    if (clientRequestId) {
+      const existing = await Product.findOne({ clientRequestId });
+      if (existing) return res.status(200).json(existing);
+    }
+
     const name = normalizeString(req.body?.name);
     const requestedSku = normalizeSku(req.body?.sku);
     const category = normalizeString(req.body?.category);
@@ -133,6 +139,7 @@ const createProduct = async (req, res, next) => {
       imageUrl,
       stock,
       price,
+      ...(clientRequestId ? { clientRequestId } : {}),
     };
 
     let product;
@@ -148,6 +155,10 @@ const createProduct = async (req, res, next) => {
       try {
         product = await Product.create({ ...createPayload, sku: requestedSku });
       } catch (error) {
+        if (error?.code === 11000 && error?.keyPattern?.clientRequestId) {
+          const existing = await Product.findOne({ clientRequestId });
+          if (existing) return res.status(200).json(existing);
+        }
         if (isDuplicateKeyError(error)) {
           return res.status(409).json({ message: 'SKU already exists.' });
         }
@@ -160,6 +171,10 @@ const createProduct = async (req, res, next) => {
           product = await Product.create({ ...createPayload, sku: generatedSku });
           break;
         } catch (error) {
+          if (error?.code === 11000 && error?.keyPattern?.clientRequestId) {
+            const existing = await Product.findOne({ clientRequestId });
+            if (existing) return res.status(200).json(existing);
+          }
           if (!isDuplicateKeyError(error)) {
             throw error;
           }
@@ -271,6 +286,13 @@ const updateProduct = async (req, res, next) => {
     }
 
     const stockBefore = Number(existing.stock || 0);
+    const adjustmentRequestId = req.body?.stock !== undefined
+      ? normalizeString(req.body?.adjustmentRequestId)
+      : '';
+
+    if (adjustmentRequestId && existing.lastStockAdjustmentRequestId === adjustmentRequestId) {
+      return res.json(existing);
+    }
 
     const payload = {};
 
@@ -300,6 +322,7 @@ const updateProduct = async (req, res, next) => {
         return res.status(400).json({ message: 'stock must be a non-negative whole number.' });
       }
       payload.stock = stockValue;
+      if (adjustmentRequestId) payload.lastStockAdjustmentRequestId = adjustmentRequestId;
     }
 
     if (req.body?.price !== undefined) {
@@ -310,10 +333,23 @@ const updateProduct = async (req, res, next) => {
       payload.price = priceValue;
     }
 
-    const product = await Product.findByIdAndUpdate(id, payload, {
+    const product = await Product.findOneAndUpdate({
+      _id: id,
+      ...(adjustmentRequestId ? { lastStockAdjustmentRequestId: { $ne: adjustmentRequestId } } : {}),
+    }, payload, {
       new: true,
       runValidators: true,
     });
+
+    if (!product && adjustmentRequestId) {
+      const replayedProduct = await Product.findById(id);
+      if (replayedProduct?.lastStockAdjustmentRequestId === adjustmentRequestId) {
+        return res.json(replayedProduct);
+      }
+    }
+    if (!product) {
+      return res.status(404).json({ message: 'Product not found.' });
+    }
 
     const stockAfter = Number(product.stock || 0);
     const stockDelta = stockAfter - stockBefore;

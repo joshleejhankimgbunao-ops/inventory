@@ -13,9 +13,13 @@ import {
 import { subscribeRealtimeEvent } from '../services/realtimeClient';
 import Pagination from '../components/Pagination';
 import IdentifierChip from '../components/IdentifierChip';
+import ReceiptPreviewModal from '../components/ReceiptPreviewModal';
 import { formatCurrency, formatNumber } from '../utils/numberFormat';
 import { getCreditDueStatus } from '../utils/creditDueStatus';
 import { getActorDisplayName } from '../utils/actorDisplay';
+import { createClientRequestId } from '../utils/clientRequestId';
+import { buildCreditReceiptTransaction, isFullyPaidCreditTransaction } from '../utils/creditReceipt';
+import { printReceipt } from '../services/receiptPrinter';
 import {
     isWholeNumberInput,
     preventInvalidWholeNumberKeyDown,
@@ -85,7 +89,7 @@ const MAX_PROOF_OF_PAYMENT_SIZE = 5 * 1024 * 1024;
 const ACCEPTED_PROOF_MIME_TYPES = new Set(['image/jpeg', 'image/png']);
 
 const CreditTransactions = () => {
-    const { userRole, currentUserName, ROLES } = useAuth();
+    const { appSettings, userRole, currentUserName, ROLES } = useAuth();
     const [rows, setRows] = useState([]);
     const [summary, setSummary] = useState({
         totalCreditReceivables: 0,
@@ -110,6 +114,9 @@ const CreditTransactions = () => {
 
     const [selectedRecord, setSelectedRecord] = useState(null);
     const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+    const [creditReceiptPreview, setCreditReceiptPreview] = useState(null);
+    const [creditReceiptPrintStatus, setCreditReceiptPrintStatus] = useState('idle');
+    const creditReceiptPrintInFlightRef = useRef(false);
 
     const [isMarkPaidModalOpen, setIsMarkPaidModalOpen] = useState(false);
     const [markPaidModalMode, setMarkPaidModalMode] = useState('markPaid');
@@ -131,6 +138,8 @@ const CreditTransactions = () => {
     });
     const [isSavingMarkPaid, setIsSavingMarkPaid] = useState(false);
     const [isSavingExtensionOnly, setIsSavingExtensionOnly] = useState(false);
+    const creditMutationInFlightRef = useRef(false);
+    const markPaidRequestIdRef = useRef('');
     const [isCancellingCredit, setIsCancellingCredit] = useState(false);
     const [proofFile, setProofFile] = useState(null);
     const [proofPreviewUrl, setProofPreviewUrl] = useState('');
@@ -388,6 +397,45 @@ const CreditTransactions = () => {
         }
     };
 
+    const openCreditReceiptPreview = (record, { isReprint = true } = {}) => {
+        if (!isFullyPaidCreditTransaction(record)) return;
+
+        setCreditReceiptPrintStatus('idle');
+        setCreditReceiptPreview({
+            record,
+            transaction: buildCreditReceiptTransaction(record),
+            isReprint,
+        });
+    };
+
+    const closeCreditReceiptPreview = () => {
+        if (creditReceiptPrintInFlightRef.current) return;
+        setCreditReceiptPreview(null);
+        setCreditReceiptPrintStatus('idle');
+    };
+
+    const printCreditReceipt = async () => {
+        if (!creditReceiptPreview?.transaction || creditReceiptPrintInFlightRef.current) return;
+
+        creditReceiptPrintInFlightRef.current = true;
+        setCreditReceiptPrintStatus('printing');
+        try {
+            await printReceipt({
+                transaction: creditReceiptPreview.transaction,
+                settings: appSettings,
+                isReprint: creditReceiptPreview.isReprint,
+            });
+            setCreditReceiptPrintStatus('success');
+            showToast('Print Success', 'Receipt sent to the thermal printer.', 'success', 'credit-receipt-print-success');
+        } catch (error) {
+            setCreditReceiptPrintStatus('idle');
+            const details = error?.message || 'Unable to print the paid Credit receipt.';
+            showToast('Print Failed', `${details} The transaction remains Paid; you can retry from View Details.`, 'error', 'credit-receipt-print-error');
+        } finally {
+            creditReceiptPrintInFlightRef.current = false;
+        }
+    };
+
     const clearProofSelection = () => {
         setProofFile(null);
         setProofPreviewUrl('');
@@ -415,6 +463,7 @@ const CreditTransactions = () => {
     };
 
     const handleOpenMarkPaidModal = (row, mode = 'markPaid') => {
+        markPaidRequestIdRef.current = '';
         setMarkPaidModalMode(mode);
         setMarkPaidTarget(row);
         setIsCancelModalOpen(false);
@@ -437,6 +486,7 @@ const CreditTransactions = () => {
     };
 
     const handleCancelCreditOrder = async () => {
+        if (creditMutationInFlightRef.current) return;
         if (!markPaidTarget?._id) return;
 
         const reason = String(markPaidForm.cancelReason || '').trim();
@@ -445,6 +495,7 @@ const CreditTransactions = () => {
             return;
         }
 
+        creditMutationInFlightRef.current = true;
         setIsCancellingCredit(true);
         try {
             await cancelCreditTransactionApi(markPaidTarget._id, { reason });
@@ -456,12 +507,14 @@ const CreditTransactions = () => {
         } catch (error) {
             showToast('Cancel Failed', error.message || 'Unable to cancel credit order.', 'error', 'credit-cancel');
         } finally {
+            creditMutationInFlightRef.current = false;
             setIsCancellingCredit(false);
         }
     };
 
     const handleSubmitMarkPaid = async (e) => {
         e.preventDefault();
+        if (creditMutationInFlightRef.current) return;
         if (!markPaidTarget?._id) return;
 
         const amount = Number(markPaidForm.amount || 0);
@@ -490,28 +543,40 @@ const CreditTransactions = () => {
             return;
         }
 
+        creditMutationInFlightRef.current = true;
         setIsSavingMarkPaid(true);
         try {
-            await markCreditTransactionPaidApi(markPaidTarget._id, {
+            const paidTransactionId = markPaidTarget._id;
+            await markCreditTransactionPaidApi(paidTransactionId, {
                 method: markPaidForm.paymentMethod || 'cash',
                 paymentDate: markPaidForm.paymentDate,
                 extensionDays,
                 note: markPaidForm.note,
                 proofFile,
+                clientRequestId: markPaidRequestIdRef.current || (markPaidRequestIdRef.current = createClientRequestId('credit-payment')),
             });
             showToast('Updated', 'Account marked as fully paid.', 'success', 'credit-mark-paid');
             setIsMarkPaidModalOpen(false);
             setMarkPaidTarget(null);
             clearProofSelection();
+            markPaidRequestIdRef.current = '';
+            try {
+                const finalizedRecord = await getCreditTransactionByIdApi(paidTransactionId);
+                openCreditReceiptPreview(finalizedRecord, { isReprint: false });
+            } catch (receiptError) {
+                showToast('Receipt Load Failed', `${receiptError.message || 'Unable to load the finalized receipt.'} The transaction remains Paid; open View Details to retry.`, 'error', 'credit-receipt-load-error');
+            }
             await loadData();
         } catch (error) {
             showToast('Update Failed', error.message || 'Unable to mark account as fully paid.', 'error', 'credit-mark-paid');
         } finally {
+            creditMutationInFlightRef.current = false;
             setIsSavingMarkPaid(false);
         }
     };
 
     const handleSaveExtensionOnly = async () => {
+        if (creditMutationInFlightRef.current) return;
         if (!markPaidTarget?._id) return;
 
         if (!canSaveExtensionOnly) {
@@ -519,6 +584,7 @@ const CreditTransactions = () => {
             return;
         }
 
+        creditMutationInFlightRef.current = true;
         setIsSavingExtensionOnly(true);
         try {
             await extendCreditTransactionTermApi(markPaidTarget._id, {
@@ -532,6 +598,7 @@ const CreditTransactions = () => {
         } catch (error) {
             showToast('Extension Failed', error.message || 'Unable to extend day term.', 'error', 'credit-extension-save');
         } finally {
+            creditMutationInFlightRef.current = false;
             setIsSavingExtensionOnly(false);
         }
     };
@@ -1080,8 +1147,28 @@ const CreditTransactions = () => {
                             </div>
 
                         </div>
+                        {isFullyPaidCreditTransaction(selectedRecord) && (
+                            <div className="flex justify-end gap-2 border-t border-gray-200 bg-gray-50 px-4 py-2.5">
+                                <button type="button" onClick={() => setIsDetailsOpen(false)} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-700 shadow-sm transition-all hover:bg-gray-100">Close</button>
+                                <button type="button" onClick={() => openCreditReceiptPreview(selectedRecord, { isReprint: true })} className="rounded-lg border-2 border-gray-900 bg-gray-900 px-3 py-2 text-xs font-semibold text-white shadow-md transition-all hover:opacity-90">Print Receipt</button>
+                            </div>
+                        )}
                     </div>
                 </div>
+            )}
+
+            {creditReceiptPreview?.transaction && (
+                <ReceiptPreviewModal
+                    transaction={creditReceiptPreview.transaction}
+                    settings={appSettings}
+                    subtitle={`Paid Credit ${creditReceiptPreview.record.creditTransactionId} finalized receipt`}
+                    isReprint={creditReceiptPreview.isReprint}
+                    printStatus={creditReceiptPrintStatus}
+                    printLabel="Print Receipt"
+                    contentId="credit-transaction-receipt-content"
+                    onClose={closeCreditReceiptPreview}
+                    onPrint={printCreditReceipt}
+                />
             )}
 
             {proofLightbox && (

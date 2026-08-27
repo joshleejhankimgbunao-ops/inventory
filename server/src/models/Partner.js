@@ -67,6 +67,13 @@ const partnerSchema = new mongoose.Schema(
       default: false,
       index: true,
     },
+    clientRequestId: {
+      type: String,
+      trim: true,
+      unique: true,
+      sparse: true,
+      index: true,
+    },
     isArchived: {
       type: Boolean,
       default: false,

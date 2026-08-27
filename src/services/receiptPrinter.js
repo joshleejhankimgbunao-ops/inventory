@@ -33,6 +33,7 @@ const normalizeReceiptTransaction = (transaction = {}, settings = {}, { isReprin
   const balance = toOptionalNumber(balanceSource);
   const cash = toOptionalNumber(transaction?.cash ?? transaction?.cashTendered);
   const change = toOptionalNumber(transaction?.change);
+  const amountPaid = toOptionalNumber(transaction?.amountPaid);
 
   return {
     store: {
@@ -48,10 +49,14 @@ const normalizeReceiptTransaction = (transaction = {}, settings = {}, { isReprin
       paymentMethod,
       paymentStatus: String(transaction?.paymentStatus || '').trim(),
       customerName: String(transaction?.customerName || '').trim(),
+      specialOrderNumber: String(transaction?.specialOrderNumber || '').trim(),
+      orderReference: String(transaction?.orderReference || '').trim(),
+      paymentReference: String(transaction?.paymentReference || '').trim(),
       dueDate: transaction?.dueDate ? String(transaction.dueDate) : '',
       creditPaymentMode: String(transaction?.creditPaymentMode || transaction?.modeOfPayment || '').trim(),
       termDays: transaction?.termDays ?? null,
       balance: Number.isFinite(balance) ? balance : null,
+      amountPaid: Number.isFinite(amountPaid) ? amountPaid : null,
       total: Number(transaction?.total ?? transaction?.totalAmount ?? 0) || 0,
       cash,
       change,

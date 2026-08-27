@@ -10,6 +10,7 @@ const {
 } = require('../services/realtimeService');
 const { parseStrictWholeNumber } = require('../utils/numericValidation');
 const { isMoneyInputTooLarge, parseSafeMoney } = require('../utils/moneyValidation');
+const { mapSaleToTransactionContract } = require('./saleController');
 
 const normalizeString = (value) => String(value || '').trim();
 
@@ -217,8 +218,20 @@ const buildSalePayload = (order, req) => {
   };
 };
 
+const buildSpecialOrderReceiptResult = (order, sale) => ({
+  order: enrichOrder(order),
+  sale,
+  receiptTransaction: sale ? mapSaleToTransactionContract(sale) : null,
+});
+
 const findSpecialOrderSale = async (order, session = null) => {
-  const query = Sale.findOne({ clientRequestId: getSpecialOrderClientRequestId(order) });
+  const selectors = [
+    { clientRequestId: getSpecialOrderClientRequestId(order) },
+    { specialOrderId: order._id },
+  ];
+  if (order.linkedSaleId) selectors.unshift({ _id: order.linkedSaleId });
+
+  const query = Sale.findOne({ $or: selectors });
   return session ? query.session(session) : query;
 };
 
@@ -269,6 +282,12 @@ const listSpecialOrders = async (req, res, next) => {
 
 const createSpecialOrder = async (req, res, next) => {
   try {
+    const clientRequestId = normalizeString(req.body?.clientRequestId);
+    if (clientRequestId) {
+      const existing = await SpecialOrder.findOne({ clientRequestId });
+      if (existing) return res.status(200).json(enrichOrder(existing));
+    }
+
     const customerId = normalizeString(req.body?.customerId);
     const supplierId = normalizeString(req.body?.supplierId);
     const customerNameInput = normalizeString(req.body?.customerName);
@@ -309,6 +328,7 @@ const createSpecialOrder = async (req, res, next) => {
       sellingPrice: items.reduce((sum, item) => sum + Number(item.sellingPrice || 0) * Number(item.quantity || 0), 0),
       expectedArrivalDate: items.find((item) => item.expectedArrivalDate)?.expectedArrivalDate || null,
       status: 'In Progress',
+      ...(clientRequestId ? { clientRequestId } : {}),
       remarks: normalizeString(req.body?.remarks),
       createdBy: req.user?._id || null,
       updatedBy: req.user?._id || null,
@@ -326,6 +346,34 @@ const createSpecialOrder = async (req, res, next) => {
     publishSpecialOrderChange(created);
 
     return res.status(201).json(enrichOrder(created));
+  } catch (error) {
+    if (isDuplicateClientRequestIdError(error)) {
+      const existing = await SpecialOrder.findOne({ clientRequestId: normalizeString(req.body?.clientRequestId) });
+      if (existing) return res.status(200).json(enrichOrder(existing));
+    }
+    return next(error);
+  }
+};
+
+const getSpecialOrderReceipt = async (req, res, next) => {
+  try {
+    const order = await SpecialOrder.findById(req.params.id);
+    if (!order) {
+      return res.status(404).json({ message: 'Special order not found.' });
+    }
+
+    ensureCashierOwnsSpecialOrder({ order, user: req.user });
+    if (order.status !== 'Completed') {
+      return res.status(400).json({ message: 'Only completed special orders have a receipt.' });
+    }
+
+    const sale = await findSpecialOrderSale(order);
+    if (!sale) {
+      return res.status(404).json({ message: 'Finalized sale for this special order was not found.' });
+    }
+
+    const result = buildSpecialOrderReceiptResult(order, sale);
+    return res.json({ order: result.order, receiptTransaction: result.receiptTransaction });
   } catch (error) {
     return next(error);
   }
@@ -443,7 +491,8 @@ const completeSpecialOrder = async (req, res, next) => {
     }
 
     if (order.status === 'Completed') {
-      return { order, sale: null, saleCreated: false };
+      const sale = await findSpecialOrderSale(order, session);
+      return { order, sale, saleCreated: false };
     }
 
     if (order.status !== 'In Progress') {
@@ -482,14 +531,14 @@ const completeSpecialOrder = async (req, res, next) => {
 
     publishSpecialOrderChange(result.order);
 
-    return res.json({ order: enrichOrder(result.order), sale: result.sale });
+    return res.json(buildSpecialOrderReceiptResult(result.order, result.sale));
   } catch (error) {
     if (isDuplicateClientRequestIdError(error)) {
       try {
         const recovered = await recoverSpecialOrderCompletion({ orderId: req.params.id, req });
         if (recovered) {
           publishSpecialOrderChange(recovered.order);
-          return res.json({ order: enrichOrder(recovered.order), sale: recovered.sale });
+          return res.json(buildSpecialOrderReceiptResult(recovered.order, recovered.sale));
         }
       } catch (recoveryError) {
         if (recoveryError?.status) {
@@ -522,7 +571,8 @@ const completeSpecialOrder = async (req, res, next) => {
       }
 
       if (order.status === 'Completed') {
-        return res.json({ order: enrichOrder(order), sale: null });
+        const sale = await findSpecialOrderSale(order);
+        return res.json(buildSpecialOrderReceiptResult(order, sale));
       }
 
       if (order.status !== 'In Progress') {
@@ -533,7 +583,7 @@ const completeSpecialOrder = async (req, res, next) => {
       if (existingSale) {
         const completedOrder = await markSpecialOrderCompleted({ order, sale: existingSale, req });
         publishSpecialOrderChange(completedOrder);
-        return res.json({ order: enrichOrder(completedOrder), sale: existingSale });
+        return res.json(buildSpecialOrderReceiptResult(completedOrder, existingSale));
       }
 
       const [sale] = await Sale.create([buildSalePayload(order, req)]);
@@ -550,14 +600,14 @@ const completeSpecialOrder = async (req, res, next) => {
       });
       publishSpecialOrderChange(completedOrder);
 
-      return res.json({ order: enrichOrder(completedOrder), sale });
+      return res.json(buildSpecialOrderReceiptResult(completedOrder, sale));
     } catch (fallbackError) {
       if (isDuplicateClientRequestIdError(fallbackError)) {
         try {
           const recovered = await recoverSpecialOrderCompletion({ orderId: req.params.id, req });
           if (recovered) {
             publishSpecialOrderChange(recovered.order);
-            return res.json({ order: enrichOrder(recovered.order), sale: recovered.sale });
+            return res.json(buildSpecialOrderReceiptResult(recovered.order, recovered.sale));
           }
         } catch (recoveryError) {
           if (recoveryError?.status) {
@@ -581,8 +631,14 @@ const completeSpecialOrder = async (req, res, next) => {
 
 module.exports = {
   listSpecialOrders,
+  getSpecialOrderReceipt,
   createSpecialOrder,
   updateSpecialOrder,
   updateSpecialOrderStatus,
   completeSpecialOrder,
+  __test: {
+    buildSalePayload,
+    buildSpecialOrderReceiptResult,
+    getSpecialOrderClientRequestId,
+  },
 };

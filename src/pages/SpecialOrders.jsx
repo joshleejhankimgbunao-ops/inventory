@@ -3,17 +3,21 @@ import Pagination from '../components/Pagination';
 import IdentifierChip from '../components/IdentifierChip';
 import EditIcon from '../components/EditIcon';
 import ToolbarDropdown from '../components/ToolbarDropdown';
+import ReceiptPreviewModal from '../components/ReceiptPreviewModal';
 import { showToast } from '../utils/toastHelper';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
 import {
   completeSpecialOrderApi,
   createSpecialOrderApi,
+  getSpecialOrderReceiptApi,
   listSpecialOrdersApi,
   updateSpecialOrderApi,
 } from '../services/inventoryApi';
+import { printReceipt } from '../services/receiptPrinter';
 import { subscribeRealtimeEvent } from '../services/realtimeClient';
 import { formatCurrency } from '../utils/numberFormat';
+import { createClientRequestId } from '../utils/clientRequestId';
 import {
   formatMoneyInput,
   isMoneyInput,
@@ -193,7 +197,7 @@ const ItemEditor = ({ item, index, itemCount, disabled, errors = {}, fieldRefs, 
 
 const SpecialOrders = () => {
   const { logActivity } = useInventory();
-  const { currentUserName } = useAuth();
+  const { appSettings, currentUserName } = useAuth();
   const [orders, setOrders] = useState([]);
   const [initialLoading, setInitialLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -202,6 +206,8 @@ const SpecialOrders = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [orderToComplete, setOrderToComplete] = useState(null);
+  const [receiptPreview, setReceiptPreview] = useState(null);
+  const [receiptPrintStatus, setReceiptPrintStatus] = useState('idle');
   const [showForm, setShowForm] = useState(false);
   const [editingOrder, setEditingOrder] = useState(null);
   const [form, setForm] = useState(createEmptyForm);
@@ -213,7 +219,9 @@ const SpecialOrders = () => {
   const hasLoadedOnceRef = useRef(false);
   const inFlightLoadRef = useRef(null);
   const submitInFlightRef = useRef(false);
+  const specialOrderCreateRequestIdRef = useRef('');
   const orderActionInFlightRef = useRef(false);
+  const printRequestInFlightRef = useRef(false);
   const formFieldRefs = useRef({});
 
   const loadOrders = useCallback(async () => {
@@ -289,6 +297,7 @@ const SpecialOrders = () => {
   }, [totalPages]);
 
   const openCreateForm = () => {
+    specialOrderCreateRequestIdRef.current = '';
     setEditingOrder(null);
     setForm(createEmptyForm());
     setFormErrors({});
@@ -306,6 +315,7 @@ const SpecialOrders = () => {
   const openEditForm = (order) => {
     if (!canEditSpecialOrder(order)) return;
     setSelectedOrder(null);
+    specialOrderCreateRequestIdRef.current = '';
     setEditingOrder(order);
     setForm({
       customerName: order.customerName || '',
@@ -422,6 +432,9 @@ const SpecialOrders = () => {
         expectedArrivalDate: item.expectedArrivalDate,
         remarks: item.remarks,
       })),
+      ...(!editingOrder ? {
+        clientRequestId: specialOrderCreateRequestIdRef.current || (specialOrderCreateRequestIdRef.current = createClientRequestId('special-order')),
+      } : {}),
     };
 
     setIsSubmitting(true);
@@ -431,6 +444,7 @@ const SpecialOrders = () => {
         : await createSpecialOrderApi(payload);
       setOrders((previous) => [saved, ...previous.filter((row) => row._id !== saved._id)]);
       closeForm({ force: true });
+      specialOrderCreateRequestIdRef.current = '';
       showToast('Saved', 'Special order saved successfully.', 'success', 'special-order-save');
       logActivity(currentUserName, editingOrder ? 'Updated Special Order' : 'Created Special Order', `${saved.orderNumber} - ${saved.itemName}`);
       void loadOrders();
@@ -453,6 +467,11 @@ const SpecialOrders = () => {
       }
       setSelectedOrder(null);
       setOrderToComplete(null);
+      setReceiptPreview({
+        order: result.order,
+        receiptTransaction: result.receiptTransaction || null,
+        isReprint: false,
+      });
       showToast('Completed', 'Special order was converted to a sale.', 'success', 'special-order-complete');
       void loadOrders();
     } catch (error) {
@@ -475,6 +494,56 @@ const SpecialOrders = () => {
 
   const closeCompleteConfirmation = () => {
     if (!orderAction) setOrderToComplete(null);
+  };
+
+  const openSpecialOrderReceiptPreview = async (order) => {
+    if (orderAction || order?.status !== 'Completed') return;
+
+    setOrderAction('load-receipt');
+    try {
+      const result = await getSpecialOrderReceiptApi(order._id);
+      if (!result?.receiptTransaction) {
+        throw new Error('Finalized sale data is unavailable for this receipt.');
+      }
+      setReceiptPrintStatus('idle');
+      setReceiptPreview({
+        order: result.order || order,
+        receiptTransaction: result.receiptTransaction,
+        isReprint: true,
+      });
+    } catch (error) {
+      showToast('Receipt Load Failed', error?.message || 'Unable to load the finalized receipt.', 'error', 'special-order-receipt-load-error');
+    } finally {
+      setOrderAction('');
+    }
+  };
+
+  const printSpecialOrderReceipt = async () => {
+    if (!receiptPreview?.order?._id || !receiptPreview?.receiptTransaction || printRequestInFlightRef.current) return;
+
+    printRequestInFlightRef.current = true;
+    setReceiptPrintStatus('printing');
+    try {
+      await printReceipt({
+        transaction: receiptPreview.receiptTransaction,
+        settings: appSettings,
+        isReprint: receiptPreview.isReprint,
+      });
+      setReceiptPrintStatus('success');
+      showToast('Print Success', 'Receipt sent to the thermal printer.', 'success', 'special-order-print-success');
+    } catch (error) {
+      setReceiptPrintStatus('idle');
+      const details = error?.message || 'Unable to print the Special Order receipt.';
+      showToast('Print Failed', `${details} The order remains Completed; you can retry from View Details.`, 'error', 'special-order-print-error');
+    } finally {
+      printRequestInFlightRef.current = false;
+    }
+  };
+
+  const closeReceiptPreview = () => {
+    if (printRequestInFlightRef.current) return;
+    setReceiptPreview(null);
+    setReceiptPrintStatus('idle');
   };
 
   return (
@@ -715,6 +784,9 @@ const SpecialOrders = () => {
 
             <div className="flex shrink-0 justify-end gap-2 border-t border-gray-200 bg-gray-50 px-4 py-2.5">
               <button type="button" onClick={closeDetails} disabled={Boolean(orderAction)} className={SECONDARY_BUTTON_CLASS}>Close</button>
+              {selectedOrder.status === 'Completed' && (
+                <button type="button" onClick={() => openSpecialOrderReceiptPreview(selectedOrder)} disabled={Boolean(orderAction)} className={PRIMARY_BUTTON_CLASS}>{orderAction === 'load-receipt' ? 'Loading...' : 'Print Receipt'}</button>
+              )}
               {canEditSpecialOrder(selectedOrder) && (
                 <button type="button" onClick={() => openCompleteConfirmation(selectedOrder)} disabled={Boolean(orderAction)} className={PRIMARY_BUTTON_CLASS}>Complete</button>
               )}
@@ -737,6 +809,20 @@ const SpecialOrders = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {receiptPreview?.order && receiptPreview?.receiptTransaction && (
+        <ReceiptPreviewModal
+          transaction={receiptPreview.receiptTransaction}
+          settings={appSettings}
+          subtitle={`Special Order ${receiptPreview.order.orderNumber} finalized receipt`}
+          isReprint={receiptPreview.isReprint}
+          printStatus={receiptPrintStatus}
+          printLabel="Print Receipt"
+          contentId="special-order-receipt-content"
+          onClose={closeReceiptPreview}
+          onPrint={printSpecialOrderReceipt}
+        />
       )}
     </div>
   );

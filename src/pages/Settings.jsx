@@ -45,6 +45,7 @@ const Settings = () => {
     
     // Category state
     const [isCategoryLoading, setIsCategoryLoading] = useState(false);
+    const categoryMutationInFlightRef = useRef(false);
     const [newCategoryName, setNewCategoryName] = useState('');
     const [newCategoryRules, setNewCategoryRules] = useState({
         showBrand: false, requireBrand: false,
@@ -63,7 +64,11 @@ const Settings = () => {
     const [categoryToDelete, setCategoryToDelete] = useState(null);
     const [isBackupLoading, setIsBackupLoading] = useState(false);
     const [isRestoreLoading, setIsRestoreLoading] = useState(false);
+    const restoreInFlightRef = useRef(false);
+    const [isGeneralSaving, setIsGeneralSaving] = useState(false);
+    const generalSettingsSaveInFlightRef = useRef(false);
     const [isAutomaticBackupSaving, setIsAutomaticBackupSaving] = useState(false);
+    const automaticBackupSaveInFlightRef = useRef(false);
     const [automaticBackupHistory, setAutomaticBackupHistory] = useState([]);
     const [automaticBackupHistoryDate, setAutomaticBackupHistoryDate] = useState('');
     const [isAutomaticBackupHistoryLoading, setIsAutomaticBackupHistoryLoading] = useState(false);
@@ -245,7 +250,7 @@ const Settings = () => {
             renameUserReferences(initialSettings.adminDisplayName, nextSettings.adminDisplayName);
         }
 
-        updateSettings(nextSettings);
+        const savePromise = updateSettings(nextSettings);
 
         if (log) {
             const actorName = hasDisplayNameChange ? nextSettings.adminDisplayName : currentUserName;
@@ -255,6 +260,8 @@ const Settings = () => {
         if (notify) {
             showToast('Configuration Saved', 'System settings have been updated successfully.', 'success');
         }
+
+        return savePromise;
     };
 
     const applyAutoSaveSettings = (updater) => {
@@ -380,10 +387,12 @@ const Settings = () => {
     };
 
     const handleAddCategory = async () => {
+        if (categoryMutationInFlightRef.current) return;
         if (!newCategoryName.trim()) {
             return;
         }
 
+        categoryMutationInFlightRef.current = true;
         setIsCategoryLoading(true);
         try {
             await createCategoryApi({ 
@@ -399,15 +408,18 @@ const Settings = () => {
             console.error(error);
             showToast('Error', error.message || 'Failed to add category.', 'error');
         } finally {
+            categoryMutationInFlightRef.current = false;
             setIsCategoryLoading(false);
         }
     };
 
     const handleUpdateCategory = async (id, updatedName, updatedRules = {}) => {
+        if (categoryMutationInFlightRef.current) return;
         if (!updatedName.trim()) {
             return setEditingCategory(null);
         }
         
+        categoryMutationInFlightRef.current = true;
         setIsCategoryLoading(true);
         try {
             await updateCategoryApi(id, { 
@@ -422,6 +434,7 @@ const Settings = () => {
             console.error(error);
             showToast('Error', error.message || 'Failed to update category.', 'error');
         } finally {
+            categoryMutationInFlightRef.current = false;
             setIsCategoryLoading(false);
         }
     };
@@ -433,9 +446,11 @@ const Settings = () => {
     };
 
     const handleDeleteCategory = async () => {
+        if (categoryMutationInFlightRef.current) return;
         if (!categoryToDelete?._id) return;
         const isRestoring = categoryToDelete?.isActive === false;
 
+        categoryMutationInFlightRef.current = true;
         setIsCategoryLoading(true);
         try {
             await updateCategoryApi(categoryToDelete._id, { isActive: isRestoring });
@@ -449,22 +464,34 @@ const Settings = () => {
             console.error(error);
             showToast('Error', error.message || `Failed to ${isRestoring ? 'restore' : 'archive'} category.`, 'error');
         } finally {
+            categoryMutationInFlightRef.current = false;
             setIsDeleteCategoryModalOpen(false);
             setCategoryToDelete(null);
             setIsCategoryLoading(false);
         }
     };
 
-    const handleSave = () => {
-        persistSettings(settings, { notify: true, log: true });
+    const handleSave = async () => {
+        if (generalSettingsSaveInFlightRef.current) return;
+
+        generalSettingsSaveInFlightRef.current = true;
+        setIsGeneralSaving(true);
+        try {
+            await persistSettings(settings, { notify: true, log: true });
+        } finally {
+            generalSettingsSaveInFlightRef.current = false;
+            setIsGeneralSaving(false);
+        }
     };
 
     const handleSaveAutomaticBackup = async () => {
+        if (automaticBackupSaveInFlightRef.current) return;
         if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(String(settings.automaticBackupTime || ''))) {
             showToast('Invalid Backup Time', 'Choose a valid backup time.', 'error');
             return;
         }
 
+        automaticBackupSaveInFlightRef.current = true;
         setIsAutomaticBackupSaving(true);
         try {
             const savedSettings = await updateSettings({
@@ -488,6 +515,7 @@ const Settings = () => {
         } catch (error) {
             showToast('Automatic Backup Failed', error.message || 'Unable to save automatic backup settings.', 'error');
         } finally {
+            automaticBackupSaveInFlightRef.current = false;
             setIsAutomaticBackupSaving(false);
         }
     };
@@ -642,11 +670,13 @@ const Settings = () => {
     };
 
     const openRestorePicker = () => {
-        if (isRestoreLoading) return;
+        if (restoreInFlightRef.current || isRestoreLoading) return;
         restoreInputRef.current?.click();
     };
 
     const handleRestoreFile = async (event) => {
+        if (restoreInFlightRef.current) return;
+
         const file = event.target.files?.[0];
         event.target.value = '';
 
@@ -659,6 +689,7 @@ const Settings = () => {
             return;
         }
 
+        restoreInFlightRef.current = true;
         setIsRestoreLoading(true);
         try {
             const rawContent = await file.text();
@@ -680,6 +711,7 @@ const Settings = () => {
             console.error(error);
             showToast('Restore Failed', error.message || 'Unable to restore backup file.', 'error');
         } finally {
+            restoreInFlightRef.current = false;
             setIsRestoreLoading(false);
         }
     };
@@ -705,12 +737,12 @@ const Settings = () => {
                         )}
                         <button 
                             onClick={handleSave}
-                            disabled={!isGeneralModified}
-                            className={`w-full sm:w-auto bg-gray-900 text-white px-4 py-2 rounded-lg text-xs font-semibold uppercase tracking-widest transition-all duration-300 flex items-center justify-center gap-2 shadow-md transform ${isGeneralModified ? 'hover:opacity-90 hover:-translate-y-0.5 cursor-pointer' : 'opacity-50 cursor-not-allowed'}`}
+                            disabled={!isGeneralModified || isGeneralSaving}
+                            className={`w-full sm:w-auto bg-gray-900 text-white px-4 py-2 rounded-lg text-xs font-semibold uppercase tracking-widest transition-all duration-300 flex items-center justify-center gap-2 shadow-md transform ${isGeneralModified && !isGeneralSaving ? 'hover:opacity-90 hover:-translate-y-0.5 cursor-pointer' : 'opacity-50 cursor-not-allowed'}`}
                             style={{ backgroundColor: '#111827', border: '2px solid #111827' }}
                         >
                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7"></path></svg>
-                            Save Changes
+                            {isGeneralSaving ? 'Saving...' : 'Save Changes'}
                         </button>
                     </div>
                 )}

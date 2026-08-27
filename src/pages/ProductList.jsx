@@ -7,6 +7,7 @@ import { showToast } from '../utils/toastHelper';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
 import { getAuthToken } from '../services/apiClient';
+import { createClientRequestId } from '../utils/clientRequestId';
 import { subscribeRealtimeEvent } from '../services/realtimeClient';
 import { createProductApi, updateProductApi, listPartnersApi, listProductsApi } from '../services/inventoryApi';
 import { getStockStatus } from '../utils/recommendationLogic';
@@ -28,6 +29,8 @@ const ProductList = () => {
     const listContainerRef = useRef(null);
     const searchContainerRef = useRef(null);
     const productImageInputRef = useRef(null);
+    const productSubmitInFlightRef = useRef(false);
+    const productCreateRequestIdRef = useRef('');
     const { userRole, appSettings: settings, currentUserName, ROLES, isAdminOrAbove } = useAuth();
     const { inventory, setInventory, logAction, logActivity, categories: customCategories = [] } = useInventory();
 
@@ -42,6 +45,7 @@ const ProductList = () => {
     const [isArchiveModalOpen, setIsArchiveModalOpen] = useState(false);
     const [productToArchive, setProductToArchive] = useState(null);
     const [isModalOpen, setIsModalOpen] = useState(false);
+    const [isSavingProduct, setIsSavingProduct] = useState(false);
     const [modalMode, setModalMode] = useState('add'); // 'add' or 'edit'
     const [editingProduct, setEditingProduct] = useState(null);
     const [isSupplierDropdownOpen, setIsSupplierDropdownOpen] = useState(false); // Custom dropdown state
@@ -729,6 +733,7 @@ const ProductList = () => {
 
     // Handlers
     const handleOpenAdd = () => {
+        productCreateRequestIdRef.current = '';
         setModalMode('add');
         setFormData({
             ...initialFormState,
@@ -738,6 +743,7 @@ const ProductList = () => {
     };
 
     const handleOpenEdit = (product) => {
+        productCreateRequestIdRef.current = '';
         setModalMode('edit');
         setEditingProduct(product);
         const parsed = parseSizeString(product.size || '', product.category);
@@ -759,6 +765,7 @@ const ProductList = () => {
 
     const handleSave = async (e) => {
         e.preventDefault();
+        if (productSubmitInFlightRef.current) return;
 
         const rules = getCategoryFieldRules(formData.category);
         const normalizedBrand = rules.showBrand ? String(formData.brand || '').trim() : '';
@@ -809,6 +816,9 @@ const ProductList = () => {
                 return;
         }
 
+        productSubmitInFlightRef.current = true;
+        setIsSavingProduct(true);
+        try {
             const maxStockLimit = (settings && settings.maxStockLimit) ? parseInt(settings.maxStockLimit) : 100;
             if (modalMode === 'add') {
             let stockVal = Number(formData.stock);
@@ -839,6 +849,7 @@ const ProductList = () => {
                 price: Number(normalizedPrice),
                 stock: stockVal,
                 supplier: normalizedSupplier || 'Local Supplier',
+                clientRequestId: productCreateRequestIdRef.current || (productCreateRequestIdRef.current = createClientRequestId('product')),
             };
             newProduct.status = deriveStatus(newProduct);
             delete newProduct.sizeUnit;
@@ -948,6 +959,11 @@ const ProductList = () => {
             showToast("Product Updated", "Product details have been saved.", "success", "product-action");
         }
         setIsModalOpen(false);
+        productCreateRequestIdRef.current = '';
+        } finally {
+            productSubmitInFlightRef.current = false;
+            setIsSavingProduct(false);
+        }
     };
 
     // Soft Delete / Archive Logic (Modified to use Modal)
@@ -1433,7 +1449,7 @@ const ProductList = () => {
                                     </p>
                                 </div>
                             </div>
-                            <button onClick={() => setIsModalOpen(false)} className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 dark:hover:text-gray-200 transition-all">
+                            <button type="button" onClick={() => setIsModalOpen(false)} disabled={isSavingProduct} className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 dark:hover:text-gray-200 transition-all disabled:cursor-not-allowed disabled:opacity-50">
                                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                             </button>
                         </div>
@@ -1760,15 +1776,15 @@ const ProductList = () => {
                             {/* Submit */}
                             <button 
                                 type="submit"
-                                disabled={!isFormModified}
+                                disabled={!isFormModified || isSavingProduct}
                                 style={{ backgroundColor: '#111827', border: '2px solid #111827' }}
                                 className={`w-full py-2.5 text-white rounded-xl font-semibold tracking-widest shadow-lg transition-all transform text-xs mt-1 ${
-                                    isFormModified 
+                                    isFormModified && !isSavingProduct
                                     ? 'hover:-translate-y-0.5 hover:opacity-90' 
                                     : 'cursor-not-allowed opacity-50'
                                 }`}
                             >
-                                {modalMode === 'add' ? 'Create Product' : 'Save Changes'}
+                                {isSavingProduct ? (modalMode === 'add' ? 'Creating...' : 'Saving...') : (modalMode === 'add' ? 'Create Product' : 'Save Changes')}
                             </button>
                         </form>
                     </div>

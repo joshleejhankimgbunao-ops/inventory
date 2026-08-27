@@ -193,6 +193,15 @@ const buildReceiptLines = (payload = {}) => {
   lines.push('');
   lines.push(separator);
   appendField(lines, 'Receipt No', receipt.id);
+  if (receipt.specialOrderNumber) {
+    appendField(lines, 'Special Order', receipt.specialOrderNumber);
+  }
+  if (receipt.orderReference) {
+    appendField(lines, 'Order Ref', receipt.orderReference);
+  }
+  if (receipt.paymentReference) {
+    appendField(lines, 'Payment Ref', receipt.paymentReference);
+  }
   appendField(lines, 'Date', receiptDateTime.date);
   if (receiptDateTime.time) {
     appendField(lines, 'Time', receiptDateTime.time);
@@ -244,10 +253,16 @@ const buildReceiptLines = (payload = {}) => {
     if (receipt.creditPaymentMode) {
       appendField(lines, 'Mode', receipt.creditPaymentMode);
     }
+    if (receipt.amountPaid !== null && receipt.amountPaid !== undefined) {
+      appendPair(lines, 'Amount Paid:', formatReceiptAmount(receipt.amountPaid));
+    }
     if (receipt.balance !== null && receipt.balance !== undefined) {
       appendPair(lines, 'Balance:', formatReceiptAmount(receipt.balance));
     }
   } else {
+    if (receipt.specialOrderNumber && receipt.paymentStatus) {
+      appendField(lines, 'Status', receipt.paymentStatus);
+    }
     if (receipt.cash !== null && receipt.cash !== undefined && receipt.cash !== '') {
       appendPair(lines, 'Cash:', formatReceiptAmount(receipt.cash));
     }

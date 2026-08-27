@@ -86,6 +86,13 @@ const specialOrderSchema = new mongoose.Schema(
       trim: true,
       uppercase: true,
     },
+    clientRequestId: {
+      type: String,
+      trim: true,
+      unique: true,
+      sparse: true,
+      index: true,
+    },
     customer: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Partner',
