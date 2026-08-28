@@ -168,6 +168,47 @@ test('replaying one stock adjustment updates stock and inventory history once', 
   }
 });
 
+test('product archive and restore persist through the existing product update endpoint', async () => {
+  const originalFindById = Product.findById;
+  const originalFindOneAndUpdate = Product.findOneAndUpdate;
+  let product = {
+    _id: 'product-archive-1',
+    sku: 'PNT-ARCHIVE-1',
+    name: 'Archive Test Paint',
+    stock: 5,
+    isActive: true,
+    updatedAt: null,
+  };
+
+  Product.findById = async () => ({ ...product });
+  Product.findOneAndUpdate = async (filter, payload) => {
+    assert.equal(filter._id, 'product-archive-1');
+    assert.equal(typeof payload.isActive, 'boolean');
+    product = { ...product, ...payload };
+    return { ...product };
+  };
+
+  const request = {
+    params: { id: 'product-archive-1' },
+    body: { isActive: false },
+    user: { _id: 'user-1', name: 'Admin' },
+    ip: '127.0.0.1',
+    get: () => '',
+  };
+
+  try {
+    await updateProduct(request, createResponse(), assert.fail);
+    assert.equal(product.isActive, false);
+
+    request.body = { isActive: true };
+    await updateProduct(request, createResponse(), assert.fail);
+    assert.equal(product.isActive, true);
+  } finally {
+    Product.findById = originalFindById;
+    Product.findOneAndUpdate = originalFindOneAndUpdate;
+  }
+});
+
 test('repeated POS submissions and Special Order completion use stable unique sale tokens', () => {
   const saleRequestPath = Sale.schema.path('clientRequestId');
   assert.equal(saleRequestPath.options.unique, true);

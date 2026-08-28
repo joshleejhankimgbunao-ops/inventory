@@ -315,6 +315,7 @@ const updateProduct = async (req, res, next) => {
     if (req.body?.size !== undefined) payload.size = normalizeString(req.body.size);
     if (req.body?.supplierName !== undefined) payload.supplierName = normalizeString(req.body.supplierName);
     if (req.body?.imageUrl !== undefined) payload.imageUrl = normalizeString(req.body.imageUrl);
+    if (req.body?.isActive !== undefined) payload.isActive = Boolean(req.body.isActive);
 
     if (req.body?.stock !== undefined) {
       const stockValue = parseStrictWholeNumber(req.body.stock);
@@ -354,9 +355,12 @@ const updateProduct = async (req, res, next) => {
     const stockAfter = Number(product.stock || 0);
     const stockDelta = stockAfter - stockBefore;
     const inventoryAdjustmentReason = normalizeString(req.body?.inventoryAdjustmentReason);
+    const archiveStateChanged = payload.isActive !== undefined && Boolean(product.isActive) !== Boolean(existing.isActive);
 
     let inventoryAction = 'UPDATE';
-    if (stockDelta > 0) {
+    if (archiveStateChanged) {
+      inventoryAction = product.isActive ? 'RESTORE' : 'ARCHIVE';
+    } else if (stockDelta > 0) {
       inventoryAction = 'ADD';
     } else if (stockDelta < 0) {
       inventoryAction = 'DEDUCT';
@@ -367,11 +371,13 @@ const updateProduct = async (req, res, next) => {
       code: product.sku,
       productRef: product._id,
       user: req.user,
-      details: buildInventoryLogDetails({
-        productName: product.name,
-        stockDelta,
-        adjustmentReason: inventoryAdjustmentReason,
-      }),
+      details: archiveStateChanged
+        ? `${product.isActive ? 'Restored' : 'Archived'} product ${product.name}`
+        : buildInventoryLogDetails({
+          productName: product.name,
+          stockDelta,
+          adjustmentReason: inventoryAdjustmentReason,
+        }),
       quantity: Math.abs(stockDelta),
       stockBefore,
       stockAfter,
@@ -379,8 +385,10 @@ const updateProduct = async (req, res, next) => {
 
     await writeActivityLog({
       user: req.user,
-      action: 'Updated Product',
-      details: `Updated ${product.name} (${product.sku})`,
+      action: archiveStateChanged ? (product.isActive ? 'Restored Product' : 'Archived Product') : 'Updated Product',
+      details: archiveStateChanged
+        ? `${product.isActive ? 'Restored' : 'Archived'} ${product.name} (${product.sku})`
+        : `Updated ${product.name} (${product.sku})`,
       ipAddress: req.ip,
       userAgent: req.get('user-agent') || '',
     });

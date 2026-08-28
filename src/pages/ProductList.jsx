@@ -6,7 +6,7 @@ import EditIcon from '../components/EditIcon';
 import { showToast } from '../utils/toastHelper';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
-import { getAuthToken } from '../services/apiClient';
+import { getAuthToken, isApiConnectionFailure } from '../services/apiClient';
 import { createClientRequestId } from '../utils/clientRequestId';
 import { subscribeRealtimeEvent } from '../services/realtimeClient';
 import { createProductApi, updateProductApi, listPartnersApi, listProductsApi } from '../services/inventoryApi';
@@ -31,7 +31,8 @@ const ProductList = () => {
     const productImageInputRef = useRef(null);
     const productSubmitInFlightRef = useRef(false);
     const productCreateRequestIdRef = useRef('');
-    const { userRole, appSettings: settings, currentUserName, ROLES, isAdminOrAbove } = useAuth();
+    const productArchiveInFlightRef = useRef(false);
+    const { appSettings: settings, currentUserName, ROLES, isAdminOrAbove } = useAuth();
     const { inventory, setInventory, logAction, logActivity, categories: customCategories = [] } = useInventory();
 
     const [searchTerm, setSearchTerm] = useState('');
@@ -46,6 +47,7 @@ const ProductList = () => {
     const [productToArchive, setProductToArchive] = useState(null);
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [isSavingProduct, setIsSavingProduct] = useState(false);
+    const [isArchiveSubmitting, setIsArchiveSubmitting] = useState(false);
     const [modalMode, setModalMode] = useState('add'); // 'add' or 'edit'
     const [editingProduct, setEditingProduct] = useState(null);
     const [isSupplierDropdownOpen, setIsSupplierDropdownOpen] = useState(false); // Custom dropdown state
@@ -766,6 +768,10 @@ const ProductList = () => {
     const handleSave = async (e) => {
         e.preventDefault();
         if (productSubmitInFlightRef.current) return;
+        if (!navigator.onLine) {
+            showToast("You're Offline", 'This action requires an internet connection.', 'warning', 'product-offline');
+            return;
+        }
 
         const rules = getCategoryFieldRules(formData.category);
         const normalizedBrand = rules.showBrand ? String(formData.brand || '').trim() : '';
@@ -854,26 +860,17 @@ const ProductList = () => {
             newProduct.status = deriveStatus(newProduct);
             delete newProduct.sizeUnit;
 
-            let productToInsert = newProduct;
-            const token = getAuthToken();
-            if (!normalizedSku && (!token || !navigator.onLine)) {
-                showToast('Backend Required', 'Connect to the backend to auto-generate an SKU.', 'error', 'product-sku-generation');
+            let productToInsert;
+            try {
+                productToInsert = await createProductApi(newProduct);
+            } catch (error) {
+                showToast(
+                    isApiConnectionFailure(error) ? 'Cannot reach API server.' : 'Unable to Save Product',
+                    error.message || 'Product was not saved.',
+                    'error',
+                    'product-sync'
+                );
                 return;
-            }
-            if (token && navigator.onLine) {
-                try {
-                    productToInsert = await createProductApi(newProduct);
-                } catch (error) {
-                    if (Number(error?.status || 0) > 0) {
-                        showToast('Unable to Save Product', error.message || 'Product was not saved.', 'error', 'product-sync');
-                        return;
-                    }
-                    if (!normalizedSku) {
-                        showToast('Backend Required', 'Connect to the backend to auto-generate an SKU.', 'error', 'product-sku-generation');
-                        return;
-                    }
-                    showToast('Sync Failed', error.message || 'Saved locally only. Product was not synced to server.', 'warning', 'product-sync');
-                }
             }
 
             setInventory(prev => [...prev, productToInsert]);
@@ -882,8 +879,6 @@ const ProductList = () => {
             showToast("Product Created", `${newProduct.name} has been added.`, "success", "product-action");
         } else {
             // Update Logic
-            const stockVal = parseInt(formData.stock);
-            
             const normalized = normalizeProductNameAndSize(formData.name, formData.category, combinedSize);
             const cleanedName = normalized.name;
             const finalSize = combinedSize || normalized.size || '';
@@ -920,33 +915,41 @@ const ProductList = () => {
             };
             localUpdatedProduct.status = deriveStatus(localUpdatedProduct);
 
-            let mergedUpdatedProduct = localUpdatedProduct;
-            const token = getAuthToken();
-            if (token && navigator.onLine && editingProduct?.id) {
-                try {
-                    mergedUpdatedProduct = await updateProductApi(editingProduct.id, localUpdatedProduct, {
-                        expectedUpdatedAt: editingProduct.updatedAt,
-                    });
-                } catch (error) {
-                    if (Number(error?.status || 0) === 409) {
-                        if (/SKU already exists/i.test(error.message || '')) {
-                            showToast('Duplicate SKU', error.message, 'error', 'product-duplicate');
-                            return;
-                        }
-                        showToast('Conflict Detected', 'This product was edited in another session. Data was refreshed.', 'warning', 'product-conflict');
-                        try {
-                            const remoteProducts = await listProductsApi();
-                            if (Array.isArray(remoteProducts)) {
-                                setInventory(remoteProducts);
-                            }
-                        } catch {
-                            // Keep current UI state if refresh fails.
-                        }
-                        setIsModalOpen(false);
+            if (!editingProduct?.id) {
+                showToast('Unable to Save Product', 'Unable to identify the product to update.', 'error', 'product-sync');
+                return;
+            }
+
+            let mergedUpdatedProduct;
+            try {
+                mergedUpdatedProduct = await updateProductApi(editingProduct.id, localUpdatedProduct, {
+                    expectedUpdatedAt: editingProduct.updatedAt,
+                });
+            } catch (error) {
+                if (Number(error?.status || 0) === 409) {
+                    if (/SKU already exists/i.test(error.message || '')) {
+                        showToast('Duplicate SKU', error.message, 'error', 'product-duplicate');
                         return;
                     }
-                    showToast('Sync Failed', error.message || 'Saved locally only. Product update was not synced to server.', 'warning', 'product-sync');
+                    showToast('Conflict Detected', 'This product was edited in another session. Data was refreshed.', 'warning', 'product-conflict');
+                    try {
+                        const remoteProducts = await listProductsApi();
+                        if (Array.isArray(remoteProducts)) {
+                            setInventory(remoteProducts);
+                        }
+                    } catch {
+                        // Keep current UI state if refresh fails.
+                    }
+                    setIsModalOpen(false);
+                    return;
                 }
+                showToast(
+                    isApiConnectionFailure(error) ? 'Cannot reach API server.' : 'Unable to Save Product',
+                    error.message || 'Product update was not saved.',
+                    'error',
+                    'product-sync'
+                );
+                return;
             }
 
             setInventory(prev => prev.map(item => 
@@ -972,24 +975,52 @@ const ProductList = () => {
         setIsArchiveModalOpen(true);
     };
 
-    const confirmArchive = () => {
+    const confirmArchive = async () => {
         if (!productToArchive) return;
+        if (productArchiveInFlightRef.current) return;
+        if (!navigator.onLine) {
+            showToast("You're Offline", 'This action requires an internet connection.', 'warning', 'product-offline');
+            return;
+        }
 
         const item = productToArchive;
-        const action = item.isArchived ? 'RESTORE' : 'ARCHIVE';
+        if (!item.id) {
+            showToast('Unable to Update Product', 'Unable to identify the product to update.', 'error', 'product-archive');
+            return;
+        }
 
-        setInventory(prev => prev.map(p => 
-            p.code === item.code 
-            ? { ...p, isArchived: !item.isArchived }
-            : p
-        ));
+        productArchiveInFlightRef.current = true;
+        setIsArchiveSubmitting(true);
+        try {
+            const updatedProduct = await updateProductApi(item.id, {
+                ...item,
+                isArchived: !item.isArchived,
+            }, {
+                expectedUpdatedAt: item.updatedAt,
+            });
 
-        log(action, item.code, `${action}D product`);
-        logActivity(currentUserName, item.isArchived ? 'Restored Product' : 'Archived Product', `${item.code} - ${item.name}`);
-        showToast(item.isArchived ? "Product Restored" : "Product Archived", `${item.name} has been ${item.isArchived ? 'restored' : 'archived'}.`, "success", "product-archive");
+            setInventory((previous) => previous.map((product) => (
+                product.id === item.id ? updatedProduct : product
+            )));
+            showToast(item.isArchived ? 'Product Restored' : 'Product Archived', `${item.name} has been ${item.isArchived ? 'restored' : 'archived'}.`, 'success', 'product-archive');
 
-        setIsArchiveModalOpen(false);
-        setProductToArchive(null);
+            setIsArchiveModalOpen(false);
+            setProductToArchive(null);
+        } catch (error) {
+            if (Number(error?.status || 0) === 409) {
+                showToast('Conflict Detected', 'This product was updated in another session. Please refresh and try again.', 'warning', 'product-conflict');
+            } else {
+                showToast(
+                    isApiConnectionFailure(error) ? 'Cannot reach API server.' : 'Unable to Update Product',
+                    error.message || 'Product archive status was not saved.',
+                    'error',
+                    'product-archive'
+                );
+            }
+        } finally {
+            productArchiveInFlightRef.current = false;
+            setIsArchiveSubmitting(false);
+        }
     };
 
     const stockLegendItems = [
@@ -1812,16 +1843,18 @@ const ProductList = () => {
                             <div className="flex gap-3">
                                 <button
                                     onClick={() => setIsArchiveModalOpen(false)}
+                                    disabled={isArchiveSubmitting}
                                     className="flex-1 py-2.5 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-xl font-semibold text-sm hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
                                 >
                                     Cancel
                                 </button>
                                 <button
                                     onClick={confirmArchive}
+                                    disabled={isArchiveSubmitting}
                                     style={{ backgroundColor: '#111827' }}
-                                    className="flex-1 py-2.5 text-white rounded-xl font-semibold text-sm shadow-md hover:opacity-90 transition-all transform hover:-translate-y-0.5"
+                                    className="flex-1 py-2.5 text-white rounded-xl font-semibold text-sm shadow-md hover:opacity-90 transition-all transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60"
                                 >
-                                    {productToArchive.isArchived ? 'Restore' : 'Archive'}
+                                    {isArchiveSubmitting ? 'Saving...' : (productToArchive.isArchived ? 'Restore' : 'Archive')}
                                 </button>
                             </div>
                         </div>

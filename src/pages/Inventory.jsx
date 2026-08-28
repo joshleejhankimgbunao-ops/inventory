@@ -1,11 +1,10 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import Pagination from '../components/Pagination';
 import IdentifierChip from '../components/IdentifierChip';
-import toast from 'react-hot-toast';
 import { showToast } from '../utils/toastHelper';
 import { useInventory } from '../context/InventoryContext';
 import { useAuth } from '../context/AuthContext';
-import { getAuthToken } from '../services/apiClient';
+import { getAuthToken, isApiConnectionFailure } from '../services/apiClient';
 import { updateProductStockApi } from '../services/inventoryApi';
 import { getStockStatus } from '../utils/recommendationLogic';
 import { formatNumber } from '../utils/numberFormat';
@@ -21,8 +20,8 @@ const Inventory = () => {
     const listContainerRef = useRef(null);
     const stockSubmitInFlightRef = useRef(false);
     const stockAdjustmentRequestIdRef = useRef('');
-    const { inventory, setInventory, logAction, logActivity } = useInventory();
-    const { appSettings, currentUserName } = useAuth();
+    const { inventory, setInventory } = useInventory();
+    const { appSettings } = useAuth();
 
     const stripTrailingSizeFromName = (nameValue, sizeValue) => {
         const name = String(nameValue || '').trim();
@@ -78,12 +77,6 @@ const Inventory = () => {
     };
     
     // Helper to log actions
-    const log = (action, code, details) => {
-        if (logAction) {
-            logAction(action, code, details, currentUserName);
-        }
-    }; 
-
     const [isStockModalOpen, setIsStockModalOpen] = useState(false);
     const [isStockSubmitting, setIsStockSubmitting] = useState(false);
     const [modalAction, setModalAction] = useState('IN'); // 'IN' (Add Stock) or 'OUT' (Remove/Adjust)
@@ -295,6 +288,10 @@ const Inventory = () => {
     const handleStockSubmit = async (e) => {
         e.preventDefault();
         if (stockSubmitInFlightRef.current) return;
+        if (!navigator.onLine) {
+            showToast("You're Offline", 'Stock adjustments require an internet connection.', 'warning', 'stock-offline');
+            return;
+        }
         const hasValidQuantity = isWholeNumberInput(stockForm.quantity, { min: 1 });
         const qty = hasValidQuantity ? Number(stockForm.quantity) : 0;
         const reasonValue = stockForm.reason === 'Other'
@@ -349,33 +346,35 @@ const Inventory = () => {
             return item;
         });
 
-        setInventory(updatedInventory);
-
         const selectedUpdatedItem = updatedInventory.find(item => item.code === selectedItem.code);
         const token = getAuthToken();
-        if (token && selectedItem.id && selectedUpdatedItem) {
-            try {
-                await updateProductStockApi(selectedItem.id, selectedUpdatedItem.stock, {
-                    adjustmentReason: reasonValue,
-                    adjustmentRequestId: stockAdjustmentRequestIdRef.current,
-                });
-            } catch (error) {
-                showToast('Sync Failed', error.message || 'Stock change was not synced to server.', 'error', 'stock-sync');
-            }
+        if (!token || !selectedItem.id || !selectedUpdatedItem) {
+            showToast('Stock Adjustment Failed', 'Unable to identify the product for this stock adjustment.', 'error', 'stock-sync');
+            return;
         }
-        
-        // Detailed Logging
-        const actualQuantityChanged = Math.abs(Number(selectedUpdatedItem?.stock || 0) - currentStock);
-        const logAction = actualQuantityChanged === 0 ? 'UPDATE' : (modalAction === 'IN' ? 'ADD' : 'DEDUCT');
-        const logDesc = actualQuantityChanged === 0
-            ? `Updated product ${selectedItem.name}`
-            : modalAction === 'IN'
-                ? `Added ${actualQuantityChanged} of ${selectedItem.name} — Reason: ${reasonValue}`
-                : `Deducted ${actualQuantityChanged} of ${selectedItem.name} — Reason: ${reasonValue}`;
-            
-        log(logAction, selectedItem.code, logDesc);
-        logActivity(currentUserName || 'System', modalAction === 'IN' ? 'Stock In' : 'Stock Out', `${selectedItem.code}: ${logDesc}`);
 
+        let persistedProduct;
+        try {
+            persistedProduct = await updateProductStockApi(selectedItem.id, selectedUpdatedItem.stock, {
+                adjustmentReason: reasonValue,
+                adjustmentRequestId: stockAdjustmentRequestIdRef.current,
+            });
+        } catch (error) {
+            showToast(
+                isApiConnectionFailure(error) ? 'Cannot reach API server.' : 'Stock Adjustment Failed',
+                error.message || 'Stock change was not saved.',
+                'error',
+                'stock-sync'
+            );
+            return;
+        }
+
+        const confirmedStock = Number(persistedProduct?.stock ?? selectedUpdatedItem.stock);
+        setInventory((previous) => previous.map((item) => {
+            if (item.id !== selectedItem.id) return item;
+            const confirmedItem = { ...item, stock: confirmedStock, updatedAt: persistedProduct?.updatedAt || item.updatedAt };
+            return { ...confirmedItem, status: deriveStatus(confirmedItem) };
+        }));
         setIsStockModalOpen(false);
         stockAdjustmentRequestIdRef.current = '';
         if (modalAction === 'IN') {
