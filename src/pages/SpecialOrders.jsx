@@ -12,6 +12,7 @@ import {
   completeSpecialOrderApi,
   createSpecialOrderApi,
   getSpecialOrderReceiptApi,
+  listPartnersApi,
   listSpecialOrdersApi,
   updateSpecialOrderApi,
 } from '../services/inventoryApi';
@@ -36,8 +37,8 @@ import {
 
 const statusOptions = ['All', 'In Progress', 'Completed'];
 const SPECIAL_ORDERS_PER_PAGE = 15;
-const INPUT_CLASS = 'w-full rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-sm font-medium text-gray-800 outline-none transition-colors placeholder:text-gray-400 focus:border-gray-900 focus:bg-white focus:ring-0';
-const LABEL_CLASS = 'mb-0.5 block text-[11px] font-semibold text-gray-600';
+const INPUT_CLASS = 'w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-800 outline-none transition-colors placeholder:text-gray-400 focus:border-gray-900 focus:ring-2 focus:ring-gray-900';
+const LABEL_CLASS = 'mb-1 block text-[10px] font-semibold text-gray-500';
 const PRIMARY_BUTTON_CLASS = 'rounded-lg border-2 border-gray-900 bg-gray-900 px-3 py-2 text-xs font-semibold text-white shadow-md transition-all hover:-translate-y-0.5 hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0';
 const SECONDARY_BUTTON_CLASS = 'rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-700 shadow-sm transition-all hover:-translate-y-0.5 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0';
 
@@ -77,6 +78,7 @@ const createFormItem = (item = {}) => ({
   itemName: '',
   description: '',
   quantity: 1,
+  supplierId: '',
   supplierName: '',
   purchaseCost: '',
   sellingPrice: '',
@@ -114,6 +116,7 @@ const getOrderItems = (order) => {
     itemName: order.itemName || '',
     description: order.description || '',
     quantity: Number(order.quantity || 0),
+    supplierId: order.supplier ? String(order.supplier?._id || order.supplier) : '',
     supplierName: order.supplierName || '',
     purchaseCost: order.purchaseCost ?? 0,
     sellingPrice: order.sellingPrice ?? 0,
@@ -134,7 +137,68 @@ const summarizeOrder = (order) => {
   };
 };
 
-const ItemEditor = ({ item, index, itemCount, disabled, errors = {}, fieldRefs, onChange, onRemove }) => {
+const SupplierCombobox = ({ supplierId, supplierName, suppliers, isLoading, disabled, onSelect }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [query, setQuery] = useState(supplierName || '');
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredSuppliers = suppliers.filter((supplier) => (
+    String(supplier?.name || '').toLowerCase().includes(normalizedQuery)
+  ));
+
+  const clearSelection = () => {
+    setQuery('');
+    onSelect(null);
+  };
+
+  return (
+    <div className="relative">
+      <div className="relative">
+        <input
+          value={query}
+          disabled={disabled}
+          onFocus={() => setIsOpen(true)}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            if (supplierId) onSelect(null);
+            setIsOpen(true);
+          }}
+          onBlur={() => window.setTimeout(() => setIsOpen(false), 150)}
+          className={`${INPUT_CLASS} pr-8 disabled:cursor-not-allowed disabled:opacity-60`}
+          placeholder="Search suppliers"
+          role="combobox"
+          aria-expanded={isOpen}
+          aria-autocomplete="list"
+        />
+        {(query || supplierId) && !disabled && (
+          <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={clearSelection} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 transition-colors hover:text-gray-700" aria-label="Clear supplier">
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18 18 6M6 6l12 12" /></svg>
+          </button>
+        )}
+      </div>
+      {isOpen && !disabled && (
+        <div className="absolute z-20 mt-1 max-h-44 w-full overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+          {isLoading ? (
+            <p className="px-3 py-2 text-xs text-gray-500">Loading suppliers...</p>
+          ) : suppliers.length === 0 ? (
+            <p className="px-3 py-2 text-xs text-gray-500">No supplier partners available</p>
+          ) : filteredSuppliers.length === 0 ? (
+            <p className="px-3 py-2 text-xs text-gray-500">No suppliers found</p>
+          ) : filteredSuppliers.map((supplier) => {
+            const id = String(supplier._id || supplier.id || '');
+            return (
+              <button key={id} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => { const name = String(supplier.name || '').trim(); onSelect({ id, name }); setQuery(name); setIsOpen(false); }} className="block w-full px-3 py-2 text-left text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50">
+                {supplier.name}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const ItemEditor = ({ item, index, itemCount, disabled, errors = {}, fieldRefs, suppliers, isSuppliersLoading, onChange, onRemove }) => {
   const fieldId = (field) => `special-order-item-${index}-${field}-error`;
   const inputProps = (field) => ({
     ref: (element) => {
@@ -146,16 +210,16 @@ const ItemEditor = ({ item, index, itemCount, disabled, errors = {}, fieldRefs, 
   });
 
   return (
-    <div className="p-3">
-      <div className="mb-2 flex items-center justify-between">
-        <span className="text-xs font-semibold text-gray-500">Item {index + 1}</span>
+    <div className="rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
+      <div className="mb-3 flex items-center justify-between">
+        <span className="text-xs font-semibold text-gray-700">Item {index + 1}</span>
         {itemCount > 1 && (
           <button type="button" onClick={() => onRemove(index)} disabled={disabled} className="rounded-lg px-2 py-1 text-[11px] font-semibold text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50">
             Remove
           </button>
         )}
       </div>
-      <div className="grid gap-2.5 md:grid-cols-6">
+      <div className="grid gap-3 md:grid-cols-6">
         <label className="md:col-span-3">
           <span className={LABEL_CLASS}>Item name <span className="text-red-600">*</span></span>
           <input {...inputProps('itemName')} value={item.itemName} onChange={(event) => onChange(index, 'itemName', event.target.value)} className={getInputClass(errors.itemName)} placeholder="Item name" required />
@@ -163,7 +227,17 @@ const ItemEditor = ({ item, index, itemCount, disabled, errors = {}, fieldRefs, 
         </label>
         <label className="md:col-span-3">
           <span className={LABEL_CLASS}>Supplier</span>
-          <input value={item.supplierName} onChange={(event) => onChange(index, 'supplierName', event.target.value)} className={INPUT_CLASS} placeholder="Supplier" />
+          <SupplierCombobox
+            supplierId={item.supplierId}
+            supplierName={item.supplierName}
+            suppliers={suppliers}
+            isLoading={isSuppliersLoading}
+            disabled={disabled}
+            onSelect={(supplier) => {
+              onChange(index, 'supplierId', supplier?.id || '');
+              onChange(index, 'supplierName', supplier?.name || '');
+            }}
+          />
         </label>
         <label className="md:col-span-2">
           <span className={LABEL_CLASS}>Quantity <span className="text-red-600">*</span></span>
@@ -180,12 +254,12 @@ const ItemEditor = ({ item, index, itemCount, disabled, errors = {}, fieldRefs, 
           <input {...inputProps('sellingPrice')} type="text" inputMode="decimal" value={item.sellingPrice} onKeyDown={preventInvalidMoneyKeyDown} onPaste={preventInvalidMoneyPaste} onChange={(event) => onChange(index, 'sellingPrice', sanitizeMoneyInput(event.target.value))} onBlur={(event) => onChange(index, 'sellingPrice', formatMoneyInput(event.target.value))} className={getInputClass(errors.sellingPrice)} placeholder="0.00" required />
           <FieldError id={fieldId('sellingPrice')} message={errors.sellingPrice} />
         </label>
-        <label className="md:col-span-6">
+        <label className="md:col-span-3">
           <span className={LABEL_CLASS}>Expected Date <span className="text-red-600">*</span></span>
           <input {...inputProps('expectedArrivalDate')} type="date" min={getTodayInputDate()} value={item.expectedArrivalDate} onChange={(event) => onChange(index, 'expectedArrivalDate', event.target.value)} className={getInputClass(errors.expectedArrivalDate)} required />
           <FieldError id={fieldId('expectedArrivalDate')} message={errors.expectedArrivalDate} />
         </label>
-        <label className="md:col-span-6">
+        <label className="md:col-span-3">
           <span className={LABEL_CLASS}>Description</span>
           <input value={item.description} onChange={(event) => onChange(index, 'description', event.target.value)} className={INPUT_CLASS} placeholder="Item description" />
         </label>
@@ -216,6 +290,8 @@ const SpecialOrders = () => {
   const [form, setForm] = useState(createEmptyForm);
   const [formErrors, setFormErrors] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [supplierPartners, setSupplierPartners] = useState([]);
+  const [isSuppliersLoading, setIsSuppliersLoading] = useState(false);
   const [orderAction, setOrderAction] = useState('');
   const loadRequestIdRef = useRef(0);
   const isMountedRef = useRef(true);
@@ -299,12 +375,33 @@ const SpecialOrders = () => {
     setCurrentPage((previous) => Math.min(previous, Math.max(totalPages, 1)));
   }, [totalPages]);
 
+  const loadSupplierPartners = useCallback(async () => {
+    setIsSuppliersLoading(true);
+    try {
+      const rows = await listPartnersApi({ type: 'supplier', includeArchived: false });
+      if (!isMountedRef.current) return;
+      setSupplierPartners(
+        (Array.isArray(rows) ? rows : [])
+          .filter((partner) => partner?.type === 'supplier' && !partner?.isArchived)
+          .sort((left, right) => String(left?.name || '').localeCompare(String(right?.name || '')))
+      );
+    } catch (error) {
+      if (isMountedRef.current) {
+        setSupplierPartners([]);
+        showToast('Supplier Load Failed', error.message || 'Unable to load supplier partners.', 'error', 'special-order-suppliers-load');
+      }
+    } finally {
+      if (isMountedRef.current) setIsSuppliersLoading(false);
+    }
+  }, []);
+
   const openCreateForm = () => {
     specialOrderCreateRequestIdRef.current = '';
     setEditingOrder(null);
     setForm(createEmptyForm());
     setFormErrors({});
     setShowForm(true);
+    void loadSupplierPartners();
   };
 
   const closeForm = ({ force = false } = {}) => {
@@ -327,6 +424,7 @@ const SpecialOrders = () => {
         itemName: item.itemName || '',
         description: item.description || '',
         quantity: item.quantity ?? '',
+        supplierId: item.supplier ? String(item.supplier?._id || item.supplier) : '',
         supplierName: item.supplierName || '',
         purchaseCost: formatMoneyInput(item.purchaseCost),
         sellingPrice: formatMoneyInput(item.sellingPrice),
@@ -336,6 +434,7 @@ const SpecialOrders = () => {
     });
     setFormErrors({});
     setShowForm(true);
+    void loadSupplierPartners();
   };
 
   const addItemRow = () => {
@@ -429,6 +528,7 @@ const SpecialOrders = () => {
         itemName: item.itemName,
         description: item.description,
         quantity: Number(item.quantity),
+        supplierId: item.supplierId,
         supplierName: item.supplierName,
         purchaseCost: Number(item.purchaseCost),
         sellingPrice: Number(item.sellingPrice),
@@ -577,8 +677,8 @@ const SpecialOrders = () => {
   };
 
   return (
-    <div className="flex h-auto flex-col gap-2 md:h-[calc(100vh-80px)] md:overflow-hidden">
-      <section className="flex min-h-full flex-col overflow-hidden rounded-2xl border border-slate-300 bg-slate-200/50 p-4 shadow-inner md:h-full">
+    <div className="flex h-auto flex-col gap-2 md:h-[calc(100vh-80px)] md:min-h-0 md:overflow-hidden">
+      <section className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-300 bg-slate-200/50 p-4 shadow-inner md:h-full">
         <header className="flex flex-col items-start gap-1 border-b border-gray-200 pb-3">
           <div>
             <p className="text-3xl font-bold leading-tight text-gray-900 md:text-4xl">Special Orders</p>
@@ -599,7 +699,7 @@ const SpecialOrders = () => {
         </div>
 
         <div className="main-data-table-shell mt-1 flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-gray-100 shadow-sm">
-          <div className="flex-1 overflow-auto" aria-busy={initialLoading || refreshing}>
+          <div className="flex-1 overflow-y-auto overflow-x-hidden max-lg:overflow-x-auto" aria-busy={initialLoading || refreshing}>
             <table className="main-data-table w-full min-w-0 table-fixed border-separate border-spacing-0 text-left max-lg:min-w-[760px]">
               <thead className="sticky top-0 z-10 shadow-sm">
                 <tr className="bg-gray-900 text-white uppercase tracking-wider">
@@ -683,7 +783,7 @@ const SpecialOrders = () => {
                             >
                               <svg className="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M1.5 12s3.6-7 10.5-7 10.5 7 10.5 7-3.6 7-10.5 7S1.5 12 1.5 12z" /><circle cx="12" cy="12" r="3" /></svg>
                             </button>
-                            <span id={viewTooltipId} role="tooltip" className="pointer-events-none absolute bottom-full left-1/2 z-30 mb-2 -translate-x-1/2 whitespace-nowrap rounded-md bg-slate-900 px-2 py-1 text-[10px] font-medium text-white opacity-0 shadow-sm transition-opacity duration-150 group-hover/tooltip:opacity-100 group-focus-within/tooltip:opacity-100">View Details</span>
+                            <span id={viewTooltipId} role="tooltip" className="pointer-events-none absolute bottom-full right-0 z-30 mb-2 whitespace-nowrap rounded-md bg-slate-900 px-2 py-1 text-[10px] font-medium text-white opacity-0 shadow-sm transition-opacity duration-150 group-hover/tooltip:opacity-100 group-focus-within/tooltip:opacity-100">View Details</span>
                           </span>
                           <span className="group/tooltip relative inline-flex">
                             <button
@@ -696,7 +796,7 @@ const SpecialOrders = () => {
                             >
                               <EditIcon aria-hidden="true" />
                             </button>
-                            <span id={editTooltipId} role="tooltip" className="pointer-events-none absolute bottom-full left-1/2 z-30 mb-2 -translate-x-1/2 whitespace-nowrap rounded-md bg-slate-900 px-2 py-1 text-[10px] font-medium text-white opacity-0 shadow-sm transition-opacity duration-150 group-hover/tooltip:opacity-100 group-focus-within/tooltip:opacity-100">Edit</span>
+                            <span id={editTooltipId} role="tooltip" className="pointer-events-none absolute bottom-full right-0 z-30 mb-2 whitespace-nowrap rounded-md bg-slate-900 px-2 py-1 text-[10px] font-medium text-white opacity-0 shadow-sm transition-opacity duration-150 group-hover/tooltip:opacity-100 group-focus-within/tooltip:opacity-100">Edit</span>
                           </span>
                         </div>
                       </td>
@@ -720,19 +820,24 @@ const SpecialOrders = () => {
 
       {showForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={() => closeForm()}>
-          <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-gray-100 bg-white shadow-2xl ring-1 ring-black/5" onClick={(event) => event.stopPropagation()}>
-            <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
-              <div>
-                <h2 className="text-lg font-semibold text-gray-900">{editingOrder ? 'Edit Special Order' : 'New Special Order'}</h2>
-                <p className="mt-0.5 text-xs font-medium text-gray-500">{editingOrder ? editingOrder.orderNumber : 'Create a customer-requested special order.'}</p>
+          <div className="flex max-h-[calc(100dvh-2rem)] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-gray-100 bg-white shadow-2xl ring-1 ring-black/5 animate-in fade-in zoom-in-95 duration-200" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-gray-100 bg-linear-to-r from-gray-50 to-white px-5 py-3.5">
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gray-900">
+                  <svg className="h-4 w-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" /></svg>
+                </div>
+                <div>
+                  <h2 className="text-sm font-semibold leading-tight text-gray-900">{editingOrder ? 'Edit Special Order' : 'New Special Order'}</h2>
+                  <p className="mt-0.5 text-[10px] text-gray-400">{editingOrder ? editingOrder.orderNumber : 'Create a customer-requested order'}</p>
+                </div>
               </div>
               <button type="button" onClick={() => closeForm()} disabled={isSubmitting} className="flex h-8 w-8 items-center justify-center rounded-lg text-gray-400 transition-all hover:bg-gray-100 hover:text-gray-600 disabled:opacity-50" aria-label="Close special order form"><svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg></button>
             </div>
 
             <form noValidate onSubmit={saveForm} className="flex min-h-0 flex-1 flex-col">
-              <div className="space-y-3 overflow-y-auto px-4 py-3">
+              <div className="min-h-0 space-y-4 overflow-y-auto px-5 py-4">
                 <section>
-                  <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Order Information</h3>
+                  <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-gray-400">Customer &amp; Order</h3>
                   <label className="block">
                     <span className={LABEL_CLASS}>Customer <span className="text-red-600">*</span></span>
                     <input ref={(element) => { if (element) formFieldRefs.current.customerName = element; else delete formFieldRefs.current.customerName; }} aria-invalid={Boolean(formErrors.customerName)} aria-describedby={formErrors.customerName ? 'special-order-customer-error' : undefined} value={form.customerName} onChange={(event) => { setForm((previous) => ({ ...previous, customerName: event.target.value })); setFormErrors((previous) => ({ ...previous, customerName: '' })); }} className={getInputClass(formErrors.customerName)} placeholder="Customer name" required />
@@ -740,33 +845,36 @@ const SpecialOrders = () => {
                   </label>
                 </section>
 
-                <section className="border-t border-gray-200 pt-3">
-                  <div className="mb-2 flex items-center justify-between gap-3">
-                    <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500">Items</h3>
-                    <button type="button" onClick={addItemRow} disabled={isSubmitting} className={SECONDARY_BUTTON_CLASS}>Add Another Item</button>
+                <section className="border-t border-gray-100 pt-4">
+                  <div className="mb-2.5 flex items-center justify-between gap-3">
+                    <div>
+                      <h3 className="text-[10px] font-semibold uppercase tracking-widest text-gray-400">Item Details</h3>
+                      <p className="mt-0.5 text-[10px] text-gray-400">{formSummary.itemCount} item{formSummary.itemCount === 1 ? '' : 's'} in this order</p>
+                    </div>
+                    <button type="button" onClick={addItemRow} disabled={isSubmitting} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-700 shadow-sm transition-all hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50">Add Item</button>
                   </div>
-                  <div className="divide-y divide-gray-200 rounded-lg border border-gray-200 bg-white">
+                  <div className="space-y-2.5">
                     {(form.items || []).map((item, index) => (
-                      <ItemEditor key={item.__rowId || index} item={item} index={index} itemCount={(form.items || []).length} disabled={isSubmitting} errors={formErrors.items?.[index]} fieldRefs={formFieldRefs} onChange={updateItemRow} onRemove={removeItemRow} />
+                      <ItemEditor key={item.__rowId || index} item={item} index={index} itemCount={(form.items || []).length} disabled={isSubmitting} errors={formErrors.items?.[index]} fieldRefs={formFieldRefs} suppliers={supplierPartners} isSuppliersLoading={isSuppliersLoading} onChange={updateItemRow} onRemove={removeItemRow} />
                     ))}
                   </div>
                 </section>
 
-                <section className="border-t border-gray-200 pt-3">
-                  <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Notes and Summary</h3>
+                <section className="border-t border-gray-100 pt-4">
+                  <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-gray-400">Order Summary</h3>
                   <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
                     <label><span className={LABEL_CLASS}>Order notes</span><textarea value={form.remarks} onChange={(event) => setForm((previous) => ({ ...previous, remarks: event.target.value }))} rows={2} className={INPUT_CLASS} placeholder="Optional notes" /></label>
-                    <dl className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500 md:justify-end md:pb-1">
-                      <div className="flex gap-1"><dt>Items:</dt><dd className="font-semibold text-gray-900">{formSummary.itemCount}</dd></div>
-                      <div className="flex gap-1"><dt>Total Qty:</dt><dd className="font-semibold text-gray-900">{formSummary.quantity}</dd></div>
-                      <div className="flex gap-1"><dt>Total:</dt><dd className="font-semibold text-gray-900">{formatMoney(formSummary.total)}</dd></div>
+                    <dl className="grid grid-cols-3 gap-3 rounded-xl border border-gray-100 bg-gray-50 px-3 py-2.5 text-center text-[10px] text-gray-500 md:min-w-75">
+                      <div><dt>Items</dt><dd className="mt-0.5 text-sm font-semibold text-gray-900">{formSummary.itemCount}</dd></div>
+                      <div><dt>Total Qty</dt><dd className="mt-0.5 text-sm font-semibold text-gray-900">{formSummary.quantity}</dd></div>
+                      <div><dt>Total</dt><dd className="mt-0.5 whitespace-nowrap text-sm font-semibold text-gray-900">{formatMoney(formSummary.total)}</dd></div>
                     </dl>
                   </div>
                 </section>
               </div>
-              <div className="flex shrink-0 justify-end gap-2 border-t border-gray-200 bg-gray-50 px-4 py-2.5">
-                <button type="button" onClick={() => closeForm()} disabled={isSubmitting} className={SECONDARY_BUTTON_CLASS}>Cancel</button>
-                <button type="submit" disabled={isSubmitting} className={PRIMARY_BUTTON_CLASS}>{isSubmitting ? 'Saving...' : editingOrder ? 'Save Changes' : 'Create Special Order'}</button>
+              <div className="shrink-0 border-t border-gray-100 bg-white px-5 py-3">
+                <button type="submit" disabled={isSubmitting} className="w-full rounded-xl border-2 border-gray-900 bg-gray-900 py-2.5 text-xs font-semibold tracking-widest text-white shadow-lg transition-all hover:-translate-y-0.5 hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0">{isSubmitting ? 'Saving...' : editingOrder ? 'Save Changes' : 'Create Special Order'}</button>
+                <button type="button" onClick={() => closeForm()} disabled={isSubmitting} className="mt-1.5 w-full rounded-lg py-1 text-xs font-semibold text-gray-500 transition-colors hover:text-gray-800 disabled:cursor-not-allowed disabled:opacity-50">Cancel</button>
               </div>
             </form>
           </div>
