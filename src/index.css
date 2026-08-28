@@ -58,6 +58,34 @@ body {
   border-bottom-right-radius: 6px;
 }
 
+/* Keep primary data tables open and easy to scan rather than cell-boxed. */
+.main-data-table > thead > tr > th {
+  border-top: 0 !important;
+  border-right: 0 !important;
+  border-left: 0 !important;
+  border-bottom: 1px solid rgb(255 255 255 / 0.16) !important;
+}
+
+.main-data-table > tbody {
+  background-color: #ffffff;
+}
+
+.main-data-table > tbody > tr > td {
+  border-top: 0 !important;
+  border-right: 0 !important;
+  border-left: 0 !important;
+  border-bottom: 1px solid #e1e4e8 !important;
+  transition: background-color 150ms ease;
+}
+
+.main-data-table > tbody > tr {
+  border: 0 !important;
+}
+
+.main-data-table > tbody > tr:last-child > td {
+  border-bottom: 0 !important;
+}
+
 .main-toolbar-search {
   position: relative;
   min-width: 0;
