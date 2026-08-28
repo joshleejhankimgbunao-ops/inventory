@@ -85,6 +85,25 @@ test('rapid repeated Add Customer creates one partner record', async () => {
   await runPartnerCreateTwice('customer');
 });
 
+test('a minimal regular customer uses the existing Partner defaults for Credit eligibility', async () => {
+  let createdPayload;
+  const response = createResponse();
+
+  await createPartner({
+    body: { type: 'customer', name: 'Quick Add Customer', clientRequestId: 'partner:quick-add' },
+  }, response, assert.fail, {
+    findByRequestId: async () => null,
+    createPartnerRecord: async (payload) => {
+      createdPayload = payload;
+      return { _id: 'quick-add-customer', ...payload };
+    },
+  });
+
+  assert.equal(response.statusCode, 201);
+  assert.equal(createdPayload.customerType, 'regular');
+  assert.equal(createdPayload.isVerifiedCustomer, true);
+});
+
 test('rapid repeated Add Supplier creates one partner record', async () => {
   await runPartnerCreateTwice('supplier');
 });

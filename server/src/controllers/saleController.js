@@ -12,6 +12,7 @@ const { isMoneyInputTooLarge, parseSafeMoneyToCentavos } = require('../utils/mon
 const MIN_CREDIT_TERM_DAYS = 1;
 const MAX_CREDIT_TERM_DAYS = 60;
 const CREDIT_PAYMENT_MODE_LABELS = {
+  cash: 'Cash',
   gcash: 'GCash',
   cheque: 'Cheque',
   'bank transfer': 'Bank Transfer',
@@ -252,7 +253,7 @@ const executeSaleCreation = async ({ req, session = null, clientRequestId = '' }
     });
 
     if (!creditPaymentMode) {
-      const paymentModeError = new Error('Select a valid mode of payment for credit checkout.');
+      const paymentModeError = new Error('Select a valid payment method for credit checkout.');
       paymentModeError.status = 400;
       throw paymentModeError;
     }

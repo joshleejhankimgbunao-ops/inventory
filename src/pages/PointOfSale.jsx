@@ -7,7 +7,7 @@ import { getAlternatives, getAlternativesByBudget, getBudgetTierByPrice, getLowS
 import { useInventory } from '../context/InventoryContext';
 import { useAuth } from '../context/AuthContext';
 import { getAuthToken, isApiConnectionFailure } from '../services/apiClient';
-import { createSaleApi, listProductsApi, listPartnersApi } from '../services/inventoryApi';
+import { createPartnerApi, createSaleApi, listProductsApi, listPartnersApi } from '../services/inventoryApi';
 import { printDocument, printReceipt } from '../services/receiptPrinter';
 import {
     formatMoneyInput,
@@ -24,6 +24,7 @@ import {
 } from '../utils/numericInput';
 import { formatCurrency } from '../utils/numberFormat';
 import { createClientRequestId } from '../utils/clientRequestId';
+import { ROLES } from '../constants/roles';
 
 const getProductImageUrl = (item) => String(item?.imageUrl || '').trim();
 const QUOTATION_NAME_MAX_LENGTH = 32;
@@ -34,6 +35,12 @@ const sanitizeCashTenderedInput = (value) => {
 };
 
 const getMoneyCentavosFromAmount = (amount) => parseMoneyToCentavos(formatMoneyInput(amount));
+
+const isEligibleCreditCustomer = (row) => {
+    const customerType = String(row?.customerType || 'regular').toLowerCase();
+    const isVerifiedCustomer = row?.isVerifiedCustomer !== false;
+    return row?.type === 'customer' && !row?.isArchived && customerType === 'regular' && isVerifiedCustomer;
+};
 
 const getCashChangeCentavos = (cashValue, payableTotal) => {
     const cashCentavos = parseMoneyToCentavos(cashValue);
@@ -95,7 +102,7 @@ const ProductThumbnail = ({ item, className = '', onPreview, fit = 'cover' }) =>
 const PointOfSale = () => {
     const MIN_CREDIT_TERM_DAYS = 1;
     const MAX_CREDIT_TERM_DAYS = 60;
-    const CREDIT_PAYMENT_MODES = ['gcash', 'cheque', 'bank transfer', 'other'];
+    const CREDIT_PAYMENT_MODES = ['cash', 'gcash', 'cheque', 'bank transfer', 'other'];
     const VAT_MODE_OPTIONS = [
         { value: 'vatable', label: 'VAT 12%' },
         { value: 'zero-rated', label: 'Zero Rated (0%)' },
@@ -105,6 +112,7 @@ const PointOfSale = () => {
     const printLockRef = useRef(false);
     const { processedInventory: inventory, setInventory, transactions, setTransactions, logAction, logActivity, addToSyncQueue, syncQueue, isOnline } = useInventory();
     const { appSettings: settings, userPreferences, currentUserName, userRole } = useAuth();
+    const canQuickAddCreditCustomer = userRole === ROLES.SUPER_ADMIN || userRole === ROLES.ADMIN;
 
     const showErrorDetails = (message, title = 'Action Failed') => {
         showToast(title, message, 'error', 'pos-action-error');
@@ -233,7 +241,11 @@ const PointOfSale = () => {
     const [selectedVatMode, setSelectedVatMode] = useState('vatable');
     const [creditCustomers, setCreditCustomers] = useState([]);
     const [selectedCreditCustomerId, setSelectedCreditCustomerId] = useState('');
-    const [selectedCreditCustomerName, setSelectedCreditCustomerName] = useState('');
+    const [creditCustomerSearchQuery, setCreditCustomerSearchQuery] = useState('');
+    const [isCreditCustomerComboboxOpen, setIsCreditCustomerComboboxOpen] = useState(false);
+    const [isQuickAddCreditCustomerOpen, setIsQuickAddCreditCustomerOpen] = useState(false);
+    const [quickAddCreditCustomerName, setQuickAddCreditCustomerName] = useState('');
+    const [isSavingQuickAddCreditCustomer, setIsSavingQuickAddCreditCustomer] = useState(false);
     const [selectedCreditTermDays, setSelectedCreditTermDays] = useState(MIN_CREDIT_TERM_DAYS);
     const [selectedCreditPaymentMode, setSelectedCreditPaymentMode] = useState('');
     const [customCreditPaymentMode, setCustomCreditPaymentMode] = useState('');
@@ -253,6 +265,10 @@ const PointOfSale = () => {
     const [lastTransaction, setLastTransaction] = useState(null);
 
     const creditPaymentModeRef = useRef(null);
+    const creditCustomerComboboxRef = useRef(null);
+    const customCreditPaymentModeInputRef = useRef(null);
+    const quickAddCreditCustomerInFlightRef = useRef(false);
+    const quickAddCreditCustomerRequestIdRef = useRef('');
 
     // Pagination
     const [currentPage, setCurrentPage] = useState(1);
@@ -267,6 +283,32 @@ const PointOfSale = () => {
             window.clearTimeout(timeoutId);
         };
     }, [searchQuery]);
+
+    useEffect(() => {
+        if (!isCreditPaymentModeOpen) return undefined;
+
+        const closeWhenFocusLeaves = (target) => {
+            if (!creditPaymentModeRef.current?.contains(target)) {
+                setIsCreditPaymentModeOpen(false);
+            }
+        };
+        const handlePointerDown = (event) => closeWhenFocusLeaves(event.target);
+        const handleFocusIn = (event) => closeWhenFocusLeaves(event.target);
+        const handleKeyDown = (event) => {
+            if (event.key !== 'Escape') return;
+            setIsCreditPaymentModeOpen(false);
+            creditPaymentModeRef.current?.querySelector('button')?.focus();
+        };
+
+        document.addEventListener('pointerdown', handlePointerDown);
+        document.addEventListener('focusin', handleFocusIn);
+        document.addEventListener('keydown', handleKeyDown);
+        return () => {
+            document.removeEventListener('pointerdown', handlePointerDown);
+            document.removeEventListener('focusin', handleFocusIn);
+            document.removeEventListener('keydown', handleKeyDown);
+        };
+    }, [isCreditPaymentModeOpen]);
 
     const createClosedVariantModalState = () => ({
         isOpen: false,
@@ -449,24 +491,18 @@ const PointOfSale = () => {
                 const rows = await listPartnersApi({ type: 'customer', includeArchived: false });
                 if (!isMounted) return;
 
-                const eligible = (Array.isArray(rows) ? rows : []).filter((row) => {
-                    const customerType = String(row?.customerType || 'regular').toLowerCase();
-                    const isVerifiedCustomer = row?.isVerifiedCustomer !== false;
-                    return row?.type === 'customer' && !row?.isArchived && customerType === 'regular' && isVerifiedCustomer;
-                });
+                const eligible = (Array.isArray(rows) ? rows : []).filter(isEligibleCreditCustomer);
 
-                setCreditCustomers(eligible);
+                    setCreditCustomers(eligible);
 
                 if (eligible.length === 0) {
                     setSelectedCreditCustomerId('');
-                    setSelectedCreditCustomerName('');
                     return;
                 }
             } catch {
                 if (isMounted) {
                     setCreditCustomers([]);
                     setSelectedCreditCustomerId('');
-                    setSelectedCreditCustomerName('');
                 }
             }
         };
@@ -489,29 +525,96 @@ const PointOfSale = () => {
         return creditCustomers.find((row) => String(row?._id || row?.id || '') === String(selectedCreditCustomerId || '')) || null;
     }, [creditCustomers, selectedCreditCustomerId]);
 
-    const creditCustomerOptions = useMemo(() => {
-        return creditCustomers.map((customer) => {
-            const customerId = String(customer?._id || customer?.id || '');
-            const customerName = String(customer?.name || '').trim();
-            return {
-                id: customerId,
-                name: customerName,
-            };
-        });
-    }, [creditCustomers]);
+    const filteredCreditCustomers = useMemo(() => {
+        const normalizedQuery = String(creditCustomerSearchQuery || '').trim().toLowerCase();
+        if (!normalizedQuery) return creditCustomers;
+        return creditCustomers.filter((customer) => String(customer?.name || '').toLowerCase().includes(normalizedQuery));
+    }, [creditCustomers, creditCustomerSearchQuery]);
 
+    const selectCreditCustomer = (customer) => {
+        const customerId = String(customer?._id || customer?.id || '');
+        const customerName = String(customer?.name || '').trim();
+        setSelectedCreditCustomerId(customerId);
+        setCreditCustomerSearchQuery(customerName);
+        setIsCreditCustomerComboboxOpen(false);
+    };
 
-    const handleCreditCustomerInputChange = (value) => {
-        setSelectedCreditCustomerName(value);
+    const clearCreditCustomerSelection = () => {
+        setSelectedCreditCustomerId('');
+        setCreditCustomerSearchQuery('');
+    };
 
-        const normalizedValue = String(value || '').trim().toLowerCase();
-        if (!normalizedValue) {
-            setSelectedCreditCustomerId('');
+    const quickAddCreditCustomerMatches = useMemo(() => {
+        const normalizedName = String(quickAddCreditCustomerName || '').trim().toLowerCase();
+        if (!normalizedName) return [];
+
+        return creditCustomers.filter((customer) => String(customer?.name || '').toLowerCase().includes(normalizedName));
+    }, [creditCustomers, quickAddCreditCustomerName]);
+
+    const openQuickAddCreditCustomer = () => {
+        if (!isOnline) {
+            showErrorDetails('This action requires an internet connection.', "You're Offline");
             return;
         }
 
-        const matched = creditCustomerOptions.find((option) => option.name.toLowerCase() === normalizedValue);
-        setSelectedCreditCustomerId(matched ? matched.id : '');
+        quickAddCreditCustomerRequestIdRef.current = '';
+        setQuickAddCreditCustomerName(String(creditCustomerSearchQuery || '').trim());
+        setIsCreditCustomerComboboxOpen(false);
+        setIsQuickAddCreditCustomerOpen(true);
+    };
+
+    const closeQuickAddCreditCustomer = () => {
+        if (isSavingQuickAddCreditCustomer) return;
+        setIsQuickAddCreditCustomerOpen(false);
+        setQuickAddCreditCustomerName('');
+        quickAddCreditCustomerRequestIdRef.current = '';
+    };
+
+    const handleQuickAddCreditCustomer = async (event) => {
+        event.preventDefault();
+        if (quickAddCreditCustomerInFlightRef.current) return;
+
+        const name = String(quickAddCreditCustomerName || '').trim();
+        if (!name) {
+            showErrorDetails('Customer name is required.', 'Missing Customer Name');
+            return;
+        }
+        if (!isOnline) {
+            showErrorDetails('This action requires an internet connection.', "You're Offline");
+            return;
+        }
+
+        quickAddCreditCustomerInFlightRef.current = true;
+        setIsSavingQuickAddCreditCustomer(true);
+        try {
+            const createdCustomer = await createPartnerApi({
+                type: 'customer',
+                name,
+                clientRequestId: quickAddCreditCustomerRequestIdRef.current
+                    || (quickAddCreditCustomerRequestIdRef.current = createClientRequestId('partner')),
+            });
+            const createdCustomerId = String(createdCustomer?._id || createdCustomer?.id || '');
+            const refreshedCustomers = await listPartnersApi({ type: 'customer', includeArchived: false });
+            const eligibleCustomers = (Array.isArray(refreshedCustomers) ? refreshedCustomers : []).filter(isEligibleCreditCustomer);
+            setCreditCustomers(eligibleCustomers);
+
+            const eligibleCreatedCustomer = eligibleCustomers.find((customer) => String(customer?._id || customer?.id || '') === createdCustomerId);
+            setIsQuickAddCreditCustomerOpen(false);
+            setQuickAddCreditCustomerName('');
+            quickAddCreditCustomerRequestIdRef.current = '';
+
+            if (eligibleCreatedCustomer) {
+                selectCreditCustomer(eligibleCreatedCustomer);
+                showToast('Customer Added', `${eligibleCreatedCustomer.name} is selected for this credit order.`, 'success', 'pos-quick-add-customer');
+            } else {
+                showToast('Customer Added', 'The customer was created but is not currently eligible for Credit checkout. Verify the customer before continuing.', 'warning', 'pos-quick-add-customer-ineligible');
+            }
+        } catch (error) {
+            showErrorDetails(error.message || 'Unable to add the customer.', 'Customer Save Failed');
+        } finally {
+            quickAddCreditCustomerInFlightRef.current = false;
+            setIsSavingQuickAddCreditCustomer(false);
+        }
     };
 
     const normalizeCreditTerm = (value) => {
@@ -552,11 +655,30 @@ const PointOfSale = () => {
         }
 
         const labels = {
+            cash: 'Cash',
             gcash: 'GCash',
             cheque: 'Cheque',
             'bank transfer': 'Bank Transfer',
         };
         return labels[mode] || String(mode || '');
+    };
+
+    const focusCustomCreditPaymentModeInput = () => {
+        window.requestAnimationFrame(() => {
+            const input = customCreditPaymentModeInputRef.current;
+            if (!input) return;
+
+            input.focus({ preventScroll: true });
+            if (input.value) {
+                input.select();
+            }
+
+            const inputBounds = input.getBoundingClientRect();
+            const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+            if (inputBounds.top < 0 || inputBounds.bottom > viewportHeight) {
+                input.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+        });
     };
 
     const normalizeCreditPaymentModeInput = (value) => {
@@ -802,7 +924,7 @@ const PointOfSale = () => {
             showErrorDetails('Select an eligible regular customer for credit checkout.');
             return;
         } else if (isCreditCheckout && !resolveCreditPaymentModeLabel()) {
-            showErrorDetails('Please select mode of payment for credit checkout.');
+            showErrorDetails('Please select a payment method for credit checkout.');
             return;
         }
 
@@ -1183,7 +1305,7 @@ const PointOfSale = () => {
             : isCashAmountTooLarge
                 ? 'Amount is too large. Please enter a smaller value.'
             : paymentType === 'credit'
-                ? (!selectedCreditCustomer ? 'Select an eligible regular customer first' : 'Select payment mode first')
+                ? (!selectedCreditCustomer ? 'Select an eligible regular customer first' : 'Select payment method first')
                 : 'Enter cash first';
 
     return (
@@ -1283,7 +1405,7 @@ const PointOfSale = () => {
                                         </div>
                                         {lastTransaction.creditPaymentMode && (
                                             <div className="flex justify-between text-gray-500 text-[9px]">
-                                                <span>Mode of Payment</span>
+                                                <span>Payment Method</span>
                                                 <span>{lastTransaction.creditPaymentMode}</span>
                                             </div>
                                         )}
@@ -1885,79 +2007,137 @@ const PointOfSale = () => {
                             </>
                         ) : (
                             <>
-                                <div className="flex flex-col gap-1">
+                                <div className="relative flex flex-col gap-1" ref={creditCustomerComboboxRef}>
                                     <label className="text-[11px] font-semibold text-gray-600 uppercase tracking-wider">Regular Customer</label>
-                                    <input
-                                        type="text"
-                                        list="credit-customer-options"
-                                        value={selectedCreditCustomerName}
-                                        onChange={(e) => handleCreditCustomerInputChange(e.target.value)}
-                                        disabled={cart.length === 0}
-                                        placeholder="Select an eligible regular customer"
-                                        className="w-full px-2.5 py-2 rounded-lg border border-gray-300 text-sm font-semibold bg-white focus:border-amber-500 focus:outline-none"
-                                    />
-                                    <datalist id="credit-customer-options">
-                                        {creditCustomerOptions.map((customer) => (
-                                            <option key={customer.id} value={customer.name} />
-                                        ))}
-                                    </datalist>
+                                    <div className="relative">
+                                        <input
+                                            type="text"
+                                            value={creditCustomerSearchQuery}
+                                            onFocus={() => setIsCreditCustomerComboboxOpen(true)}
+                                            onChange={(e) => {
+                                                setCreditCustomerSearchQuery(e.target.value);
+                                                if (selectedCreditCustomerId) {
+                                                    setSelectedCreditCustomerId('');
+                                                }
+                                                setIsCreditCustomerComboboxOpen(true);
+                                            }}
+                                            onBlur={() => window.setTimeout(() => setIsCreditCustomerComboboxOpen(false), 150)}
+                                            disabled={cart.length === 0}
+                                            placeholder="Select an eligible regular customer"
+                                            role="combobox"
+                                            aria-expanded={isCreditCustomerComboboxOpen}
+                                            aria-autocomplete="list"
+                                            className="w-full px-2.5 py-2 pr-8 rounded-lg border border-gray-300 text-sm font-semibold bg-white focus:border-amber-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-gray-50"
+                                        />
+                                        {(creditCustomerSearchQuery || selectedCreditCustomerId) && cart.length > 0 && (
+                                            <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={clearCreditCustomerSelection} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 transition-colors hover:text-gray-700" aria-label="Clear regular customer">
+                                                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18 18 6M6 6l12 12" /></svg>
+                                            </button>
+                                        )}
+                                    </div>
+                                    {isCreditCustomerComboboxOpen && cart.length > 0 && (
+                                        <div className="absolute z-20 top-full mt-1 max-h-40 w-full overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg" role="listbox">
+                                            {creditCustomers.length === 0 ? (
+                                                <p className="px-3 py-2 text-xs text-gray-500">No eligible regular customers available</p>
+                                            ) : filteredCreditCustomers.length === 0 ? (
+                                                <p className="px-3 py-2 text-xs text-gray-500">No customers found</p>
+                                            ) : filteredCreditCustomers.map((customer) => {
+                                                const customerId = String(customer?._id || customer?.id || '');
+                                                const customerName = String(customer?.name || '').trim();
+                                                return (
+                                                    <button
+                                                        key={customerId}
+                                                        type="button"
+                                                        role="option"
+                                                        aria-selected={customerId === selectedCreditCustomerId}
+                                                        onMouseDown={(event) => event.preventDefault()}
+                                                        onClick={() => selectCreditCustomer(customer)}
+                                                        className={`block w-full px-3 py-2 text-left text-sm font-semibold transition-colors hover:bg-amber-50 focus:bg-amber-50 focus:outline-none ${customerId === selectedCreditCustomerId ? 'bg-amber-50 text-amber-800' : 'text-gray-700'}`}
+                                                    >
+                                                        {customerName}
+                                                    </button>
+                                                );
+                                            })}
+                                            {canQuickAddCreditCustomer && (
+                                                <div className="mt-1 border-t border-gray-200 px-1 pt-1">
+                                                    <button
+                                                        type="button"
+                                                        onMouseDown={(event) => event.preventDefault()}
+                                                        onClick={openQuickAddCreditCustomer}
+                                                        className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs font-semibold text-amber-800 transition-colors hover:bg-amber-50 focus:bg-amber-50 focus:outline-none"
+                                                    >
+                                                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4" /></svg>
+                                                        Add New Regular Customer
+                                                    </button>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
                                 </div>
-                                <div className="flex flex-col gap-1" ref={creditPaymentModeRef}>
-                                    <label className="text-[11px] font-semibold text-gray-600 uppercase tracking-wider">Mode of Payment</label>
+                                <div className="relative flex flex-col gap-1" ref={creditPaymentModeRef}>
+                                    <label className="text-[11px] font-semibold text-gray-600 uppercase tracking-wider">Payment Method</label>
                                     <button
                                         type="button"
-                                        onClick={() => setIsCreditPaymentModeOpen((prev) => !prev)}
+                                        onClick={() => {
+                                            setIsCreditCustomerComboboxOpen(false);
+                                            setIsCreditPaymentModeOpen((prev) => !prev);
+                                        }}
                                         disabled={cart.length === 0}
-                                        className="w-full px-2.5 py-2 rounded-lg border border-gray-300 text-sm font-semibold bg-white text-gray-800 text-left focus:border-amber-500 focus:outline-none"
+                                        aria-haspopup="listbox"
+                                        aria-expanded={isCreditPaymentModeOpen}
+                                        className="flex w-full items-center justify-between px-2.5 py-2 rounded-lg border border-gray-300 text-sm font-semibold bg-white text-gray-800 text-left transition-colors hover:border-amber-400 focus:border-amber-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-gray-50"
                                     >
-                                        {selectedCreditPaymentMode
+                                        <span>{selectedCreditPaymentMode
                                             ? (selectedCreditPaymentMode === 'other'
                                                 ? (customCreditPaymentMode || 'Other')
                                                 : formatCreditPaymentModeLabel(selectedCreditPaymentMode))
-                                            : 'Select payment mode'}
+                                            : 'Select payment method'}</span>
+                                        <svg className={`h-4 w-4 text-gray-400 transition-transform ${isCreditPaymentModeOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="m6 9 6 6 6-6" /></svg>
                                     </button>
                                     {isCreditPaymentModeOpen && cart.length > 0 && (
-                                        <div className="absolute z-20 mt-1 w-full rounded-lg border border-gray-200 bg-white shadow-lg">
-                                            <div className="max-h-48 overflow-y-auto py-1">
+                                        <div className="absolute z-20 top-full mt-1 w-full rounded-lg border border-gray-200 bg-white shadow-lg" role="listbox">
+                                            <div className="max-h-40 overflow-y-auto py-1">
                                                 {CREDIT_PAYMENT_MODES.map((mode) => (
                                                     <button
                                                         key={mode}
                                                         type="button"
+                                                        role="option"
+                                                        aria-selected={selectedCreditPaymentMode === mode}
                                                         onClick={() => {
                                                             setSelectedCreditPaymentMode(mode);
-                                                            if (mode !== 'other') {
+                                                            setIsCreditPaymentModeOpen(false);
+                                                            if (mode === 'other') {
+                                                                focusCustomCreditPaymentModeInput();
+                                                            } else {
                                                                 setCustomCreditPaymentMode('');
-                                                                setIsCreditPaymentModeOpen(false);
                                                             }
                                                         }}
-                                                        className={`w-full px-3 py-2 text-left text-sm font-semibold hover:bg-amber-50 ${selectedCreditPaymentMode === mode ? 'bg-amber-50 text-amber-700' : 'text-gray-700'}`}
+                                                        className={`w-full px-3 py-2 text-left text-sm font-semibold transition-colors hover:bg-amber-50 focus:bg-amber-50 focus:outline-none ${selectedCreditPaymentMode === mode ? 'bg-amber-50 text-amber-700' : 'text-gray-700'}`}
                                                     >
                                                         {formatCreditPaymentModeLabel(mode)}
                                                     </button>
                                                 ))}
-                                                {selectedCreditPaymentMode === 'other' && (
-                                                    <div className="border-t border-gray-200 p-2">
-                                                        <input
-                                                            type="text"
-                                                            value={customCreditPaymentMode}
-                                                            onChange={(e) => setCustomCreditPaymentMode(e.target.value)}
-                                                            onKeyDown={(e) => {
-                                                                if (e.key === 'Enter') {
-                                                                    e.preventDefault();
-                                                                    setIsCreditPaymentModeOpen(false);
-                                                                }
-                                                                if (e.key === 'Escape') {
-                                                                    e.preventDefault();
-                                                                    setIsCreditPaymentModeOpen(false);
-                                                                }
-                                                            }}
-                                                            placeholder="Type other payment mode"
-                                                            className="w-full px-2.5 py-2 rounded-lg border border-gray-300 text-sm font-semibold bg-white text-gray-800 focus:border-amber-500 focus:outline-none"
-                                                        />
-                                                    </div>
-                                                )}
                                             </div>
                                         </div>
+                                    )}
+                                    {selectedCreditPaymentMode === 'other' && cart.length > 0 && (
+                                        <input
+                                            ref={customCreditPaymentModeInputRef}
+                                            type="text"
+                                            value={customCreditPaymentMode}
+                                            onChange={(e) => setCustomCreditPaymentMode(e.target.value)}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter') {
+                                                    e.preventDefault();
+                                                }
+                                                if (e.key === 'Escape') {
+                                                    e.preventDefault();
+                                                    creditPaymentModeRef.current?.querySelector('button')?.focus();
+                                                }
+                                            }}
+                                            placeholder="Type other payment mode"
+                                            className="w-full px-2.5 py-2 rounded-lg border border-gray-300 text-sm font-semibold bg-white text-gray-800 focus:border-amber-500 focus:outline-none"
+                                        />
                                     )}
                                 </div>
                                 <div className="flex flex-col gap-1">
@@ -2693,6 +2873,88 @@ const PointOfSale = () => {
                         </button>
                     </div>
                  </div>
+            </div>
+        )}
+
+        {isQuickAddCreditCustomerOpen && (
+            <div className="fixed inset-0 z-70 flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-labelledby="quick-add-credit-customer-title">
+                <form onSubmit={handleQuickAddCreditCustomer} className="w-full max-w-sm overflow-hidden rounded-2xl bg-white shadow-2xl">
+                    <div className="flex items-center justify-between border-b border-gray-100 bg-gray-50 px-4 py-3">
+                        <div>
+                            <h3 id="quick-add-credit-customer-title" className="text-sm font-semibold text-gray-900">Add New Regular Customer</h3>
+                            <p className="mt-0.5 text-[11px] text-gray-500">Create a customer without leaving this Credit order.</p>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={closeQuickAddCreditCustomer}
+                            disabled={isSavingQuickAddCreditCustomer}
+                            className="rounded-lg p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 disabled:cursor-not-allowed"
+                            aria-label="Close quick add customer"
+                        >
+                            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18 18 6M6 6l12 12" /></svg>
+                        </button>
+                    </div>
+                    <div className="space-y-3 px-4 py-4">
+                        <div>
+                            <label htmlFor="quick-add-credit-customer-name" className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">Customer Name</label>
+                            <input
+                                id="quick-add-credit-customer-name"
+                                type="text"
+                                value={quickAddCreditCustomerName}
+                                onChange={(event) => setQuickAddCreditCustomerName(event.target.value)}
+                                autoFocus
+                                maxLength={120}
+                                placeholder="Enter customer name"
+                                className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-semibold text-gray-800 focus:border-amber-500 focus:outline-none"
+                            />
+                            <p className="mt-1 text-[10px] text-gray-500">Only a name is required. The customer is created using the existing Partner rules.</p>
+                        </div>
+                        {quickAddCreditCustomerMatches.length > 0 && (
+                            <div className="rounded-lg border border-amber-200 bg-amber-50 p-2.5">
+                                <p className="text-[11px] font-semibold text-amber-900">Similar eligible customers found</p>
+                                <p className="mt-0.5 text-[10px] text-amber-800">Select an existing record when it is the correct customer. Creating a new record will not link by name.</p>
+                                <div className="mt-2 max-h-24 space-y-1 overflow-y-auto">
+                                    {quickAddCreditCustomerMatches.slice(0, 3).map((customer) => {
+                                        const customerId = String(customer?._id || customer?.id || '');
+                                        const customerName = String(customer?.name || '').trim();
+                                        return (
+                                            <button
+                                                key={customerId}
+                                                type="button"
+                                                onClick={() => {
+                                                    selectCreditCustomer(customer);
+                                                    setIsQuickAddCreditCustomerOpen(false);
+                                                    setQuickAddCreditCustomerName('');
+                                                    quickAddCreditCustomerRequestIdRef.current = '';
+                                                }}
+                                                className="block w-full rounded-md bg-white px-2 py-1.5 text-left text-xs font-semibold text-amber-900 shadow-sm transition-colors hover:bg-amber-100 focus:outline-none"
+                                            >
+                                                Select {customerName}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                    <div className="flex gap-2 border-t border-gray-100 bg-gray-50 px-4 py-3">
+                        <button
+                            type="button"
+                            onClick={closeQuickAddCreditCustomer}
+                            disabled={isSavingQuickAddCreditCustomer}
+                            className="flex-1 rounded-xl bg-white py-2 text-xs font-semibold text-gray-700 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:text-gray-400"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            type="submit"
+                            disabled={isSavingQuickAddCreditCustomer || !String(quickAddCreditCustomerName || '').trim()}
+                            className="flex-1 rounded-xl bg-gray-900 py-2 text-xs font-semibold text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            {isSavingQuickAddCreditCustomer ? 'Saving...' : 'Save Customer'}
+                        </button>
+                    </div>
+                </form>
             </div>
         )}
 
