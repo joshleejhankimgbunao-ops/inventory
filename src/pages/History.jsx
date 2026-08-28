@@ -6,6 +6,7 @@ import ToolbarDropdown from '../components/ToolbarDropdown';
 import ReceiptPreviewModal from '../components/ReceiptPreviewModal';
 import { useLocation } from 'react-router-dom';
 import { showToast } from '../utils/toastHelper';
+import { showPageLoadError } from '../utils/pageLoadError';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
 import { getCreditTransactionByIdApi, listCreditTransactionsApi } from '../services/inventoryApi';
@@ -103,7 +104,7 @@ const History = () => {
                     setCreditTransactions(Array.isArray(rows) ? rows : []);
                 }
             } catch (error) {
-                showToast('Load Failed', error.message || 'Unable to load credit transactions.', 'error', 'credit-history-load');
+                showPageLoadError(showToast, error, 'credit-history-load');
             } finally {
                 if (isMounted) {
                     setIsCreditLoading(false);
@@ -609,7 +610,7 @@ const History = () => {
             setSelectedCredit(detail);
             setIsCreditDetailsOpen(true);
         } catch (error) {
-            showToast('Load Failed', error.message || 'Unable to load credit transaction details.', 'error', 'credit-history-details');
+            showPageLoadError(showToast, error, 'credit-history-details');
         }
     };
 

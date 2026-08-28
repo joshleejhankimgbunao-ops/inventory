@@ -3,6 +3,7 @@ import Pagination from '../components/Pagination';
 import ArchiveIcon from '../components/ArchiveIcon';
 import EditIcon from '../components/EditIcon';
 import { showToast } from '../utils/toastHelper';
+import { getPageLoadError, showPageLoadError } from '../utils/pageLoadError';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
@@ -60,7 +61,7 @@ const UserList = () => {
     const { logActivity, renameUserReferences, syncUserIdentityReferences } = useInventory();
 
     const [users, setUsers] = useState([]);
-    const [usersLoadError, setUsersLoadError] = useState('');
+    const [usersLoadError, setUsersLoadError] = useState(null);
     const [isUsersLoading, setIsUsersLoading] = useState(false);
 
     const [searchTerm, setSearchTerm] = useState('');
@@ -246,19 +247,20 @@ const UserList = () => {
             }
 
             if (!Array.isArray(backendUsers)) {
-                setUsersLoadError('Unexpected users response from server.');
+                setUsersLoadError({ title: 'Load Failed', message: 'Unexpected users response from server.' });
                 return false;
             }
 
             const mappedUsers = mapBackendUsersToUi(backendUsers);
             setUsers(mappedUsers);
-            setUsersLoadError('');
+            setUsersLoadError(null);
             setCurrentPage(1);
             return true;
         } catch (error) {
             if (isMountedRef.current) {
                 // Keep current in-memory list; backend remains source-of-truth.
-                setUsersLoadError(error?.message || 'Unable to load users from API.');
+                setUsersLoadError(getPageLoadError(error));
+                showPageLoadError(showToast, error, 'user-load');
             }
             return false;
         } finally {
@@ -274,7 +276,7 @@ const UserList = () => {
 
         if (!currentAuthUsername) {
             setUsers([]);
-            setUsersLoadError('');
+            setUsersLoadError(null);
             setIsUsersLoading(false);
 
             return () => {
@@ -347,7 +349,7 @@ const UserList = () => {
                 sourceUsers = mappedUsers;
                 if (isMountedRef.current) {
                     setUsers(mappedUsers);
-                    setUsersLoadError('');
+                    setUsersLoadError(null);
                 }
             }
         } catch {
@@ -490,7 +492,7 @@ const UserList = () => {
                             const backendUsers = await fetchUsersFromApiWithRetry(1);
                             latestUsers = Array.isArray(backendUsers) ? mapBackendUsersToUi(backendUsers) : users;
                             setUsers(latestUsers);
-                            setUsersLoadError('');
+                            setUsersLoadError(null);
                         } catch {
                             // Keep original error handling if refresh fails.
                         }
@@ -735,7 +737,7 @@ const UserList = () => {
                 <div className="flex-1 min-h-0 flex flex-col md:overflow-visible transition-colors bg-transparent pt-3">
                     {usersLoadError && (
                         <div className="mx-5 mb-3 flex items-center justify-between gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700 dark:border-rose-800 dark:bg-rose-900/20 dark:text-rose-300">
-                            <span>Unable to load users: {usersLoadError}</span>
+                            <span>{usersLoadError.title}: {usersLoadError.message}</span>
                             <button
                                 type="button"
                                 onClick={() => refreshUsersFromBackend()}
@@ -858,10 +860,10 @@ const UserList = () => {
                                                 )}
                                             </div>
                                             <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
-                                                {showArchived ? 'No archived users yet' : (usersLoadError ? 'Unable to load users' : 'No active users found')}
+                                                {showArchived ? 'No archived users yet' : (usersLoadError ? usersLoadError.title : 'No active users found')}
                                             </h3>
                                             <p className="mt-1 text-xs font-medium text-gray-500 dark:text-gray-400">
-                                                                {showArchived ? 'Archived accounts will appear here once you archive a user.' : (usersLoadError || (users.some((u) => u.isArchived) ? 'No active users found. You may have archived users; click View Archive.' : 'Try changing your search keyword or add a new user account.'))}
+                                                                {showArchived ? 'Archived accounts will appear here once you archive a user.' : (usersLoadError?.message || (users.some((u) => u.isArchived) ? 'No active users found. You may have archived users; click View Archive.' : 'Try changing your search keyword or add a new user account.'))}
                                             </p>
                                         </div>
                                     </td>

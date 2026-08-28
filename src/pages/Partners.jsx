@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import toast from 'react-hot-toast';
 import { showToast } from '../utils/toastHelper';
+import { showPageLoadError } from '../utils/pageLoadError';
 import { getSupplierRestockRecommendations } from '../utils/recommendationLogic';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
@@ -185,7 +186,7 @@ const Partners = ({ viewOnly = false }) => {
             setSuppliers((supplierRows || []).map(mapPartnerToUi));
             setCustomers((customerRows || []).map(mapPartnerToUi));
         } catch (error) {
-            showToast('Load Failed', error.message || 'Unable to load partners from server.', 'error', 'partner-load');
+            showPageLoadError(showToast, error, 'partner-load');
         } finally {
             setIsLoadingPartners(false);
         }

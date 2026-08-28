@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { showToast } from '../utils/toastHelper';
+import { showPageLoadError } from '../utils/pageLoadError';
 import { useAuth } from '../context/AuthContext';
 import {
     getCreditTransactionByIdApi,
@@ -230,7 +231,7 @@ const CreditTransactions = () => {
             });
             setRows(Array.isArray(nextRows) ? nextRows : []);
         } catch (error) {
-            showToast('Load Failed', error.message || 'Unable to load credit transactions.', 'error', 'credit-load');
+            showPageLoadError(showToast, error, 'credit-load');
         } finally {
             setIsLoading(false);
         }
@@ -375,7 +376,7 @@ const CreditTransactions = () => {
             setSelectedRecord(detail);
             setIsDetailsOpen(true);
         } catch (error) {
-            showToast('Load Failed', error.message || 'Unable to load transaction details.', 'error', 'credit-details');
+            showPageLoadError(showToast, error, 'credit-details');
         }
     };
 

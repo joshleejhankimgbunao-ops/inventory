@@ -5,6 +5,7 @@ import EditIcon from '../components/EditIcon';
 import ToolbarDropdown from '../components/ToolbarDropdown';
 import ReceiptPreviewModal from '../components/ReceiptPreviewModal';
 import { showToast } from '../utils/toastHelper';
+import { showPageLoadError } from '../utils/pageLoadError';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
 import {
@@ -244,7 +245,7 @@ const SpecialOrders = () => {
       }
     } catch (error) {
       if (isMountedRef.current && requestId === loadRequestIdRef.current) {
-        showToast('Load Failed', error.message || 'Unable to load special orders.', 'error', 'special-orders-load');
+        showPageLoadError(showToast, error, 'special-orders-load');
       }
     } finally {
       if (inFlightLoadRef.current?.promise === requestPromise) inFlightLoadRef.current = null;

@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { showToast } from '../utils/toastHelper';
+import { showPageLoadError } from '../utils/pageLoadError';
 import ArchiveIcon from '../components/ArchiveIcon';
 import EditIcon from '../components/EditIcon';
 import { useAuth } from '../context/AuthContext';
@@ -213,8 +214,7 @@ const Settings = () => {
             })
             .catch((error) => {
                 if (!cancelled) {
-                    setAutomaticBackupHistory([]);
-                    showToast('Automatic Backup History Failed', error.message || 'Unable to load automatic backup history.', 'error');
+                    showPageLoadError(showToast, error, 'automatic-backup-history-load');
                 }
             })
             .finally(() => {
@@ -633,7 +633,7 @@ const Settings = () => {
             showToast('Backup Ready', 'System backup file downloaded successfully.', 'success');
         } catch (error) {
             console.error(error);
-            showToast('Backup Failed', error.message || 'Unable to download backup.', 'error');
+            showPageLoadError(showToast, error, 'backup-download');
         } finally {
             setIsBackupLoading(false);
         }
@@ -660,7 +660,7 @@ const Settings = () => {
             downloadAutomaticBackupFile(blob, fileName);
             showToast('Automatic Backup Ready', 'Automatic backup downloaded successfully.', 'success');
         } catch (error) {
-            showToast('Automatic Backup Download Failed', error.message || 'Unable to download automatic backup.', 'error');
+            showPageLoadError(showToast, error, 'automatic-backup-download');
         } finally {
             setAutomaticBackupDownloadId('');
         }
@@ -679,7 +679,7 @@ const Settings = () => {
             downloadAutomaticBackupFile(blob, latestBackup.fileName);
             showToast('Automatic Backup Ready', 'Latest automatic backup downloaded successfully.', 'success');
         } catch (error) {
-            showToast('Automatic Backup Download Failed', error.message || 'Unable to download the latest automatic backup.', 'error');
+            showPageLoadError(showToast, error, 'automatic-backup-download-latest');
         } finally {
             setAutomaticBackupDownloadId('');
         }
@@ -736,7 +736,7 @@ const Settings = () => {
             }, 1200);
         } catch (error) {
             console.error(error);
-            showToast('Restore Failed', error.message || 'Unable to restore backup file.', 'error');
+            showPageLoadError(showToast, error, 'backup-restore');
         } finally {
             restoreInFlightRef.current = false;
             setIsRestoreLoading(false);
