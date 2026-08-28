@@ -605,7 +605,7 @@ const Partners = ({ viewOnly = false }) => {
                     </div>
                 </div>
 
-                <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                <div className="mx-5 mb-5 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
                     <div className="min-h-[280px] flex-1 overflow-auto">
                         <table className={`main-data-table w-full table-fixed border-separate border-spacing-0 text-left ${showActionsColumn ? 'min-w-[960px]' : 'min-w-[800px]'}`}>
                             <thead className="sticky top-0 z-10 shadow-sm">
