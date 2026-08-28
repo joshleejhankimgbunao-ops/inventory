@@ -588,6 +588,18 @@ const History = () => {
         return latest ? new Date(latest) : '';
     };
 
+    const getCreditPaymentMethod = (credit) => {
+        const payments = Array.isArray(credit?.paymentHistory) ? credit.paymentHistory : [];
+        const method = String(payments[payments.length - 1]?.method || credit?.creditPaymentMode || '-').trim();
+        const labels = {
+            cash: 'Cash',
+            gcash: 'GCash',
+            cheque: 'Cheque',
+            'bank transfer': 'Bank Transfer',
+        };
+        return labels[method.toLowerCase()] || method || '-';
+    };
+
     const creditStatusBadgeClass = (status) => {
         const value = String(status || '').toLowerCase();
         if (value === 'paid') return 'bg-emerald-50 text-emerald-700 border-emerald-100';
@@ -1310,7 +1322,7 @@ const History = () => {
                             <div className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-xs text-gray-700">
                                 <span className="font-semibold uppercase tracking-wider text-gray-500">Payment Type:</span> Credit
                                 <span className="mx-2 text-gray-300">|</span>
-                                <span className="font-semibold uppercase tracking-wider text-gray-500">Mode of Payment:</span> {selectedCredit.creditPaymentMode || '-'}
+                                <span className="font-semibold uppercase tracking-wider text-gray-500">Payment Method:</span> {getCreditPaymentMethod(selectedCredit)}
                             </div>
 
                             <div>

@@ -66,6 +66,10 @@ const getDatePaid = (record) => {
 };
 
 const getCreditPaymentMode = (record) => {
+    const payments = Array.isArray(record?.paymentHistory) ? record.paymentHistory : [];
+    const latestPaymentMethod = String(payments[payments.length - 1]?.method || '').trim();
+    if (latestPaymentMethod) return latestPaymentMethod;
+
     const explicitMode = String(record?.creditPaymentMode || '').trim();
     if (explicitMode) return explicitMode;
 
@@ -85,7 +89,7 @@ const startOfDay = (value) => {
     return new Date(date.getFullYear(), date.getMonth(), date.getDate());
 };
 
-const CREDIT_PAYMENT_MODES = ['gcash', 'cheque', 'bank transfer', 'other'];
+const CREDIT_PAYMENT_MODES = ['cash', 'gcash', 'cheque', 'bank transfer', 'other'];
 const MAX_PROOF_OF_PAYMENT_SIZE = 5 * 1024 * 1024;
 const ACCEPTED_PROOF_MIME_TYPES = new Set(['image/jpeg', 'image/png']);
 
@@ -138,6 +142,7 @@ const CreditTransactions = () => {
         cancelReason: '',
     });
     const [isSavingMarkPaid, setIsSavingMarkPaid] = useState(false);
+    const [isMarkPaidPaymentMethodOpen, setIsMarkPaidPaymentMethodOpen] = useState(false);
     const [isSavingExtensionOnly, setIsSavingExtensionOnly] = useState(false);
     const creditMutationInFlightRef = useRef(false);
     const markPaidRequestIdRef = useRef('');
@@ -147,6 +152,8 @@ const CreditTransactions = () => {
     const [proofError, setProofError] = useState('');
     const [proofLightbox, setProofLightbox] = useState(null);
     const proofInputRef = useRef(null);
+    const markPaidPaymentMethodRef = useRef(null);
+    const customMarkPaidPaymentMethodInputRef = useRef(null);
     const extensionMax = Number(markPaidForm.maxExtensionDays || 0);
     const isExtensionUnavailable = extensionMax <= 0;
     const clampExtensionDays = (value) => {
@@ -196,6 +203,32 @@ const CreditTransactions = () => {
         if (proofLightbox?.url) URL.revokeObjectURL(proofLightbox.url);
     }, [proofLightbox]);
 
+    useEffect(() => {
+        if (!isMarkPaidPaymentMethodOpen) return undefined;
+
+        const closeWhenFocusLeaves = (target) => {
+            if (!markPaidPaymentMethodRef.current?.contains(target)) {
+                setIsMarkPaidPaymentMethodOpen(false);
+            }
+        };
+        const handlePointerDown = (event) => closeWhenFocusLeaves(event.target);
+        const handleFocusIn = (event) => closeWhenFocusLeaves(event.target);
+        const handleKeyDown = (event) => {
+            if (event.key !== 'Escape') return;
+            setIsMarkPaidPaymentMethodOpen(false);
+            markPaidPaymentMethodRef.current?.querySelector('button')?.focus();
+        };
+
+        document.addEventListener('pointerdown', handlePointerDown);
+        document.addEventListener('focusin', handleFocusIn);
+        document.addEventListener('keydown', handleKeyDown);
+        return () => {
+            document.removeEventListener('pointerdown', handlePointerDown);
+            document.removeEventListener('focusin', handleFocusIn);
+            document.removeEventListener('keydown', handleKeyDown);
+        };
+    }, [isMarkPaidPaymentMethodOpen]);
+
     const normalizeCreditPaymentMode = (value) => {
         const raw = String(value || '').trim().toLowerCase();
         if (!raw) return 'other';
@@ -207,11 +240,28 @@ const CreditTransactions = () => {
     };
 
     const formatPaymentModeLabel = (mode) => {
+        if (mode === 'cash') return 'Cash';
         if (mode === 'gcash') return 'GCash';
         if (mode === 'bank transfer') return 'Bank Transfer';
         if (mode === 'cheque') return 'Cheque';
         if (mode === 'other') return 'Other';
         return mode;
+    };
+
+    const focusCustomMarkPaidPaymentMethodInput = () => {
+        window.requestAnimationFrame(() => {
+            const input = customMarkPaidPaymentMethodInputRef.current;
+            if (!input) return;
+
+            input.focus({ preventScroll: true });
+            if (input.value) input.select();
+
+            const inputBounds = input.getBoundingClientRect();
+            const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+            if (inputBounds.top < 0 || inputBounds.bottom > viewportHeight) {
+                input.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+        });
     };
 
     const loadData = React.useCallback(async () => {
@@ -464,11 +514,14 @@ const CreditTransactions = () => {
     };
 
     const handleOpenMarkPaidModal = (row, mode = 'markPaid') => {
+        const existingPaymentMethod = String(row?.creditPaymentMode || '').trim();
+        const normalizedPaymentMethod = normalizeCreditPaymentMode(existingPaymentMethod);
         markPaidRequestIdRef.current = '';
         setMarkPaidModalMode(mode);
         setMarkPaidTarget(row);
         setIsCancelModalOpen(false);
         setIsCancelConfirmOpen(false);
+        setIsMarkPaidPaymentMethodOpen(false);
         clearProofSelection();
         setMarkPaidForm({
             transactionId: row?.creditTransactionId || '',
@@ -479,7 +532,10 @@ const CreditTransactions = () => {
             maxExtensionDays: Math.max(0, 60 - Number(row?.termDays || 0)),
             transactionDate: toDateInputValue(row?.createdAt),
             paymentDate: toDateInputValue(new Date()),
-            paymentMethod: normalizeCreditPaymentMode(row?.creditPaymentMode),
+            paymentMethod: normalizedPaymentMethod,
+            paymentMethodOther: normalizedPaymentMethod === 'other' && existingPaymentMethod.toLowerCase() !== 'other'
+                ? existingPaymentMethod
+                : '',
             note: '',
             cancelReason: '',
         });
@@ -529,6 +585,14 @@ const CreditTransactions = () => {
             return;
         }
 
+        const paymentMethod = markPaidForm.paymentMethod === 'other'
+            ? String(markPaidForm.paymentMethodOther || '').trim()
+            : markPaidForm.paymentMethod;
+        if (!paymentMethod) {
+            showToast('Missing Payment Method', 'Enter the other payment method.', 'error', 'credit-payment-method-validation');
+            return;
+        }
+
         if (!proofFile) {
             setProofError('Proof of Payment is required.');
             return;
@@ -549,7 +613,7 @@ const CreditTransactions = () => {
         try {
             const paidTransactionId = markPaidTarget._id;
             await markCreditTransactionPaidApi(paidTransactionId, {
-                method: markPaidForm.paymentMethod || 'cash',
+                method: paymentMethod,
                 paymentDate: markPaidForm.paymentDate,
                 extensionDays,
                 note: markPaidForm.note,
@@ -605,8 +669,8 @@ const CreditTransactions = () => {
     };
 
     return (
-        <div className="h-auto md:h-full flex flex-col gap-2">
-            <div className="h-auto md:h-full md:flex-1 bg-slate-200/50 rounded-2xl shadow-inner border border-slate-300 p-4 flex flex-col gap-3">
+        <div className="flex h-auto flex-col gap-2 md:h-[calc(100vh-80px)] md:min-h-0 md:overflow-hidden">
+            <div className="flex h-auto flex-col gap-3 rounded-2xl border border-slate-300 bg-slate-200/50 p-4 shadow-inner md:h-full md:min-h-0">
                 <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 border-b border-gray-200 pb-3">
                     <div>
                         <p className="text-3xl md:text-4xl font-bold text-gray-900">Credit Transactions</p>
@@ -848,12 +912,12 @@ const CreditTransactions = () => {
                     <div className="fixed inset-0 z-20 bg-transparent" onClick={() => setIsFilterPanelOpen(false)} />
                 )}
 
-                <div className="flex flex-1 flex-col">
-                    <div className="w-full max-xl:overflow-x-auto max-xl:overscroll-x-contain pb-4 pt-0 md:flex-1">
+                <div className="flex min-h-0 flex-1 flex-col">
+                    <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain max-xl:overflow-x-auto max-xl:overscroll-x-contain">
                         <table className="main-data-table w-full min-w-0 table-fixed border-separate border-spacing-0 text-left max-xl:min-w-[900px]">
                         <thead className="sticky top-0 z-10 shadow-sm">
                             <tr className="bg-gray-900 text-white uppercase tracking-wider">
-                                <th className="min-w-[144px] w-[15%] whitespace-nowrap py-2 px-1 text-center text-[11px] font-semibold border border-gray-700 leading-none">Credit ID</th>
+                                <th className="min-w-[132px] w-[14%] whitespace-nowrap px-0.5 py-2 text-center text-[11px] font-semibold border border-gray-700 leading-none">Credit ID</th>
                                 <th className="w-[13%] py-2 px-1 text-center text-[11px] font-semibold border border-gray-700 leading-none">Customer</th>
                                 <th className="w-[11%] whitespace-nowrap py-2 px-1 text-center text-[11px] font-semibold border border-gray-700 leading-none">Order Ref</th>
                                 <th className="w-[8%] whitespace-nowrap py-2 px-1 text-center text-[11px] font-semibold border border-gray-700 leading-none">Invoice Date</th>
@@ -862,7 +926,7 @@ const CreditTransactions = () => {
                                 <th className="w-[10%] whitespace-nowrap py-2 px-1 text-center text-[11px] font-semibold border border-gray-700 leading-none">Total Amount</th>
                                 <th className="w-[6%] py-2 px-1 text-center text-[11px] font-semibold border border-gray-700 leading-none">Status</th>
                                 <th className="w-[8%] py-2 px-1 text-center text-[11px] font-semibold border border-gray-700 leading-none">Processed By</th>
-                                <th className="w-[9%] whitespace-nowrap py-2 px-1 text-center text-[11px] font-semibold border border-gray-700 leading-none">Actions</th>
+                                <th className="w-[10%] whitespace-nowrap py-2 px-1 text-center text-[11px] font-semibold border border-gray-700 leading-none">Actions</th>
                             </tr>
                         </thead>
                         <tbody className="text-sm">
@@ -928,8 +992,8 @@ const CreditTransactions = () => {
                                         const isCancelled = displayStatus === 'Cancelled';
                                         return (
                                     <tr key={row._id} className="border-b border-gray-200 hover:bg-gray-50 transition-colors duration-200 group">
-                                        <td className="whitespace-nowrap py-1.5 px-1 text-center border border-gray-200 leading-tight">
-                                            <IdentifierChip className="whitespace-nowrap">{row.creditTransactionId}</IdentifierChip>
+                                        <td className="whitespace-nowrap px-0.5 py-1.5 text-center border border-gray-200 leading-tight">
+                                            <IdentifierChip className="whitespace-nowrap break-normal px-1.5 text-[11px]">{row.creditTransactionId}</IdentifierChip>
                                         </td>
                                         <td className="py-1.5 px-1 font-semibold text-gray-900 text-xs text-center border border-gray-200 leading-tight">{row.customerName}</td>
                                         <td className="whitespace-nowrap py-1.5 px-1 text-center border border-gray-200 leading-tight">{row.orderReference ? <IdentifierChip className="whitespace-nowrap">{row.orderReference}</IdentifierChip> : '-'}</td>
@@ -957,7 +1021,7 @@ const CreditTransactions = () => {
                                                         <path strokeLinecap="round" strokeLinejoin="round" d="M1.5 12s3.6-7 10.5-7 10.5 7 10.5 7-3.6 7-10.5 7S1.5 12 1.5 12z" />
                                                         <circle cx="12" cy="12" r="3" />
                                                     </svg>
-                                                    <span className="pointer-events-none absolute bottom-full mb-1 left-1/2 -translate-x-1/2 z-30 whitespace-nowrap rounded-md bg-gray-900 px-2 py-1 text-[10px] font-semibold text-white opacity-0 shadow-sm transition-opacity duration-150 group-hover/action:opacity-100">
+                                                    <span className="pointer-events-none absolute bottom-full right-0 z-30 mb-1 whitespace-nowrap rounded-md bg-gray-900 px-2 py-1 text-[10px] font-semibold text-white opacity-0 shadow-sm transition-opacity duration-150 group-hover/action:opacity-100">
                                                         View Details
                                                     </span>
                                                 </button>
@@ -972,7 +1036,7 @@ const CreditTransactions = () => {
                                                         <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3" />
                                                         <circle cx="12" cy="12" r="9" />
                                                     </svg>
-                                                    <span className="pointer-events-none absolute bottom-full mb-1 left-1/2 -translate-x-1/2 z-30 whitespace-nowrap rounded-md bg-gray-900 px-2 py-1 text-[10px] font-semibold text-white opacity-0 shadow-sm transition-opacity duration-150 group-hover/action:opacity-100">
+                                                    <span className="pointer-events-none absolute bottom-full right-0 z-30 mb-1 whitespace-nowrap rounded-md bg-gray-900 px-2 py-1 text-[10px] font-semibold text-white opacity-0 shadow-sm transition-opacity duration-150 group-hover/action:opacity-100">
                                                         Extend Term
                                                     </span>
                                                 </button>
@@ -986,7 +1050,7 @@ const CreditTransactions = () => {
                                                     <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
                                                         <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                                                     </svg>
-                                                    <span className="pointer-events-none absolute bottom-full mb-1 left-1/2 -translate-x-1/2 z-30 whitespace-nowrap rounded-md bg-gray-900 px-2 py-1 text-[10px] font-semibold text-white opacity-0 shadow-sm transition-opacity duration-150 group-hover/action:opacity-100">
+                                                    <span className="pointer-events-none absolute bottom-full right-0 z-30 mb-1 whitespace-nowrap rounded-md bg-gray-900 px-2 py-1 text-[10px] font-semibold text-white opacity-0 shadow-sm transition-opacity duration-150 group-hover/action:opacity-100">
                                                         Mark as Paid
                                                     </span>
                                                 </button>
@@ -1066,7 +1130,7 @@ const CreditTransactions = () => {
                                         <p className="font-semibold text-gray-900">{getCreditProcessorDisplayName(selectedRecord)}</p>
                                     </div>
                                     <div className="rounded-lg border border-gray-100 bg-gray-50 p-2">
-                                        <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Mode of Payment</p>
+                                        <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Payment Method</p>
                                         <p className="font-semibold capitalize text-gray-900">{getCreditPaymentMode(selectedRecord)}</p>
                                     </div>
                                 </div>
@@ -1096,7 +1160,7 @@ const CreditTransactions = () => {
                                             <p className="font-semibold text-gray-900">{getDatePaid(selectedRecord) ? formatDateShort(getDatePaid(selectedRecord)) : '-'}</p>
                                         </div>
                                         <div className="rounded-lg border border-gray-100 bg-gray-50 p-2">
-                                            <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Mode of Payment</p>
+                                            <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Payment Method</p>
                                             <p className="font-semibold capitalize text-gray-900">{getCreditPaymentMode(selectedRecord)}</p>
                                         </div>
                                         <div className="rounded-lg border border-gray-100 bg-gray-50 p-2">
@@ -1270,17 +1334,63 @@ const CreditTransactions = () => {
                                                 className="mt-1 w-full p-2 bg-gray-50 border border-gray-200 rounded-lg text-xs font-semibold text-gray-700"
                                             />
                                         </div>
-                                        <div>
-                                            <label className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">Mode of Payment</label>
-                                            <select
-                                                value={markPaidForm.paymentMethod}
-                                                onChange={(e) => setMarkPaidForm((prev) => ({ ...prev, paymentMethod: e.target.value }))}
-                                                className="mt-1 w-full p-2 bg-white border border-gray-200 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 outline-none text-gray-900"
+                                        <div className="relative" ref={markPaidPaymentMethodRef}>
+                                            <label className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">Payment Method</label>
+                                            <button
+                                                type="button"
+                                                onClick={() => setIsMarkPaidPaymentMethodOpen((prev) => !prev)}
+                                                aria-haspopup="listbox"
+                                                aria-expanded={isMarkPaidPaymentMethodOpen}
+                                                className="mt-1 flex w-full items-center justify-between rounded-lg border border-gray-300 bg-white px-2 py-2 text-left text-xs font-semibold text-gray-800 transition-colors hover:border-amber-400 focus:border-amber-500 focus:outline-none"
                                             >
-                                                {CREDIT_PAYMENT_MODES.map((mode) => (
-                                                    <option key={mode} value={mode}>{formatPaymentModeLabel(mode)}</option>
-                                                ))}
-                                            </select>
+                                                <span>{markPaidForm.paymentMethod === 'other'
+                                                    ? (markPaidForm.paymentMethodOther || 'Other')
+                                                    : formatPaymentModeLabel(markPaidForm.paymentMethod)}</span>
+                                                <svg className={`h-4 w-4 text-gray-400 transition-transform ${isMarkPaidPaymentMethodOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="m6 9 6 6 6-6" /></svg>
+                                            </button>
+                                            {isMarkPaidPaymentMethodOpen && (
+                                                <div className="absolute z-20 top-full mt-1 w-full rounded-lg border border-gray-200 bg-white shadow-lg" role="listbox">
+                                                    <div className="max-h-40 overflow-y-auto py-1">
+                                                        {CREDIT_PAYMENT_MODES.map((mode) => (
+                                                            <button
+                                                                key={mode}
+                                                                type="button"
+                                                                role="option"
+                                                                aria-selected={markPaidForm.paymentMethod === mode}
+                                                                onClick={() => {
+                                                                    setMarkPaidForm((prev) => ({
+                                                                        ...prev,
+                                                                        paymentMethod: mode,
+                                                                        paymentMethodOther: mode === 'other' ? prev.paymentMethodOther : '',
+                                                                    }));
+                                                                    setIsMarkPaidPaymentMethodOpen(false);
+                                                                    if (mode === 'other') focusCustomMarkPaidPaymentMethodInput();
+                                                                }}
+                                                                className={`w-full px-3 py-2 text-left text-xs font-semibold transition-colors hover:bg-amber-50 focus:bg-amber-50 focus:outline-none ${markPaidForm.paymentMethod === mode ? 'bg-amber-50 text-amber-700' : 'text-gray-700'}`}
+                                                            >
+                                                                {formatPaymentModeLabel(mode)}
+                                                            </button>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            )}
+                                            {markPaidForm.paymentMethod === 'other' && (
+                                                <input
+                                                    ref={customMarkPaidPaymentMethodInputRef}
+                                                    type="text"
+                                                    value={markPaidForm.paymentMethodOther || ''}
+                                                    onChange={(e) => setMarkPaidForm((prev) => ({ ...prev, paymentMethodOther: e.target.value }))}
+                                                    onKeyDown={(e) => {
+                                                        if (e.key === 'Enter') e.preventDefault();
+                                                        if (e.key === 'Escape') {
+                                                            e.preventDefault();
+                                                            markPaidPaymentMethodRef.current?.querySelector('button')?.focus();
+                                                        }
+                                                    }}
+                                                    placeholder="Type other payment method"
+                                                    className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-2 py-2 text-xs font-semibold text-gray-800 focus:border-amber-500 focus:outline-none"
+                                                />
+                                            )}
                                         </div>
                                     </div>
                                 </>

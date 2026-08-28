@@ -153,7 +153,7 @@ const ReceiptPreviewModal = ({
                   </div>
                   {transaction.creditPaymentMode && (
                     <div className="flex justify-between text-[9px] text-gray-500">
-                      <span>Mode of Payment</span>
+                      <span>Payment Method</span>
                       <span>{transaction.creditPaymentMode}</span>
                     </div>
                   )}

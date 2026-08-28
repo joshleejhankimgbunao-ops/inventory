@@ -62,3 +62,15 @@ test('unpaid and partially paid Credit transactions are not receipt eligible', a
   assert.equal(isFullyPaidCreditTransaction({ status: 'Partially Paid', remainingBalance: 50 }), false);
   assert.equal(isFullyPaidCreditTransaction({ status: 'Overdue', remainingBalance: 100 }), false);
 });
+
+test('a finalized Cash credit payment is displayed as Cash on the receipt', async () => {
+  const { buildCreditReceiptTransaction } = await loadCreditReceipt();
+  const transaction = buildCreditReceiptTransaction({
+    creditTransactionId: 'CR-20260828-CASH01',
+    status: 'Paid',
+    remainingBalance: 0,
+    paymentHistory: [{ method: 'cash', paymentDate: '2026-08-28T04:00:00.000Z' }],
+  });
+
+  assert.equal(transaction.creditPaymentMode, 'Cash');
+});
