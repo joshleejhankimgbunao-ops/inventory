@@ -19,6 +19,12 @@ import {
     preventInvalidWholeNumberPaste,
     sanitizeWholeNumberInput,
 } from '../utils/numericInput';
+import {
+    beginAutoSyncSave,
+    endAutoSyncSave,
+    excludeAutoSyncFromBulkSettings,
+    persistAutoSyncImmediately,
+} from '../utils/autoSyncSetting';
 
 const Settings = () => {
     const { appSettings: initialSettings, updateSettings, userPreferences, updateUserPreferences, currentUserName, userRole, ROLES } = useAuth();
@@ -67,6 +73,8 @@ const Settings = () => {
     const restoreInFlightRef = useRef(false);
     const [isGeneralSaving, setIsGeneralSaving] = useState(false);
     const generalSettingsSaveInFlightRef = useRef(false);
+    const [isAutoSyncSaving, setIsAutoSyncSaving] = useState(false);
+    const autoSyncSaveInFlightRef = useRef(false);
     const [isAutomaticBackupSaving, setIsAutomaticBackupSaving] = useState(false);
     const automaticBackupSaveInFlightRef = useRef(false);
     const [automaticBackupHistory, setAutomaticBackupHistory] = useState([]);
@@ -128,8 +136,7 @@ const Settings = () => {
         'storePrimaryEmail',
         'storeSecondaryEmail',
         'contactPhone',
-        'contactPhoneSecondary',
-        'autoSync'
+        'contactPhoneSecondary'
     ]), []);
 
     const isGeneralModified = useMemo(() => {
@@ -477,10 +484,30 @@ const Settings = () => {
         generalSettingsSaveInFlightRef.current = true;
         setIsGeneralSaving(true);
         try {
-            await persistSettings(settings, { notify: true, log: true });
+            await persistSettings(excludeAutoSyncFromBulkSettings(settings), { notify: true, log: true });
         } finally {
             generalSettingsSaveInFlightRef.current = false;
             setIsGeneralSaving(false);
+        }
+    };
+
+    const handleAutoSyncToggle = async () => {
+        if (!beginAutoSyncSave(autoSyncSaveInFlightRef)) return;
+
+        const previousAutoSync = Boolean(settings.autoSync);
+        const nextAutoSync = !previousAutoSync;
+        setIsAutoSyncSaving(true);
+        setSettings((previous) => ({ ...previous, autoSync: nextAutoSync }));
+
+        try {
+            const savedAutoSync = await persistAutoSyncImmediately(updateSettings, nextAutoSync);
+            setSettings((previous) => ({ ...previous, autoSync: savedAutoSync }));
+        } catch (error) {
+            setSettings((previous) => ({ ...previous, autoSync: previousAutoSync }));
+            showToast('Auto-Sync Update Failed', error.message || 'Unable to save Auto-Sync Transactions. The previous setting was restored.', 'error');
+        } finally {
+            endAutoSyncSave(autoSyncSaveInFlightRef);
+            setIsAutoSyncSaving(false);
         }
     };
 
@@ -880,9 +907,13 @@ const Settings = () => {
                                             <p className="text-xs text-gray-500">Automatically sync offline transactions when connection is restored</p>
                                         </div>
                                         <button 
-                                            className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${!settings.autoSync ? 'bg-gray-200 dark:bg-gray-600' : ''}`} 
+                                            type="button"
+                                            aria-label="Toggle Auto-Sync Transactions"
+                                            aria-pressed={Boolean(settings.autoSync)}
+                                            disabled={isAutoSyncSaving}
+                                            className={`relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${!settings.autoSync ? 'bg-gray-200 dark:bg-gray-600' : ''}`}
                                             style={{ backgroundColor: settings.autoSync ? '#111827' : '' }}
-                                            onClick={() => setSettings(prev => ({ ...prev, autoSync: !prev.autoSync }))}
+                                            onClick={handleAutoSyncToggle}
                                         >
                                             <span className={`absolute top-1 left-1 bg-white w-4 h-4 rounded-full shadow-sm transition-transform ${settings.autoSync ? 'translate-x-5' : ''}`}></span>
                                         </button>

@@ -5,6 +5,17 @@ import { useAuth } from './AuthContext';
 import { getAuthToken, isApiConnectionFailure } from '../services/apiClient';
 import { subscribeRealtimeEvent } from '../services/realtimeClient';
 import {
+    addOfflineTransactionToQueue,
+    canAutoSyncOfflineTransactions,
+    getOfflineSyncQueueKey,
+    isOfflineSyncSessionActive,
+    migrateLegacyOfflineSyncQueue,
+    readOfflineSyncQueue,
+    removeSyncedOfflineTransaction,
+    retainFailedOfflineTransaction,
+    syncNextOfflineTransaction,
+} from '../utils/offlineTransactionSync';
+import {
     listProductsApi,
     createSaleApi,
     listCategoriesApi,
@@ -85,6 +96,7 @@ export const useInventory = () => {
 export const InventoryProvider = ({ children }) => {
     const { appSettings, userRole, currentUserName, currentAuthUsername, currentAuthUserId, ROLES } = useAuth(); // Depend on Auth Context for settings and auth session changes
     const transactionsCacheScope = getTransactionsCacheScope(currentAuthUserId, currentAuthUsername);
+    const syncQueueKey = getOfflineSyncQueueKey(currentAuthUserId);
 
     const normalizeName = (value) => String(value || '').trim().toLowerCase();
     const preferredSuperAdminName = useMemo(() => {
@@ -481,20 +493,38 @@ export const InventoryProvider = ({ children }) => {
     }, [userRole, currentAuthUsername]);
 
      // 3.1 Sync Queue State (Offline Config)
-     const [syncQueue, setSyncQueue] = useState(() => {
-        try {
-            const savedQueue = localStorage.getItem('syncQueue');
-            return savedQueue ? JSON.parse(savedQueue) : [];
-        } catch (error) {
-            console.error("Failed to parse sync queue:", error);
-            return [];
-        }
-     });
+     const [syncQueue, setSyncQueue] = useState([]);
+     const [activeSyncQueueKey, setActiveSyncQueueKey] = useState('');
+     const syncInFlightRef = useRef(false);
+     const currentSyncQueueKeyRef = useRef(syncQueueKey);
+     currentSyncQueueKeyRef.current = syncQueueKey;
+     // Never expose a previously loaded account's queue during the render that
+     // follows logout or an account switch.
+     const currentUserSyncQueue = useMemo(
+        () => (activeSyncQueueKey === syncQueueKey ? syncQueue : []),
+        [activeSyncQueueKey, syncQueue, syncQueueKey],
+     );
+
+     // The old browser-global queue had no reliable account owner. Preserve it in
+     // quarantine rather than assigning it to whichever user next logs in.
+     useEffect(() => {
+        migrateLegacyOfflineSyncQueue(localStorage);
+     }, []);
+
+     // Only the authenticated owner's queue is ever loaded into application state.
+     // Changing or clearing the authenticated account therefore hides the previous
+     // user's pending transactions without deleting them.
+     useEffect(() => {
+        setActiveSyncQueueKey(syncQueueKey);
+        setSyncQueue(syncQueueKey ? readOfflineSyncQueue(localStorage, currentAuthUserId) : []);
+     }, [syncQueueKey, currentAuthUserId]);
 
      // Persist Sync Queue
      useEffect(() => {
-        localStorage.setItem('syncQueue', JSON.stringify(syncQueue));
-     }, [syncQueue]);
+        if (activeSyncQueueKey && activeSyncQueueKey === syncQueueKey) {
+            localStorage.setItem(activeSyncQueueKey, JSON.stringify(syncQueue));
+        }
+     }, [activeSyncQueueKey, syncQueue, syncQueueKey]);
 
      // Online Status Tracking
      const [isOnline, setIsOnline] = useState(navigator.onLine);
@@ -516,84 +546,78 @@ export const InventoryProvider = ({ children }) => {
      // Background Sync Mechanism
      useEffect(() => {
         const processSyncQueue = async () => {
-            // Check for Auto-Sync setting (default true if undefined)
-            const autoSyncEnabled = appSettings?.autoSync !== false;
+            const hasAuth = Boolean(getAuthToken() && currentAuthUserId);
+            if (syncInFlightRef.current || !canAutoSyncOfflineTransactions({
+                queue: currentUserSyncQueue,
+                online: navigator.onLine,
+                autoSync: appSettings?.autoSync,
+                hasAuth,
+            })) return;
 
-            if (syncQueue.length === 0 || !navigator.onLine || !autoSyncEnabled) return;
-
-            const queueItem = syncQueue[0]; // FIFO
+            syncInFlightRef.current = true;
+            const queueItem = currentUserSyncQueue[0];
             try {
-                // Ensure we have a valid token before trying to sync
-                const token = getAuthToken();
-                if (!token) return;
-
                 console.log("Attempting to sync transaction:", queueItem.id);
-
-                const apiItems = queueItem.items.map(item => ({
-                    productId: item.id || item._id, // Handle legacy IDs
-                    quantity: item.qty
-                }));
-
-                await createSaleApi(
-                    apiItems,
-                    queueItem.paymentMethod || 'cash',
-                    queueItem.clientRequestId || queueItem.id,
-                    {
-                        vatMode: queueItem.vatMode,
-                        ...(queueItem.paymentMethod === 'Cash' || String(queueItem.paymentMethod || '').toLowerCase() === 'cash'
-                            ? { cashTendered: queueItem.cashTendered ?? queueItem.cash }
-                            : {}),
-                    }
-                );
-                
-                // If successful, remove from queue
-                setSyncQueue(prev => prev.slice(1));
-                
-                // The queued sale is already accepted. A follow-up refresh failure
-                // must not restore/retry that successfully synchronized sale.
-                try {
-                    const remoteProducts = await listProductsApi();
-                    if (Array.isArray(remoteProducts) && remoteProducts.length > 0) {
-                        setInventory(remoteProducts);
-                    }
-                } catch (refreshError) {
-                    console.warn('Offline sale synchronized, but inventory refresh failed:', refreshError);
-                }
-                
-                console.log("Sync successful for:", queueItem.id);
-            } catch (error) {
-                const status = Number(error?.status || 0);
-                const connectionFailed = isApiConnectionFailure(error);
-
-                console.error("Sync failed for transaction:", queueItem.id, error);
-
-                // Preserve the original sale and request identity for retry/recovery.
-                // Rotate a failed item behind later entries so one rejection does not
-                // permanently block the rest of the offline queue.
-                setSyncQueue((prev) => {
-                    if (prev.length === 0 || prev[0]?.id !== queueItem.id) return prev;
-
-                    const failedItem = {
-                        ...prev[0],
-                        syncStatus: 'failed',
-                        syncError: error?.message || 'Unable to synchronize transaction.',
-                        syncErrorStatus: status || null,
-                        lastSyncAttemptAt: new Date().toISOString(),
-                    };
-
-                    return prev.length === 1
-                        ? [failedItem]
-                        : [...prev.slice(1), failedItem];
+                const result = await syncNextOfflineTransaction({
+                    queue: currentUserSyncQueue,
+                    online: navigator.onLine,
+                    autoSync: appSettings?.autoSync,
+                    hasAuth,
+                    ownerUserId: currentAuthUserId,
+                    createSale: createSaleApi,
                 });
 
-                showToast(
-                    'Offline Sale Pending',
-                    connectionFailed
-                        ? `Transaction ${queueItem.id} remains queued until the backend is reachable.`
-                        : `Transaction ${queueItem.id} was not accepted (${status || 'unknown error'}) and remains queued for recovery.`,
-                    'warning',
-                    `offline-sync-${queueItem.id}`
-                );
+                // The request may complete after logout or an account switch. Do
+                // not let its result mutate or notify the new session.
+                if (!isOfflineSyncSessionActive({
+                    expectedQueueKey: syncQueueKey,
+                    currentQueueKey: currentSyncQueueKeyRef.current,
+                    hasAuth: Boolean(getAuthToken()),
+                })) {
+                    return;
+                }
+
+                if (result.status === 'synced') {
+                    setSyncQueue((previous) => removeSyncedOfflineTransaction(previous, queueItem));
+                
+                    // The queued sale is already accepted. A follow-up refresh failure
+                    // must not restore/retry that successfully synchronized sale.
+                    try {
+                        const remoteProducts = await listProductsApi();
+                        if (Array.isArray(remoteProducts) && remoteProducts.length > 0) {
+                            setInventory(remoteProducts);
+                        }
+                    } catch (refreshError) {
+                        console.warn('Offline sale synchronized, but inventory refresh failed:', refreshError);
+                    }
+
+                    console.log("Sync successful for:", queueItem.id);
+                    showToast('Offline Sale Synced', `Transaction ${queueItem.id} synchronized successfully.`, 'success', `offline-sync-success-${queueItem.id}`);
+                    return;
+                }
+
+                if (result.status === 'failed') {
+                    const status = Number(result.error?.status || 0);
+                    const connectionFailed = isApiConnectionFailure(result.error);
+
+                    console.error("Sync failed for transaction:", queueItem.id, result.error);
+
+                    // Preserve the original sale and request identity for retry/recovery.
+                    // Rotate a failed item behind later entries so one rejection does not
+                    // permanently block the rest of the offline queue.
+                    setSyncQueue((previous) => retainFailedOfflineTransaction(previous, queueItem, result.error));
+
+                    showToast(
+                        'Offline Sale Pending',
+                        connectionFailed
+                            ? `Transaction ${queueItem.id} remains queued until the backend is reachable.`
+                            : `Transaction ${queueItem.id} was not accepted (${status || 'unknown error'}) and remains queued for recovery.`,
+                        'warning',
+                        `offline-sync-${queueItem.id}`
+                    );
+                }
+            } finally {
+                syncInFlightRef.current = false;
             }
         };
 
@@ -607,19 +631,16 @@ export const InventoryProvider = ({ children }) => {
             clearInterval(intervalId);
             window.removeEventListener('online', handleOnline);
         };
-     }, [syncQueue, appSettings]);
+     }, [currentUserSyncQueue, appSettings, currentAuthUserId, syncQueueKey]);
 
      const addToSyncQueue = (transaction) => {
-        const requestId = transaction?.clientRequestId || transaction?.id;
-        setSyncQueue((prev) => {
-            const alreadyQueued = requestId && prev.some((entry) => (
-                (entry?.clientRequestId || entry?.id) === requestId
-            ));
+        if (!currentAuthUserId || !syncQueueKey) {
+            showToast('Offline Sale Pending', 'Your authenticated account could not be identified, so this sale was not added to the sync queue.', 'warning', 'offline-sync-owner-missing');
+            return false;
+        }
 
-            return alreadyQueued
-                ? prev
-                : [...prev, { ...transaction, clientRequestId: requestId }];
-        });
+        setSyncQueue((previous) => addOfflineTransactionToQueue(previous, transaction, currentAuthUserId));
+        return true;
      };
 
      // 4. Activity Logs (backend-first)
@@ -879,7 +900,7 @@ export const InventoryProvider = ({ children }) => {
             renameUserReferences,
             syncUserIdentityReferences,
             removeUserReferences,
-            syncQueue,
+            syncQueue: currentUserSyncQueue,
             addToSyncQueue,
             isOnline,
             isInventoryLoading,
