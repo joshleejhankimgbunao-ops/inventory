@@ -4,7 +4,6 @@ import ArchiveIcon from '../components/ArchiveIcon';
 import EditIcon from '../components/EditIcon';
 import { showToast } from '../utils/toastHelper';
 import { getPageLoadError, showPageLoadError } from '../utils/pageLoadError';
-import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
 import { ROLES, roleNames } from '../constants/roles';
@@ -63,6 +62,9 @@ const UserList = () => {
     const [users, setUsers] = useState([]);
     const [usersLoadError, setUsersLoadError] = useState(null);
     const [isUsersLoading, setIsUsersLoading] = useState(false);
+    const [isBrowserOnline, setIsBrowserOnline] = useState(() => (
+        typeof navigator === 'undefined' || navigator.onLine
+    ));
 
     const [searchTerm, setSearchTerm] = useState('');
     const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
@@ -86,6 +88,18 @@ const UserList = () => {
             window.clearTimeout(timeoutId);
         };
     }, [searchTerm]);
+
+    React.useEffect(() => {
+        const updateOnlineStatus = () => setIsBrowserOnline(navigator.onLine);
+
+        window.addEventListener('online', updateOnlineStatus);
+        window.addEventListener('offline', updateOnlineStatus);
+
+        return () => {
+            window.removeEventListener('online', updateOnlineStatus);
+            window.removeEventListener('offline', updateOnlineStatus);
+        };
+    }, []);
     
     const initialFormState = { name: '', displayName: '', username: '', email: '', phone: '', role: ROLES.CASHIER, status: 'Active', password: '', pin: '' };
     const [formData, setFormData] = useState(initialFormState);
@@ -105,6 +119,10 @@ const UserList = () => {
         special: /[^A-Za-z\d]/.test(formData.password || ''),
     };
     const allPasswordChecksMet = Object.values(passwordChecks).every(Boolean);
+    const isOfflineLoadError = !isBrowserOnline && usersLoadError?.title === "You're Offline";
+    const showOfflineActionUnavailable = () => {
+        showToast("You're Offline", 'This action requires an internet connection.', 'warning', 'user-offline-action');
+    };
 
     // Derived Data
     const matchesSearch = (user) => (
@@ -336,6 +354,11 @@ const UserList = () => {
 
     // Handlers
     const handleOpenAdd = async () => {
+        if (!isBrowserOnline) {
+            showOfflineActionUnavailable();
+            return;
+        }
+
         setShowArchived(false);
         setSearchTerm('');
         setModalMode('add');
@@ -375,6 +398,11 @@ const UserList = () => {
     };
 
     const handleOpenEdit = (user) => {
+        if (!isBrowserOnline) {
+            showOfflineActionUnavailable();
+            return;
+        }
+
         setModalMode('edit');
         setFieldErrors({});
         setSelectedUser(user);
@@ -420,6 +448,11 @@ const UserList = () => {
         e.preventDefault();
 
         if (userSubmitInFlightRef.current || isSavingUser) {
+            return;
+        }
+
+        if (!isBrowserOnline) {
+            showOfflineActionUnavailable();
             return;
         }
 
@@ -665,12 +698,21 @@ const UserList = () => {
     };
 
     const toggleArchive = (user) => {
+        if (!isBrowserOnline) {
+            showOfflineActionUnavailable();
+            return;
+        }
+
         setUserToArchive(user);
         setIsArchiveModalOpen(true);
     };
 
     const confirmArchive = async () => {
         if (!userToArchive || isArchiveSubmitting) return;
+        if (!isBrowserOnline) {
+            showOfflineActionUnavailable();
+            return;
+        }
 
         setIsArchiveSubmitting(true);
         const targetUser = userToArchive;
@@ -735,7 +777,7 @@ const UserList = () => {
 
                 {/* Main Content Area */}
                 <div className="flex-1 min-h-0 flex flex-col md:overflow-visible transition-colors bg-transparent pt-3">
-                    {usersLoadError && (
+                    {usersLoadError && !isOfflineLoadError && (
                         <div className="mx-5 mb-3 flex items-center justify-between gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700 dark:border-rose-800 dark:bg-rose-900/20 dark:text-rose-300">
                             <span>{usersLoadError.title}: {usersLoadError.message}</span>
                             <button
@@ -788,7 +830,8 @@ const UserList = () => {
                         <div className="relative group/disabled-add w-full sm:w-auto">
                             <button
                                 onClick={handleOpenAdd}
-                                className="w-full sm:w-auto px-4 py-2 rounded-lg text-white font-semibold text-xs shadow-md flex items-center justify-center gap-2 transition-all hover:opacity-90 transform hover:-translate-y-0.5"
+                                disabled={!isBrowserOnline}
+                                className="w-full sm:w-auto px-4 py-2 rounded-lg text-white font-semibold text-xs shadow-md flex items-center justify-center gap-2 transition-all hover:opacity-90 transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:transform-none"
                                 style={{ backgroundColor: '#111827' }}
                             >
                                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z"></path></svg>
@@ -860,10 +903,10 @@ const UserList = () => {
                                                 )}
                                             </div>
                                             <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
-                                                {showArchived ? 'No archived users yet' : (usersLoadError ? usersLoadError.title : 'No active users found')}
+                                                {showArchived ? 'No archived users yet' : (isOfflineLoadError && users.length === 0 ? 'No users available' : (usersLoadError ? usersLoadError.title : 'No active users found'))}
                                             </h3>
                                             <p className="mt-1 text-xs font-medium text-gray-500 dark:text-gray-400">
-                                                                {showArchived ? 'Archived accounts will appear here once you archive a user.' : (usersLoadError?.message || (users.some((u) => u.isArchived) ? 'No active users found. You may have archived users; click View Archive.' : 'Try changing your search keyword or add a new user account.'))}
+                                                                {showArchived ? 'Archived accounts will appear here once you archive a user.' : (isOfflineLoadError && users.length === 0 ? 'User records will appear here once loaded.' : (usersLoadError?.message || (users.some((u) => u.isArchived) ? 'No active users found. You may have archived users; click View Archive.' : 'Try changing your search keyword or add a new user account.')))}
                                             </p>
                                         </div>
                                     </td>
@@ -932,16 +975,18 @@ const UserList = () => {
                                                     <>
                                                         <button 
                                                             onClick={() => handleOpenEdit(user)}
+                                                            disabled={!isBrowserOnline}
                                                             title="Edit"
                                                             aria-label={`Edit ${user.name}`}
-                                                            className="group/btn inline-flex shrink-0 items-center rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-gray-600 transition-all hover:bg-gray-100 hover:text-gray-800"
+                                                            className="group/btn inline-flex shrink-0 items-center rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-gray-600 transition-all hover:bg-gray-100 hover:text-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
                                                         >
                                                             <EditIcon />
                                                             <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap text-[10px] font-semibold opacity-0 transition-all duration-200 group-hover/btn:ml-1 group-hover/btn:max-w-12 group-hover/btn:opacity-100">Edit</span>
                                                         </button>
                                                         <button
                                                             onClick={() => toggleArchive(user)}
-                                                            className="group/btn inline-flex items-center rounded-lg transition-all bg-orange-50 dark:bg-orange-900/20 text-orange-600 dark:text-orange-400 hover:bg-orange-100 dark:hover:bg-orange-900/40 px-2 py-1.5"
+                                                            disabled={!isBrowserOnline}
+                                                            className="group/btn inline-flex items-center rounded-lg transition-all bg-orange-50 dark:bg-orange-900/20 text-orange-600 dark:text-orange-400 hover:bg-orange-100 dark:hover:bg-orange-900/40 px-2 py-1.5 disabled:cursor-not-allowed disabled:opacity-50"
                                                             title="Archive"
                                                             aria-label={`Archive ${user.name}`}
                                                         >
@@ -954,7 +999,8 @@ const UserList = () => {
                                                     <>
                                                         <button
                                                             onClick={() => toggleArchive(user)}
-                                                            className="group/btn inline-flex items-center rounded-lg transition-all bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 px-2 py-1.5"
+                                                            disabled={!isBrowserOnline}
+                                                            className="group/btn inline-flex items-center rounded-lg transition-all bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 px-2 py-1.5 disabled:cursor-not-allowed disabled:opacity-50"
                                                         >
                                                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
                                                             <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 text-[10px] font-semibold group-hover/btn:ml-1 group-hover/btn:max-w-20 group-hover/btn:opacity-100">Restore</span>
@@ -1261,9 +1307,9 @@ const UserList = () => {
 
                             <button 
                                 type="submit"
-                                disabled={!isFormModified || isSavingUser}
-                                style={{ backgroundColor: isFormModified && !isSavingUser ? '#111827' : '#9ca3af', cursor: isFormModified && !isSavingUser ? 'pointer' : 'not-allowed' }}
-                                className={`w-full py-2 text-white rounded-lg font-semibold tracking-widest shadow-lg transition-all transform text-xs ${isFormModified && !isSavingUser ? 'hover:-translate-y-0.5 hover:opacity-90' : 'opacity-70'}`}
+                                disabled={!isBrowserOnline || !isFormModified || isSavingUser}
+                                style={{ backgroundColor: isBrowserOnline && isFormModified && !isSavingUser ? '#111827' : '#9ca3af', cursor: isBrowserOnline && isFormModified && !isSavingUser ? 'pointer' : 'not-allowed' }}
+                                className={`w-full py-2 text-white rounded-lg font-semibold tracking-widest shadow-lg transition-all transform text-xs ${isBrowserOnline && isFormModified && !isSavingUser ? 'hover:-translate-y-0.5 hover:opacity-90' : 'opacity-70'}`}
                             >
                                 {isSavingUser ? (modalMode === 'add' ? 'Creating...' : 'Saving...') : (modalMode === 'add' ? 'Create User' : 'Save Changes')}
                             </button>
@@ -1300,7 +1346,7 @@ const UserList = () => {
                                 </button>
                                 <button
                                     onClick={confirmArchive}
-                                    disabled={isArchiveSubmitting}
+                                    disabled={!isBrowserOnline || isArchiveSubmitting}
                                     style={{ backgroundColor: '#111827' }}
                                     className="flex-1 py-2.5 text-white rounded-xl font-semibold text-sm shadow-md hover:opacity-90 transition-all transform hover:-translate-y-0.5"
                                 >
