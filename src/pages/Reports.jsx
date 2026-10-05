@@ -11,6 +11,7 @@ import { useAuth } from '../context/AuthContext';
 import StatCard from '../components/StatCard';
 import { listCreditTransactionsApi } from '../services/inventoryApi';
 import { formatCurrency, formatNumber } from '../utils/numberFormat';
+import { getValidSales, isValidCreditCollectionForReporting } from '../../shared/saleLifecycle.mjs';
 import logo from '../assets/logo.png';
 
 const TOP_SELLING_CHART_COLORS = ['#0EA5E9', '#F97316', '#10B981', '#A855F7', '#F43F5E', '#EAB308', '#14B8A6', '#6366F1'];
@@ -194,7 +195,7 @@ const Reports = () => {
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-    return (transactions || []).filter((t) => {
+    return getValidSales(transactions).filter((t) => {
       const tDate = new Date(t.date);
 
       if (dateRange === 'today') return tDate >= today;
@@ -262,7 +263,7 @@ const Reports = () => {
       return true;
     };
 
-    return (creditTransactions || []).flatMap((creditRow) => (
+    return (creditTransactions || []).filter(isValidCreditCollectionForReporting).flatMap((creditRow) => (
       (creditRow?.paymentHistory || [])
         .filter((payment) => inRange(payment?.paymentDate))
         .map((payment) => ({

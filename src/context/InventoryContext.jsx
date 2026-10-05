@@ -14,6 +14,7 @@ import {
     removeSyncedOfflineTransaction,
     retainFailedOfflineTransaction,
     syncNextOfflineTransaction,
+    reconcileSyncedSale,
 } from '../utils/offlineTransactionSync';
 import {
     listProductsApi,
@@ -287,7 +288,9 @@ export const InventoryProvider = ({ children }) => {
 
         let disposed = false;
         let isRefreshInFlight = false;
+        let transactionRefreshPending = false;
         let isInventoryRefreshInFlight = false;
+        let inventoryRefreshPending = false;
         let isActivityLogsRefreshInFlight = false;
         let isInventoryLogsRefreshInFlight = false;
 
@@ -344,7 +347,9 @@ export const InventoryProvider = ({ children }) => {
         };
 
         const refreshTransactions = async () => {
-            if (isRefreshInFlight || disposed) {
+            if (disposed) return;
+            if (isRefreshInFlight) {
+                transactionRefreshPending = true;
                 return;
             }
 
@@ -359,6 +364,10 @@ export const InventoryProvider = ({ children }) => {
                 // Ignore transient failures; reconnection/fallback handles eventual consistency.
             } finally {
                 isRefreshInFlight = false;
+                if (transactionRefreshPending && !disposed) {
+                    transactionRefreshPending = false;
+                    void refreshTransactions();
+                }
             }
         };
 
@@ -367,7 +376,9 @@ export const InventoryProvider = ({ children }) => {
         };
 
         const refreshInventory = async ({ notifyTransitions = false } = {}) => {
-            if (isInventoryRefreshInFlight || disposed) {
+            if (disposed) return;
+            if (isInventoryRefreshInFlight) {
+                inventoryRefreshPending = true;
                 return;
             }
 
@@ -386,6 +397,10 @@ export const InventoryProvider = ({ children }) => {
                 // Ignore transient failures; client will retry on next realtime event.
             } finally {
                 isInventoryRefreshInFlight = false;
+                if (inventoryRefreshPending && !disposed) {
+                    inventoryRefreshPending = false;
+                    void refreshInventory({ notifyTransitions });
+                }
             }
         };
 
@@ -438,6 +453,12 @@ export const InventoryProvider = ({ children }) => {
         };
 
         const unsubscribeSaleCreated = subscribeRealtimeEvent('sale.created', onSaleCreated);
+        const unsubscribeSaleUpdated = subscribeRealtimeEvent('sale.updated', () => {
+            void refreshTransactions();
+            void refreshInventory();
+            void refreshActivityLogs();
+            void refreshInventoryLogs();
+        });
         const unsubscribeInventoryUpdated = subscribeRealtimeEvent('inventory.updated', onInventoryUpdated);
         const unsubscribeActivityLogged = subscribeRealtimeEvent('activity.logged', onActivityLogged);
         const unsubscribeInventoryLogged = subscribeRealtimeEvent('inventory.logged', onInventoryLogged);
@@ -445,6 +466,7 @@ export const InventoryProvider = ({ children }) => {
         return () => {
             disposed = true;
             unsubscribeSaleCreated();
+            unsubscribeSaleUpdated();
             unsubscribeInventoryUpdated();
             unsubscribeActivityLogged();
             unsubscribeInventoryLogged();
@@ -578,6 +600,7 @@ export const InventoryProvider = ({ children }) => {
                 }
 
                 if (result.status === 'synced') {
+                    setTransactions((previous) => reconcileSyncedSale(previous, result.transaction, result.sale));
                     setSyncQueue((previous) => removeSyncedOfflineTransaction(previous, queueItem));
                 
                     // The queued sale is already accepted. A follow-up refresh failure

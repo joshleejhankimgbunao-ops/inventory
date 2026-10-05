@@ -275,9 +275,20 @@ const updateProduct = async (req, res, next) => {
       return res.status(404).json({ message: 'Product not found.' });
     }
 
+    const stockBefore = Number(existing.stock || 0);
+    const adjustmentRequestId = req.body?.stock !== undefined
+      ? normalizeString(req.body?.adjustmentRequestId)
+      : '';
+    if (adjustmentRequestId && existing.lastStockAdjustmentRequestId === adjustmentRequestId) {
+      return res.json(existing);
+    }
+
     const expectedUpdatedAtRaw = normalizeString(req.body?.expectedUpdatedAt);
     if (expectedUpdatedAtRaw) {
       const expectedUpdatedAt = new Date(expectedUpdatedAtRaw);
+      if (Number.isNaN(expectedUpdatedAt.getTime())) {
+        return res.status(400).json({ message: 'Invalid product version. Refresh and retry.' });
+      }
       if (!Number.isNaN(expectedUpdatedAt.getTime()) && existing.updatedAt) {
         if (existing.updatedAt.getTime() !== expectedUpdatedAt.getTime()) {
           return res.status(409).json({ message: 'This product was updated by another user. Please refresh and try again.' });
@@ -285,13 +296,12 @@ const updateProduct = async (req, res, next) => {
       }
     }
 
-    const stockBefore = Number(existing.stock || 0);
-    const adjustmentRequestId = req.body?.stock !== undefined
-      ? normalizeString(req.body?.adjustmentRequestId)
-      : '';
-
-    if (adjustmentRequestId && existing.lastStockAdjustmentRequestId === adjustmentRequestId) {
-      return res.json(existing);
+    if (req.body?.expectedStock !== undefined) {
+      const expectedStock = parseStrictWholeNumber(req.body.expectedStock);
+      if (expectedStock === null) return res.status(400).json({ message: 'Invalid expected stock.' });
+      if (expectedStock !== stockBefore) {
+        return res.status(409).json({ message: 'Stock changed. Refresh and retry this adjustment.' });
+      }
     }
 
     const payload = {};
@@ -336,6 +346,9 @@ const updateProduct = async (req, res, next) => {
 
     const product = await Product.findOneAndUpdate({
       _id: id,
+      ...(payload.stock !== undefined ? { stock: stockBefore } : {}),
+      ...((payload.stock !== undefined || expectedUpdatedAtRaw) && existing.updatedAt
+        ? { updatedAt: new Date(expectedUpdatedAtRaw || existing.updatedAt) } : {}),
       ...(adjustmentRequestId ? { lastStockAdjustmentRequestId: { $ne: adjustmentRequestId } } : {}),
     }, payload, {
       new: true,
@@ -349,7 +362,7 @@ const updateProduct = async (req, res, next) => {
       }
     }
     if (!product) {
-      return res.status(404).json({ message: 'Product not found.' });
+      return res.status(409).json({ message: 'Product changed or is no longer available. Refresh and retry.' });
     }
 
     const stockAfter = Number(product.stock || 0);

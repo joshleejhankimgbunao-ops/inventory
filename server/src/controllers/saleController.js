@@ -1,4 +1,7 @@
 const mongoose = require('mongoose');
+const { getSaleStatus } = require('../../../shared/saleLifecycle.mjs');
+const { getSaleVoidEligibility } = require('../services/saleVoidEligibility');
+const { executeSaleVoid } = require('../services/saleVoidService');
 const Product = require('../models/Product');
 const Sale = require('../models/Sale');
 const Partner = require('../models/Partner');
@@ -107,6 +110,17 @@ const mapSaleToTransactionContract = (sale) => {
   return {
     id: displayId,
     sourceId: rawSaleId,
+    clientRequestId: saleObj.clientRequestId || '',
+    status: getSaleStatus(saleObj),
+    voidEligible: getSaleVoidEligibility(saleObj).eligible,
+    voidInfo: saleObj.voidInfo ? {
+      reason: saleObj.voidInfo.reason,
+      voidedAt: saleObj.voidInfo.voidedAt,
+      voidedBy: saleObj.voidInfo.voidedBy,
+      voidedByName: saleObj.voidInfo.voidedByName,
+      authorizationMethod: saleObj.voidInfo.authorizationMethod,
+      requestId: saleObj.voidInfo.requestId,
+    } : null,
     date: saleObj.createdAt,
     cashierId: String(saleObj?.cashier?._id || saleObj?.cashier || ''),
     cashierUser,
@@ -152,6 +166,7 @@ const listSales = async (req, res, next) => {
   try {
     const includeArchived = parseBool(req.query?.includeArchived, true);
     const query = includeArchived ? {} : { isArchived: false };
+    query.status = { $ne: 'voided' };
 
     query.$or = [
       { paymentMethod: { $ne: 'credit' } },
@@ -495,6 +510,63 @@ const createSale = async (req, res, next) => {
   }
 };
 
+const canAccessSale = (sale, user) => user?.role !== 'cashier'
+  || String(sale?.cashier?._id || sale?.cashier || '') === String(user?._id || '');
+
+const getSaleHistoryView = async (req, res, next) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ message: 'Invalid Sale ID.' });
+    const sale = await Sale.findById(req.params.id).populate('cashier', 'name displayName username role');
+    if (!sale) return res.status(404).json({ message: 'Sale not found.' });
+    if (!canAccessSale(sale, req.user)) return res.status(403).json({ message: 'You can only view your own sales.' });
+    return res.json(mapSaleToTransactionContract(sale));
+  } catch (error) {
+    return next(error);
+  }
+};
+
+const voidSale = async (req, res, next, dependencies = {}) => {
+  try {
+    if (!['admin', 'superadmin'].includes(String(req.user?.role || '').toLowerCase())) {
+      return res.status(403).json({ message: 'Only an Admin or Super Admin can void a Sale.' });
+    }
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ message: 'Invalid Sale ID.' });
+
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+    const requestId = normalizeClientRequestId(req.body?.requestId);
+    if (!reason) return res.status(400).json({ message: 'Void reason is required.' });
+    if (reason.length > 500) return res.status(400).json({ message: 'Void reason must be 500 characters or fewer.' });
+    if (Array.from(reason).some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)) {
+      return res.status(400).json({ message: 'Void reason contains invalid characters.' });
+    }
+    if (!requestId) return res.status(400).json({ message: 'Void request ID is required.' });
+    if (requestId.length > 128) return res.status(400).json({ message: 'Void request ID must be 128 characters or fewer.' });
+
+    const result = await (dependencies.executeSaleVoid || executeSaleVoid)({
+      saleId: req.params.id,
+      reason,
+      requestId,
+      user: req.user,
+      ipAddress: req.ip,
+      userAgent: req.get?.('user-agent') || '',
+    });
+    return res.status(200).json({
+      sale: mapSaleToTransactionContract(result.sale),
+      replayed: Boolean(result.replayed),
+      restorations: result.restorations,
+    });
+  } catch (error) {
+    const message = String(error?.message || '').toLowerCase();
+    if (message.includes('transaction numbers are only allowed on a replica set member or mongos')) {
+      return res.status(503).json({
+        message: 'Sale voiding is temporarily unavailable because the database transaction service is not ready.',
+      });
+    }
+    if (error?.status) return res.status(error.status).json({ message: error.message });
+    return next(error);
+  }
+};
+
 const archiveSale = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -555,7 +627,9 @@ module.exports = {
   mapSaleToTransactionContract,
   listSales,
   listSalesHistoryView,
+  getSaleHistoryView,
   createSale,
+  voidSale,
   archiveSale,
   restoreSale,
 };

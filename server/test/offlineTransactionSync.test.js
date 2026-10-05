@@ -213,3 +213,32 @@ test('an in-flight sync result is ignored after logout or an account switch', as
     hasAuth: true,
   }), true);
 });
+
+test('a synced offline Sale reconciles to its persisted server ObjectId', async () => {
+  const { reconcileSyncedSale } = await loadOfflineSync();
+  const queued = queuedSale('identity');
+  const persistedId = '68a01234567890abcdef1234';
+  const transactions = reconcileSyncedSale([queued], queued, {
+    _id: persistedId,
+    clientRequestId: queued.clientRequestId,
+    createdAt: '2026-01-20T10:00:00.000Z',
+    paymentMethod: 'cash',
+    paymentStatus: 'Paid',
+    saleType: 'regular',
+    totalAmount: 100,
+    items: [{ product: '68a01234567890abcdef9999', code: 'SKU-1', name: 'Product', quantity: 1, unitPrice: 100, subtotal: 100 }],
+  });
+
+  assert.equal(transactions.length, 1);
+  assert.equal(transactions[0].sourceId, persistedId);
+  assert.equal(transactions[0].id, `TRX-${persistedId.slice(-8).toUpperCase()}`);
+  assert.equal(transactions[0].status, 'completed');
+});
+
+test('an unsynced local Sale keeps no authoritative server identity', async () => {
+  const { reconcileSyncedSale } = await loadOfflineSync();
+  const queued = queuedSale('local-only');
+
+  assert.deepEqual(reconcileSyncedSale([queued], queued, undefined), [queued]);
+  assert.equal(queued.sourceId, undefined);
+});

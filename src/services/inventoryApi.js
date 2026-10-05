@@ -73,6 +73,8 @@ export const updateProductStockApi = async (productId, stock, options = {}) => {
     method: 'PATCH',
     body: JSON.stringify({
       stock,
+      ...(options.expectedStock !== undefined ? { expectedStock: options.expectedStock } : {}),
+      ...(options.expectedUpdatedAt ? { expectedUpdatedAt: options.expectedUpdatedAt } : {}),
       ...(adjustmentReason ? { inventoryAdjustmentReason: adjustmentReason } : {}),
       ...(options.adjustmentRequestId ? { adjustmentRequestId: options.adjustmentRequestId } : {}),
     }),
@@ -110,8 +112,7 @@ export const createSaleApi = async (items, paymentMethod = 'cash', clientRequest
   });
 };
 
-export const listSalesHistoryViewApi = async (includeArchived = true) => {
-  const sales = await apiRequest(`/api/sales/history-view?includeArchived=${includeArchived ? 'true' : 'false'}`);
+const mapHistorySale = (sale) => {
   const paymentMethodLabels = {
     cash: 'Cash',
     gcash: 'GCash',
@@ -121,14 +122,26 @@ export const listSalesHistoryViewApi = async (includeArchived = true) => {
     credit: 'Credit',
   };
 
-  return Array.isArray(sales)
-    ? sales.map((sale) => ({
-        ...sale,
-        paymentMethod: paymentMethodLabels[String(sale?.paymentMethod || '').trim().toLowerCase()]
-          || String(sale?.paymentMethod || 'Cash').trim(),
-      }))
-    : [];
+  return {
+    ...sale,
+    paymentMethod: paymentMethodLabels[String(sale?.paymentMethod || '').trim().toLowerCase()]
+      || String(sale?.paymentMethod || 'Cash').trim(),
+  };
 };
+
+export const listSalesHistoryViewApi = async (includeArchived = true) => {
+  const sales = await apiRequest(`/api/sales/history-view?includeArchived=${includeArchived ? 'true' : 'false'}`);
+  return Array.isArray(sales) ? sales.map(mapHistorySale) : [];
+};
+
+export const getSaleHistoryViewApi = async (saleId) => mapHistorySale(await apiRequest(
+  `/api/sales/${encodeURIComponent(saleId)}/history-view`
+));
+
+export const voidSaleApi = async (saleId, { reason, requestId }) => apiRequest(
+  `/api/sales/${encodeURIComponent(saleId)}/void`,
+  { method: 'POST', body: JSON.stringify({ reason, requestId }) }
+);
 
 export const listActivityLogsApi = async (limit = 100) => {
   const logs = await apiRequest(`/api/logs/activity?limit=${Number(limit) || 100}`);

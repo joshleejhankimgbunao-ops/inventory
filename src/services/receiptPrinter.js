@@ -47,6 +47,12 @@ const normalizeReceiptTransaction = (transaction = {}, settings = {}, { isReprin
       date: String(transaction?.date || transaction?.createdAt || '').trim(),
       cashier: String(transaction?.cashier || transaction?.cashierName || '').trim(),
       paymentMethod,
+      documentType: String(transaction?.documentType || '').trim(),
+      status: String(transaction?.status || '').trim().toLowerCase(),
+      voidInfo: transaction?.voidInfo ? {
+        reason: String(transaction.voidInfo.reason || '').trim(),
+        voidedAt: transaction.voidInfo.voidedAt ? String(transaction.voidInfo.voidedAt) : '',
+      } : null,
       paymentStatus: String(transaction?.paymentStatus || '').trim(),
       customerName: String(transaction?.customerName || '').trim(),
       specialOrderNumber: String(transaction?.specialOrderNumber || '').trim(),

@@ -138,3 +138,19 @@ test('paid Credit receipt payload preserves saved payment and order references',
   assert.deepEqual(reprint.receipt.items, firstPrint.receipt.items);
   assert.equal(reprint.receipt.isReprint, true);
 });
+
+test('voided Order Confirmation payload carries only the persisted void audit fields needed by the printer', async () => {
+  const { buildReceiptPrintPayload } = await loadReceiptPrinter();
+  const payload = buildReceiptPrintPayload({
+    id: 'TRX-VOID-001', documentType: 'order-confirmation', status: 'voided',
+    voidInfo: { reason: 'Duplicate checkout', voidedAt: '2026-10-05T01:02:03.000Z', requestId: 'private-request' },
+    paymentMethod: 'Cash', total: 100,
+    items: [{ name: 'Saved Item', qty: 1, price: 100, subtotal: 100 }],
+  });
+
+  assert.equal(payload.receipt.status, 'voided');
+  assert.deepEqual(payload.receipt.voidInfo, {
+    reason: 'Duplicate checkout',
+    voidedAt: '2026-10-05T01:02:03.000Z',
+  });
+});

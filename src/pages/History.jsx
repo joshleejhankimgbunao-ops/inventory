@@ -9,10 +9,12 @@ import { showToast } from '../utils/toastHelper';
 import { showPageLoadError } from '../utils/pageLoadError';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
-import { getCreditTransactionByIdApi, listCreditTransactionsApi } from '../services/inventoryApi';
+import { getCreditTransactionByIdApi, getSaleHistoryViewApi, listCreditTransactionsApi, voidSaleApi } from '../services/inventoryApi';
 import { printReceipt } from '../services/receiptPrinter';
 import { formatMoney as formatMoneyValue } from '../utils/numberFormat';
 import { getActorDisplayName, getActorRoleLabel } from '../utils/actorDisplay';
+import { createClientRequestId } from '../utils/clientRequestId';
+import { canOfferSaleVoid } from '../utils/saleVoid';
 
 const History = () => {
     const location = useLocation();
@@ -528,11 +530,17 @@ const History = () => {
 
     // State for Reprinting Receipt (lifted from SalesHistory)
     const [selectedTransaction, setSelectedTransaction] = useState(null);
+    const [selectedSaleDetails, setSelectedSaleDetails] = useState(null);
     const [showReceipt, setShowReceipt] = useState(false);
     const [printStatus, setPrintStatus] = useState('idle');
     const printRequestInFlightRef = useRef(false);
     const [selectedCredit, setSelectedCredit] = useState(null);
     const [isCreditDetailsOpen, setIsCreditDetailsOpen] = useState(false);
+    const [isVoidModalOpen, setIsVoidModalOpen] = useState(false);
+    const [voidReason, setVoidReason] = useState('');
+    const [isVoidSubmitting, setIsVoidSubmitting] = useState(false);
+    const voidRequestIdRef = useRef('');
+    const voidRequestInFlightRef = useRef(false);
 
     // Archive Modal State
     const [isArchiveModalOpen, setIsArchiveModalOpen] = useState(false);
@@ -609,10 +617,82 @@ const History = () => {
         return 'bg-gray-100 text-gray-600 border-gray-200';
     };
 
-    const handleViewReceipt = (transaction) => {
-        setSelectedTransaction(transaction);
-        setShowReceipt(true);
-        setAutoReceiptMode(null);
+    const isRegularSale = (transaction) => String(transaction?.saleType || '').toLowerCase() !== 'special-order'
+        && !transaction?.specialOrderNumber;
+
+    const loadCurrentSale = async (transaction) => (
+        transaction?.sourceId && isRegularSale(transaction)
+            ? getSaleHistoryViewApi(transaction.sourceId)
+            : transaction
+    );
+
+    const handleViewReceipt = async (transaction) => {
+        try {
+            setSelectedTransaction(await loadCurrentSale(transaction));
+            setShowReceipt(true);
+            setAutoReceiptMode(null);
+        } catch (error) {
+            showToast('Unable to Open', error.message || 'Unable to load the current Sale record.', 'error', 'sale-preview-current');
+        }
+    };
+
+    const handleViewSaleDetails = async (transaction) => {
+        try {
+            setSelectedSaleDetails(await loadCurrentSale(transaction));
+        } catch (error) {
+            showToast('Unable to Open', error.message || 'Unable to load the current Sale record.', 'error', 'sale-details-current');
+        }
+    };
+
+    const canVoidSale = (transaction) => canOfferSaleVoid(transaction, {
+        isAdmin: isAdminOrAbove(),
+        isOnline: typeof navigator === 'undefined' || navigator.onLine,
+    });
+
+    const openVoidModal = () => {
+        if (!canVoidSale(selectedSaleDetails)) return;
+        setVoidReason('');
+        voidRequestIdRef.current = createClientRequestId('sale-void');
+        setIsVoidModalOpen(true);
+    };
+
+    const closeVoidModal = () => {
+        if (voidRequestInFlightRef.current) return;
+        setIsVoidModalOpen(false);
+        setVoidReason('');
+        voidRequestIdRef.current = '';
+    };
+
+    const confirmVoidSale = async () => {
+        const reason = voidReason.trim();
+        if (!selectedSaleDetails?.sourceId || !reason || voidRequestInFlightRef.current) return;
+        if (typeof navigator !== 'undefined' && !navigator.onLine) {
+            showToast('Connection Required', 'Reconnect before voiding this Sale.', 'error', 'sale-void-offline');
+            return;
+        }
+        voidRequestInFlightRef.current = true;
+        setIsVoidSubmitting(true);
+        try {
+            const result = await voidSaleApi(selectedSaleDetails.sourceId, {
+                reason,
+                requestId: voidRequestIdRef.current || createClientRequestId('sale-void'),
+            });
+            const updated = result.sale;
+            setTransactions((previous) => previous.map((transaction) => (
+                transaction.sourceId === updated.sourceId ? updated : transaction
+            )));
+            setSelectedSaleDetails(updated);
+            setSelectedTransaction((previous) => previous?.sourceId === updated.sourceId ? updated : previous);
+            setIsVoidModalOpen(false);
+            setVoidReason('');
+            voidRequestIdRef.current = '';
+            showToast(result.replayed ? 'Sale Already Voided' : 'Sale Voided', `${updated.id} is recorded as voided.`, 'success', 'sale-void-success');
+        } catch (error) {
+            showToast('Void Failed', error.message || 'The Sale was not voided. No inventory changes were applied.', 'error', 'sale-void-failed');
+        } finally {
+            voidRequestInFlightRef.current = false;
+            setIsVoidSubmitting(false);
+        }
     };
 
     const handleViewCreditDetails = async (credit) => {
@@ -664,6 +744,7 @@ const History = () => {
     }, [location.state, transactions]);
 
     const isAutoReceipt = autoReceiptMode === 'paid-credit';
+    const isOrderConfirmation = !isAutoReceipt && isRegularSale(selectedTransaction);
     const handlePrint = async () => {
         if (!selectedTransaction || printRequestInFlightRef.current) {
             return;
@@ -672,10 +753,16 @@ const History = () => {
         printRequestInFlightRef.current = true;
         setPrintStatus('printing');
         try {
+            const currentTransaction = isOrderConfirmation && selectedTransaction.sourceId
+                ? await getSaleHistoryViewApi(selectedTransaction.sourceId)
+                : selectedTransaction;
+            if (currentTransaction !== selectedTransaction) setSelectedTransaction(currentTransaction);
             await printReceipt({
-                transaction: selectedTransaction,
+                transaction: isOrderConfirmation
+                    ? { ...currentTransaction, documentType: 'order-confirmation' }
+                    : currentTransaction,
                 settings: appSettings,
-                isReprint: !isAutoReceipt,
+                isReprint: !isAutoReceipt && !isOrderConfirmation,
                 elementId: 'history-receipt-content',
                 paperWidthMm: 58,
             });
@@ -683,7 +770,7 @@ const History = () => {
             setPrintStatus('success');
             showToast(
                 'Print Success',
-                'Receipt sent to the thermal printer.',
+                isOrderConfirmation ? 'Order Confirmation sent to the thermal printer.' : 'Receipt sent to the thermal printer.',
                 'success',
                 'history-print-receipt'
             );
@@ -695,7 +782,7 @@ const History = () => {
         } catch (error) {
             printRequestInFlightRef.current = false;
             setPrintStatus('idle');
-            showToast('Print Failed', error?.message || 'Unable to reprint receipt.', 'error', 'history-print-error');
+            showToast('Print Failed', error?.message || (isOrderConfirmation ? 'Unable to print Order Confirmation.' : 'Unable to reprint receipt.'), 'error', 'history-print-error');
         }
     };
 
@@ -1051,7 +1138,12 @@ const History = () => {
                                         currentItems.map((trx) => (
                                             <tr key={trx.id} className="border-b border-gray-200 hover:bg-gray-50 transition-colors duration-200 group">
                                                 <td className="py-2 px-2 text-center border border-gray-200">
-                                                    <IdentifierChip>{trx.id}</IdentifierChip>
+                                                    <div className="flex flex-col items-center gap-1">
+                                                        <IdentifierChip>{trx.id}</IdentifierChip>
+                                                        {String(trx.status || '').toLowerCase() === 'voided' && (
+                                                            <span className="inline-flex rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-rose-700 dark:border-rose-900/70 dark:bg-rose-950/40 dark:text-rose-300">Voided</span>
+                                                        )}
+                                                    </div>
                                                 </td>
                                                 <td className="py-2 px-2 text-gray-800 font-medium text-xs text-center border border-gray-200">{formatExact(trx.date)}</td>
                                                 <td className="py-2 px-2 text-center border border-gray-200">
@@ -1090,8 +1182,11 @@ const History = () => {
                                                             className="group/btn inline-flex items-center rounded-lg bg-white dark:bg-gray-800 text-black dark:text-white border border-black dark:border-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 transition-all px-2 py-1.5"
                                                         >
                                                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
-                                                            <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 text-[10px] font-semibold group-hover/btn:ml-1 group-hover/btn:max-w-20 group-hover/btn:opacity-100">View Receipt</span>
+                                                            <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 text-[10px] font-semibold group-hover/btn:ml-1 group-hover/btn:max-w-40 group-hover/btn:opacity-100">{isRegularSale(trx) ? 'View Order Confirmation' : 'View Receipt'}</span>
                                                         </button>
+                                                        {isRegularSale(trx) && (
+                                                            <button type="button" onClick={() => handleViewSaleDetails(trx)} className="rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-[10px] font-semibold text-gray-700 transition-colors hover:bg-gray-100 dark:border-gray-500 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700" aria-label={`View sale details for ${trx.id}`}>Details</button>
+                                                        )}
                                                         {onArchiveTransaction && (
                                                             <button 
                                                                 onClick={() => toggleArchive(trx)}
@@ -1399,15 +1494,64 @@ const History = () => {
             )}
 
 
+            {selectedSaleDetails && (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+                    <div role="dialog" aria-modal="true" aria-label="Sale details" className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-800">
+                        <div className="flex items-start justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-700">
+                            <div>
+                                <div className="flex items-center gap-2">
+                                    <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">Sale Details</h3>
+                                    {String(selectedSaleDetails.status || '').toLowerCase() === 'voided' && <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-rose-700 dark:border-rose-900/70 dark:bg-rose-950/40 dark:text-rose-300">Voided</span>}
+                                </div>
+                                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{selectedSaleDetails.id}</p>
+                            </div>
+                            <button type="button" onClick={() => setSelectedSaleDetails(null)} className="text-sm text-slate-500 hover:text-slate-900 dark:hover:text-white">Close</button>
+                        </div>
+                        <div className="space-y-4 overflow-y-auto px-5 py-4 text-sm">
+                            <div className="grid grid-cols-2 gap-3 text-xs">
+                                <div><p className="text-slate-500 dark:text-slate-400">Date</p><p className="mt-1 font-medium text-slate-900 dark:text-slate-100">{formatExact(selectedSaleDetails.date)}</p></div>
+                                <div><p className="text-slate-500 dark:text-slate-400">Payment</p><p className="mt-1 font-medium text-slate-900 dark:text-slate-100">{selectedSaleDetails.paymentMethod}</p></div>
+                                <div><p className="text-slate-500 dark:text-slate-400">Processed By</p><p className="mt-1 font-medium text-slate-900 dark:text-slate-100">{getProcessorDisplayName(selectedSaleDetails)}</p></div>
+                                <div><p className="text-slate-500 dark:text-slate-400">Total</p><p className="mt-1 font-semibold text-slate-900 dark:text-slate-100">₱{formatMoney(selectedSaleDetails.total)}</p></div>
+                            </div>
+                            <div className="border-t border-slate-200 pt-3 dark:border-slate-700"><h4 className="text-xs font-semibold text-slate-900 dark:text-slate-100">Items</h4>{(selectedSaleDetails.items || []).map((item, index) => <div key={`${item.code || item.name}-${index}`} className="flex justify-between gap-3 border-b border-slate-100 py-2 text-xs text-slate-700 dark:border-slate-700 dark:text-slate-200"><span>{item.name} × {item.qty}</span><span className="shrink-0">₱{formatMoney(item.subtotal ?? item.qty * item.price)}</span></div>)}</div>
+                            {String(selectedSaleDetails.status || '').toLowerCase() === 'voided' && (
+                                <div className="rounded-xl border border-rose-200 bg-rose-50/70 p-3 text-xs dark:border-rose-900/60 dark:bg-rose-950/20">
+                                    <h4 className="font-semibold text-rose-800 dark:text-rose-200">Void Record</h4>
+                                    <dl className="mt-2 space-y-1.5 text-slate-600 dark:text-slate-300">
+                                        <div className="flex justify-between gap-3"><dt className="text-slate-500 dark:text-slate-400">Voided At</dt><dd className="text-right">{formatExact(selectedSaleDetails.voidInfo?.voidedAt)}</dd></div>
+                                        <div className="flex items-start justify-between gap-3"><dt className="shrink-0 text-slate-500 dark:text-slate-400">Reason</dt><dd className="break-words text-right">{selectedSaleDetails.voidInfo?.reason || '-'}</dd></div>
+                                    </dl>
+                                </div>
+                            )}
+                        </div>
+                        {canVoidSale(selectedSaleDetails) && <div className="border-t border-slate-200 px-5 py-3 dark:border-slate-700"><button type="button" onClick={openVoidModal} className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300 dark:border-rose-900/70 dark:bg-slate-800 dark:text-rose-300 dark:hover:bg-rose-950/30">Void Transaction</button></div>}
+                    </div>
+                </div>
+            )}
+            {isVoidModalOpen && selectedSaleDetails && (
+                <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+                    <div role="dialog" aria-modal="true" aria-labelledby="void-sale-title" className="w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-xl dark:border-slate-700 dark:bg-slate-800">
+                        <div className="border-b border-slate-200 px-5 py-4 dark:border-slate-700"><h3 id="void-sale-title" className="text-base font-semibold text-slate-900 dark:text-slate-100">Void Transaction</h3><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{selectedSaleDetails.id}</p></div>
+                        <div className="space-y-4 px-5 py-4">
+                            <p className="text-sm leading-5 text-slate-700 dark:text-slate-200">This permanently voids the Sale and restores the exact sold quantities to inventory.</p>
+                            <label className="block"><span className="text-xs font-medium text-slate-600 dark:text-slate-300">Reason for voiding</span><textarea value={voidReason} onChange={(event) => setVoidReason(event.target.value)} maxLength={500} rows={4} disabled={isVoidSubmitting} placeholder="Enter the reason for voiding this Sale" className="mt-1.5 w-full resize-none rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-200 disabled:opacity-70 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-slate-400 dark:focus:ring-slate-700" /></label>
+                            <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-4 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200">Safe boundary: Credit Transactions and Special Orders cannot be voided here.</p>
+                        </div>
+                        <div className="flex justify-end gap-2 border-t border-slate-200 px-5 py-3 dark:border-slate-700"><button type="button" onClick={closeVoidModal} disabled={isVoidSubmitting} className="rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700">Cancel</button><button type="button" onClick={confirmVoidSale} disabled={!voidReason.trim() || isVoidSubmitting} className="rounded-lg border border-rose-700 bg-rose-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-rose-800 disabled:cursor-not-allowed disabled:border-rose-300 disabled:bg-rose-300 dark:border-rose-800 dark:bg-rose-800 dark:hover:bg-rose-700 dark:disabled:border-rose-950 dark:disabled:bg-rose-950/60 dark:disabled:text-rose-400">{isVoidSubmitting ? 'Voiding...' : 'Void Transaction'}</button></div>
+                    </div>
+                </div>
+            )}
             {showReceipt && selectedTransaction && (
                 <ReceiptPreviewModal
                     transaction={selectedTransaction}
                     settings={appSettings}
-                    subtitle={isAutoReceipt ? 'Payment confirmed. Receipt generated.' : 'Official record copy'}
-                    isReprint={!isAutoReceipt}
+                    isOrderConfirmation={isOrderConfirmation}
+                    subtitle={isOrderConfirmation ? 'For transaction reference only.' : isAutoReceipt ? 'Payment confirmed. Receipt generated.' : 'Official record copy'}
+                    isReprint={!isAutoReceipt && !isOrderConfirmation}
                     printStatus={printStatus}
-                    printLabel="Reprint"
-                    printedLabel="Printed!"
+                    printLabel={isOrderConfirmation ? 'Print Again' : 'Reprint'}
+                    printedLabel={isOrderConfirmation ? 'Print Again' : 'Printed!'}
                     contentId="history-receipt-content"
                     onClose={() => {
                         setShowReceipt(false);

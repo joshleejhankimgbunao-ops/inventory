@@ -1,4 +1,44 @@
+import { getSaleStatus } from '../../shared/saleLifecycle.mjs';
+
 const getQueueEntryKey = (entry) => String(entry?.clientRequestId || entry?.id || '').trim();
+
+export const reconcileSyncedSale = (transactions, queued, sale) => {
+  if (!/^[a-f\d]{24}$/i.test(String(sale?._id || ''))) return transactions;
+  const sourceId = String(sale._id);
+  const requestId = sale.clientRequestId || getQueueEntryKey(queued);
+  const incoming = {
+    ...queued,
+    id: `TRX-${sourceId.slice(-8).toUpperCase()}`,
+    sourceId,
+    clientRequestId: requestId,
+    date: sale.createdAt,
+    status: getSaleStatus(sale),
+    voidInfo: sale.voidInfo || null,
+    paymentStatus: sale.paymentStatus,
+    paymentMethod: sale.paymentMethod,
+    saleType: sale.saleType || 'regular',
+    specialOrderId: sale.specialOrderId || null,
+    specialOrderNumber: sale.specialOrderNumber || '',
+    creditTransactionId: sale.creditTransactionId || '',
+    total: sale.totalAmount,
+    netAmount: sale.netAmount,
+    vatAmount: sale.vatAmount,
+    grossAmount: sale.grossAmount,
+    vatMode: sale.vatMode,
+    isArchived: Boolean(sale.isArchived),
+    items: (sale.items || []).map((item) => ({
+      id: String(item.product || ''), code: item.code, name: item.name,
+      qty: item.quantity, price: item.unitPrice, subtotal: item.subtotal,
+    })),
+  };
+  const matches = (row) => row.sourceId === sourceId
+    || row.clientRequestId === requestId
+    || (!row.sourceId && row.id === queued.id);
+  // A realtime fetch can win the race with the POST response. Prefer that
+  // authoritative persisted row (which may already have a newer lifecycle).
+  const existing = transactions.find((row) => row.sourceId === sourceId);
+  return [existing ? { ...incoming, ...existing } : incoming, ...transactions.filter((row) => !matches(row))];
+};
 const normalizeOwnerUserId = (userId) => String(userId || '').trim();
 
 export const LEGACY_OFFLINE_SYNC_QUEUE_KEY = 'syncQueue';
@@ -130,10 +170,11 @@ export const syncNextOfflineTransaction = async ({ queue = [], online, autoSync,
   }
   const request = createOfflineSaleRequest(transaction);
   try {
-    await createSale(request.items, request.paymentMethod, request.clientRequestId, request.options);
+    const sale = await createSale(request.items, request.paymentMethod, request.clientRequestId, request.options);
     return {
       status: 'synced',
       transaction,
+      sale,
       queue: removeSyncedOfflineTransaction(queue, transaction),
     };
   } catch (error) {

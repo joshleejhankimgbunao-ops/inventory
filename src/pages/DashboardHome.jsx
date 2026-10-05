@@ -4,6 +4,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
 import { formatCurrency, formatNumber } from '../utils/numberFormat';
+import { getValidSales } from '../../shared/saleLifecycle.mjs';
 
 const TOP_SELLING_CHART_COLORS = ['#0EA5E9', '#F97316', '#10B981', '#A855F7', '#F43F5E', '#EAB308', '#14B8A6', '#6366F1'];
 const ANALYTICS_VIEWS = [
@@ -113,7 +114,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
         const now = new Date();
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-        return transactions.filter(t => {
+        return getValidSales(transactions).filter(t => {
             const tDate = new Date(t.date);
 
             if (dateRange === 'today') {

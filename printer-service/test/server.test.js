@@ -210,6 +210,27 @@ test('original receipts omit reprint labels and reprints include one centered la
   assert.ok(reprintLines.every((line) => line.length <= 30));
 });
 
+test('voided Order Confirmation prints visible void status, date, and reason without becoming a receipt', () => {
+  const lines = buildReceiptLines({
+    store: { name: 'Tableria La Confianza' },
+    receipt: {
+      id: 'TRX-VOID-001', documentType: 'order-confirmation', status: 'voided', isReprint: true,
+      voidInfo: { reason: 'Duplicate checkout entered at register', voidedAt: '2026-10-05T01:02:03.000Z' },
+      date: '2026-10-05', cashier: 'Admin', paymentMethod: 'Cash',
+      items: [{ label: 'Saved Item', qty: 1, unitPrice: 100, subtotal: 100 }],
+      netAmount: 89.29, vatAmount: 10.71, grossAmount: 100, total: 100,
+    },
+  });
+  const output = lines.join('\n');
+
+  assert.match(output, /\*\*\* VOIDED \*\*\*/);
+  assert.match(output, /Void Date:/);
+  assert.match(output, /Void Reason:/);
+  assert.match(output, /Duplicate checkout entered at/);
+  assert.doesNotMatch(output, /Receipt No|REPRINT|Please keep this receipt/i);
+  assert.ok(lines.every((line) => line.length <= 30));
+});
+
 test('legacy cash receipts omit unavailable tender values instead of inventing zeroes', () => {
   const lines = buildReceiptLines({
     store: { name: 'Tableria La Confianza' },

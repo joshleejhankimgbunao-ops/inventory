@@ -1,5 +1,6 @@
 const CreditTransaction = require('../models/CreditTransaction');
 const Sale = require('../models/Sale');
+const { getSaleStatus } = require('../../../shared/saleLifecycle.mjs');
 const fs = require('fs/promises');
 const path = require('path');
 const { randomUUID } = require('crypto');
@@ -271,7 +272,7 @@ const listCreditTransactions = async (req, res, next) => {
     const rows = await CreditTransaction.find(query)
       .populate({
         path: 'orderId',
-        select: 'createdAt paymentMethod notes cashier cashierName',
+        select: 'createdAt paymentMethod notes cashier cashierName status',
         populate: {
           path: 'cashier',
           select: 'displayName name username role',
@@ -296,6 +297,7 @@ const listCreditTransactions = async (req, res, next) => {
         _id: row._id,
         creditTransactionId: row.creditTransactionId,
         orderId: row.orderId?._id || row.orderId,
+        saleStatus: row.orderId?._id ? getSaleStatus(row.orderId) : null,
         orderReference: row.orderId?._id ? `TRX-${String(row.orderId._id).slice(-8).toUpperCase()}` : '',
         paymentMethod: row.orderId?.paymentMethod || 'cash',
         creditPaymentMode,
@@ -431,6 +433,7 @@ const getCreditTransactionById = async (req, res, next) => {
     return res.json({
       ...record,
       status,
+      saleStatus: row.orderId?._id ? getSaleStatus(row.orderId) : null,
       orderReference: row.orderId?._id ? `TRX-${String(row.orderId._id).slice(-8).toUpperCase()}` : '',
       cashierId: String(row.orderId?.cashier?._id || row.orderId?.cashier || ''),
       cashierName: row.orderId?.cashierName || '',

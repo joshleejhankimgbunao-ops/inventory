@@ -172,6 +172,8 @@ const buildReceiptLines = (payload = {}) => {
   const lines = [];
   const separator = '-'.repeat(DEFAULT_WIDTH_CHARS);
   const isCredit = String(receipt.paymentMethod || '').toLowerCase() === 'credit';
+  const isVoidedConfirmation = receipt.documentType === 'order-confirmation'
+    && String(receipt.status || '').toLowerCase() === 'voided';
   const receiptDateTime = formatReceiptDateTime(receipt.date || '');
 
   appendCenteredText(lines, store.name || 'Receipt');
@@ -185,14 +187,23 @@ const buildReceiptLines = (payload = {}) => {
     appendCenteredText(lines, store.contactPhoneSecondary);
   }
 
-  if (receipt.isReprint) {
+  if (receipt.isReprint && receipt.documentType !== 'order-confirmation') {
     lines.push('');
     appendCenteredText(lines, '*** REPRINT ***');
   }
 
+  if (receipt.documentType === 'order-confirmation') {
+    lines.push('');
+    appendCenteredText(lines, 'ORDER CONFIRMATION');
+    appendCenteredText(lines, 'For transaction reference only');
+    if (isVoidedConfirmation) {
+      appendCenteredText(lines, '*** VOIDED ***');
+    }
+  }
+
   lines.push('');
   lines.push(separator);
-  appendField(lines, 'Receipt No', receipt.id);
+  appendField(lines, receipt.documentType === 'order-confirmation' ? 'Transaction ID' : 'Receipt No', receipt.id);
   if (receipt.specialOrderNumber) {
     appendField(lines, 'Special Order', receipt.specialOrderNumber);
   }
@@ -241,6 +252,19 @@ const buildReceiptLines = (payload = {}) => {
   appendPair(lines, 'Gross:', formatReceiptAmount(receipt.grossAmount || 0));
   appendPair(lines, 'TOTAL:', formatReceiptAmount(receipt.total || 0));
 
+  if (isVoidedConfirmation) {
+    lines.push(separator);
+    appendCenteredText(lines, 'VOIDED');
+    if (receipt.voidInfo?.voidedAt) {
+      const voidDateTime = formatReceiptDateTime(receipt.voidInfo.voidedAt);
+      appendField(lines, 'Void Date', voidDateTime.date);
+      if (voidDateTime.time) appendField(lines, 'Void Time', voidDateTime.time);
+    }
+    if (receipt.voidInfo?.reason) {
+      appendField(lines, 'Void Reason', receipt.voidInfo.reason);
+    }
+  }
+
   lines.push(separator);
   if (isCredit) {
     appendField(lines, 'Status', receipt.paymentStatus || 'Pending');
@@ -274,7 +298,9 @@ const buildReceiptLines = (payload = {}) => {
   lines.push(separator);
   lines.push('');
   appendCenteredText(lines, 'THANK YOU!');
-  appendCenteredText(lines, 'Please keep this receipt.');
+  appendCenteredText(lines, receipt.documentType === 'order-confirmation'
+    ? 'For transaction reference only.'
+    : 'Please keep this receipt.');
   lines.push('');
   return lines;
 };

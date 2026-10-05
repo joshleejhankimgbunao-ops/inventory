@@ -38,6 +38,23 @@ const saleItemSchema = new mongoose.Schema(
 
 const saleSchema = new mongoose.Schema(
   {
+    status: {
+      type: String,
+      enum: ['completed', 'voided'],
+      default: 'completed',
+      index: true,
+    },
+    voidInfo: {
+      type: new mongoose.Schema({
+        reason: { type: String, trim: true, required: true },
+        voidedAt: { type: Date, required: true },
+        voidedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+        voidedByName: { type: String, trim: true, required: true },
+        authorizationMethod: { type: String, trim: true, required: true },
+        requestId: { type: String, trim: true, required: true },
+      }, { _id: false }),
+      default: null,
+    },
     items: {
       type: [saleItemSchema],
       default: [],

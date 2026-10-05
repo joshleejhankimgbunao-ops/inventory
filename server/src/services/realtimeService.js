@@ -146,6 +146,13 @@ const publishSpecialOrderUpdated = ({ orderId = '', orderNumber = '', status = '
   });
 };
 
+// Lifecycle updates carry identifiers only; clients refetch authoritative data.
+const publishSaleUpdated = ({ saleId = '', cashierId = '' } = {}) => {
+  const payload = { saleId: String(saleId), occurredAt: new Date().toISOString() };
+  publishEvent('sale.updated', payload, { roles: ['superadmin', 'admin'] });
+  if (cashierId) publishEvent('sale.updated', payload, { roles: ['cashier'], userIds: [cashierId] });
+};
+
 const publishInventoryUpdated = ({ reason = 'unknown', productCodes = [] } = {}) => {
   publishEvent('inventory.updated', {
     reason,
@@ -235,6 +242,7 @@ module.exports = {
   revokeRealtimeSession,
   publishEvent,
   publishSaleCreated,
+  publishSaleUpdated,
   publishSpecialOrderUpdated,
   publishInventoryUpdated,
   publishSettingsUpdated,

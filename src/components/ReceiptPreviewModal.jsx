@@ -1,5 +1,6 @@
 import React from 'react';
 import { formatCurrency } from '../utils/numberFormat';
+import { isVoidedOrderConfirmation } from '../utils/saleVoid';
 
 const formatReceiptDate = (value) => {
   if (!value) return '';
@@ -23,6 +24,7 @@ const hasSavedNumber = (value) => value !== null
 const ReceiptPreviewModal = ({
   transaction,
   settings = {},
+  isOrderConfirmation = false,
   subtitle = 'Official record copy',
   isReprint = false,
   printStatus = 'idle',
@@ -40,16 +42,17 @@ const ReceiptPreviewModal = ({
   const items = Array.isArray(transaction.items) ? transaction.items : [];
   const isPrinting = printStatus === 'printing';
   const isPrinted = printStatus === 'success';
+  const isVoidedConfirmation = isVoidedOrderConfirmation(transaction, isOrderConfirmation);
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-      <div className="flex max-h-[90vh] w-full max-w-[58mm] flex-col overflow-hidden rounded-xl bg-white shadow-2xl" role="dialog" aria-modal="true" aria-label="Receipt preview">
+      <div className="flex max-h-[90vh] w-full max-w-[58mm] flex-col overflow-hidden rounded-xl bg-white shadow-2xl" role="dialog" aria-modal="true" aria-label={isOrderConfirmation ? 'Order Confirmation preview' : 'Receipt preview'}>
         <div className="flex items-center justify-between border-b border-gray-100 bg-gray-50 p-3">
           <div>
-            <h3 className="text-lg font-semibold text-gray-800">{isCredit ? 'Credit Sales Receipt' : 'Cash Sales Receipt'}</h3>
+            <h3 className="text-lg font-semibold text-gray-800">{isOrderConfirmation ? 'Order Confirmation' : isCredit ? 'Credit Sales Receipt' : 'Cash Sales Receipt'}</h3>
             <p className="mt-0.5 text-[11px] text-gray-500">{subtitle}</p>
           </div>
-          <button type="button" onClick={onClose} disabled={isPrinting} className="text-gray-400 hover:text-gray-600 disabled:opacity-50" aria-label="Close receipt preview">
+          <button type="button" onClick={onClose} disabled={isPrinting} className="text-gray-400 hover:text-gray-600 disabled:opacity-50" aria-label={isOrderConfirmation ? 'Close Order Confirmation preview' : 'Close receipt preview'}>
             <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>
           </button>
         </div>
@@ -65,9 +68,15 @@ const ReceiptPreviewModal = ({
               </div>
             </div>
 
+            {isVoidedConfirmation && (
+              <div className="mb-2 border-y border-rose-200 bg-rose-50 py-1.5 text-center text-[11px] font-bold tracking-[0.18em] text-rose-700">
+                VOIDED
+              </div>
+            )}
+
             <div className="mb-2 border-t border-dashed border-gray-200 py-2">
               <div className="mb-1 flex justify-between gap-2">
-                <span className="shrink-0 text-gray-500">Receipt No.:</span>
+                <span className="shrink-0 text-gray-500">{isOrderConfirmation ? 'Transaction ID:' : 'Receipt No.:'}</span>
                 <span className="break-all text-right font-mono font-semibold text-gray-800">{transaction.id}</span>
               </div>
               {isSpecialOrder && (
@@ -89,7 +98,7 @@ const ReceiptPreviewModal = ({
                 </div>
               )}
               <div className="mb-1 flex justify-between gap-2">
-                <span className="shrink-0 text-gray-500">Date:</span>
+                <span className="shrink-0 text-gray-500">{isOrderConfirmation ? 'Date & Time:' : 'Date:'}</span>
                 <span className="text-right text-gray-800">{formatReceiptDate(transaction.date)}</span>
               </div>
               <div className="mb-1 flex justify-between gap-2">
@@ -103,7 +112,7 @@ const ReceiptPreviewModal = ({
                 </div>
               )}
               <div className="flex justify-between gap-2">
-                <span className="shrink-0 text-gray-500">Payment:</span>
+                <span className="shrink-0 text-gray-500">{isOrderConfirmation ? 'Payment Type:' : 'Payment:'}</span>
                 <span className="text-right text-gray-800">{transaction.paymentMethod || 'Cash'}</span>
               </div>
             </div>
@@ -137,6 +146,12 @@ const ReceiptPreviewModal = ({
             </table>
 
             <div className="space-y-1 border-t border-gray-200 pt-2 text-right text-[9px] leading-tight">
+              {isOrderConfirmation && hasSavedNumber(transaction.netAmount) && (
+                <div className="flex justify-between text-gray-600"><span>Net Amount</span><span>{formatCurrency(transaction.netAmount)}</span></div>
+              )}
+              {isOrderConfirmation && hasSavedNumber(transaction.vatAmount) && (
+                <div className="flex justify-between text-gray-600"><span>VAT</span><span>{formatCurrency(transaction.vatAmount)}</span></div>
+              )}
               <div className="mt-1 flex justify-between border-t border-gray-900 pt-1 text-[13px] font-semibold text-gray-900">
                 <span>TOTAL</span>
                 <span>{formatCurrency(transaction.total)}</span>
@@ -194,10 +209,27 @@ const ReceiptPreviewModal = ({
               )}
             </div>
 
+            {isVoidedConfirmation && (
+              <div className="mt-2 border-t border-dashed border-rose-200 pt-2 text-[9px] leading-tight text-gray-600">
+                <div className="flex justify-between gap-2">
+                  <span className="shrink-0 text-gray-500">Voided At:</span>
+                  <span className="text-right">{formatReceiptDate(transaction.voidInfo?.voidedAt)}</span>
+                </div>
+                <div className="mt-1 flex items-start justify-between gap-2">
+                  <span className="shrink-0 text-gray-500">Void Reason:</span>
+                  <span className="break-words text-right">{transaction.voidInfo?.reason || '-'}</span>
+                </div>
+              </div>
+            )}
+
             <div className="mt-3 text-center text-[9px] leading-tight text-gray-400">
-              <p>Thank you for your business.</p>
-              <p>Please keep this receipt for returns and support.</p>
-              {isReprint && <p className="mt-2 font-mono">** REPRINT **</p>}
+              {isOrderConfirmation ? <p>For transaction reference only.</p> : (
+                <>
+                  <p>Thank you for your business.</p>
+                  <p>Please keep this receipt for returns and support.</p>
+                  {isReprint && <p className="mt-2 font-mono">** REPRINT **</p>}
+                </>
+              )}
             </div>
           </div>
         </div>
