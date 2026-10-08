@@ -15,7 +15,7 @@ require.cache[realtimePath] = {
 };
 
 const { executeSaleVoid } = require('../src/services/saleVoidService');
-const { voidSale } = require('../src/controllers/saleController');
+const { voidSale, updateSaleTransactionReference } = require('../src/controllers/saleController');
 
 const SALE_ID = '68a01234567890abcdef1234';
 const USER_ID = '68a01234567890abcdef2222';
@@ -30,7 +30,7 @@ const saleFixture = (overrides = {}) => ({
   paymentStatus: 'Paid',
   cashier: '68a01234567890abcdef3333',
   totalAmount: 350,
-  notes: 'Preserve this Sale metadata',
+  transactionReference: { referenceNumber: 'KEEP-REF', supportingDocument: { key: 'keep.png' } },
   items: [
     { product: PRODUCT_A, code: 'SKU-A', name: 'Variant A', quantity: 2 },
     { product: PRODUCT_A, code: 'SKU-A', name: 'Variant A', quantity: 3 },
@@ -118,7 +118,7 @@ test('atomic void aggregates exact product variants, audits restoration, and pre
   assert.equal(result.sale.voidInfo.voidedByName, 'Admin User');
   assert.equal(result.sale.voidInfo.authorizationMethod, 'role_authorized');
   assert.equal(result.sale.voidInfo.requestId, 'sale-void:req-1');
-  assert.equal(result.sale.notes, 'Preserve this Sale metadata');
+  assert.deepEqual(result.sale.transactionReference, { referenceNumber: 'KEEP-REF', supportingDocument: { key: 'keep.png' } });
   assert.equal(state.products[PRODUCT_A].stock, 15);
   assert.equal(state.products[PRODUCT_B].stock, 5);
   assert.deepEqual(result.restorations.map(({ code, quantity }) => ({ code, quantity })), [
@@ -233,6 +233,20 @@ test('void endpoint trims input and returns a current History contract on succes
   assert.equal(received.requestId, 'sale-void:req-3');
   assert.equal(res.body.sale.status, 'voided');
   assert.equal(res.body.sale.voidEligible, false);
+});
+
+test('voided Sale reference metadata is server-enforced read-only', async () => {
+  const res = responseCapture();
+  let uploaded = false;
+  await updateSaleTransactionReference({
+    user: { _id: USER_ID, role: 'admin' }, params: { id: SALE_ID }, body: { referenceNumber: 'NEW' },
+  }, res, assert.fail, {
+    findSale: async () => saleFixture({ status: 'voided', cashier: USER_ID }),
+    upload: async () => { uploaded = true; },
+  });
+  assert.equal(res.statusCode, 409);
+  assert.equal(uploaded, false);
+  assert.match(res.body.message, /read-only/i);
 });
 
 test('frontend candidate and voided Order Confirmation helpers enforce role, online, persisted, and document boundaries', async () => {

@@ -1,0 +1,5 @@
+{
+  "maxLength": 80,
+  "digitsPattern": "^\\d+$",
+  "numericMessage": "Reference No. must contain numbers only."
+}

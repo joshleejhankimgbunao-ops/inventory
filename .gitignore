@@ -44,3 +44,5 @@ tools/.copilot-*.log
 
 # Authenticated Proof of Payment image uploads
 /server/uploads/payment-proofs/
+server/uploads/sale-void-proofs/
+server/uploads/transaction-supporting-documents/

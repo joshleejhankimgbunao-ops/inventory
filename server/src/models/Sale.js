@@ -36,6 +36,27 @@ const saleItemSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const supportingDocumentSchema = new mongoose.Schema({
+  key: { type: String, required: true, trim: true },
+  originalName: { type: String, required: true, trim: true },
+  mimeType: { type: String, required: true, enum: ['image/jpeg', 'image/png'] },
+  size: { type: Number, required: true, min: 1 },
+  uploadedAt: { type: Date, required: true, default: Date.now },
+}, { _id: false });
+
+const transactionReferenceSchema = new mongoose.Schema({
+  referenceNumber: { type: String, default: '', trim: true, maxlength: 80 },
+  supportingDocument: { type: supportingDocumentSchema, default: null },
+}, { _id: false });
+
+const voidSupportingProofSchema = new mongoose.Schema({
+  key: { type: String, required: true, trim: true },
+  originalName: { type: String, required: true, trim: true },
+  mimeType: { type: String, required: true, enum: ['image/jpeg', 'image/png', 'application/pdf'] },
+  size: { type: Number, required: true, min: 1, max: 5 * 1024 * 1024 },
+  uploadedAt: { type: Date, required: true, default: Date.now },
+}, { _id: false });
+
 const saleSchema = new mongoose.Schema(
   {
     status: {
@@ -52,6 +73,7 @@ const saleSchema = new mongoose.Schema(
         voidedByName: { type: String, trim: true, required: true },
         authorizationMethod: { type: String, trim: true, required: true },
         requestId: { type: String, trim: true, required: true },
+        supportingProof: { type: voidSupportingProofSchema, default: null },
       }, { _id: false }),
       default: null,
     },
@@ -175,6 +197,10 @@ const saleSchema = new mongoose.Schema(
       unique: true,
       sparse: true,
       index: true,
+    },
+    transactionReference: {
+      type: transactionReferenceSchema,
+      default: null,
     },
     cashier: {
       type: mongoose.Schema.Types.ObjectId,

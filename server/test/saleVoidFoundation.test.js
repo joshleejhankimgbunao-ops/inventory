@@ -51,20 +51,27 @@ test('Sale lifecycle defaults new records to completed while legacy records rema
 
 test('shared reporting filters exclude voided Sales from Dashboard and Reports metrics', async () => {
   const { getValidSales } = await import('../../shared/saleLifecycle.mjs');
+  const { getPreviousPeriodMetrics, getPreviousSalesReportMetrics } = await import('../../src/utils/dashboardTrend.js');
+  const period = {
+    previousStart: new Date('2026-01-01T00:00:00.000Z'),
+    previousEnd: new Date('2026-02-01T00:00:00.000Z'),
+  };
   const transactions = [
     { id: 'legacy', date: '2026-01-10T00:00:00.000Z', total: 100, paymentMethod: 'cash', items: [{ qty: 2 }] },
     { id: 'completed', status: 'completed', date: '2026-01-11T00:00:00.000Z', total: 200, paymentMethod: 'cash', items: [{ qty: 3 }] },
     { id: 'voided', status: 'voided', date: '2026-01-12T00:00:00.000Z', total: 900, paymentMethod: 'cash', items: [{ qty: 9 }] },
   ];
 
-  const valid = getValidSales(transactions);
-  assert.deepEqual(valid.map((sale) => sale.id), ['legacy', 'completed']);
-  assert.equal(valid.reduce((sum, sale) => sum + sale.total, 0), 300);
-  assert.equal(valid.length, 2);
-  assert.equal(valid.reduce((sum, sale) => sum + sale.items.reduce((itemSum, item) => itemSum + item.qty, 0), 0), 5);
+  assert.deepEqual(getValidSales(transactions).map((sale) => sale.id), ['legacy', 'completed']);
+  assert.deepEqual(getPreviousPeriodMetrics(transactions, period), { sales: 300, orders: 2 });
+  assert.deepEqual(getPreviousSalesReportMetrics(transactions, [], period), {
+    collectedRevenue: 300,
+    orders: 2,
+    items: 5,
+  });
 });
 
-test('History retains a voided Sale and exposes public void metadata', () => {
+test('History retains a voided Sale and exposes only public void/reference metadata', () => {
   const transaction = mapSaleToTransactionContract({
     ...regularCashSale({
       status: 'voided',
@@ -77,6 +84,24 @@ test('History retains a voided Sale and exposes public void metadata', () => {
         voidedByName: 'Admin User',
         authorizationMethod: 'admin-session',
         requestId: 'void:req-1',
+        supportingProof: {
+          key: 'private-sale-void-proof.png',
+          originalName: 'void-proof.png',
+          mimeType: 'image/png',
+          size: 456,
+          uploadedAt: new Date('2026-01-12T01:00:00.000Z'),
+        },
+      },
+      transactionReference: {
+        referenceNumber: 'REF-123',
+        supportingDocument: {
+          key: 'private/r2/object-key.png',
+          originalName: 'proof.png',
+          mimeType: 'image/png',
+          size: 321,
+          uploadedAt: new Date('2026-01-12T00:30:00.000Z'),
+          bucket: 'private-bucket',
+        },
       },
       items: [{ product: PRODUCT_ID, name: 'Test Product', code: 'TEST-1', quantity: 1, unitPrice: 100, subtotal: 100 }],
     }),
@@ -84,6 +109,12 @@ test('History retains a voided Sale and exposes public void metadata', () => {
 
   assert.equal(transaction.status, 'voided');
   assert.equal(transaction.voidInfo.reason, 'Duplicate transaction');
+  assert.equal(transaction.voidInfo.supportingProof.originalName, 'void-proof.png');
+  assert.equal('key' in transaction.voidInfo.supportingProof, false);
+  assert.equal(transaction.transactionReference.referenceNumber, 'REF-123');
+  assert.equal(transaction.transactionReference.supportingDocument.originalName, 'proof.png');
+  assert.equal('key' in transaction.transactionReference.supportingDocument, false);
+  assert.equal('bucket' in transaction.transactionReference.supportingDocument, false);
 });
 
 test('valid-sales API excludes voided records while History does not filter them out', async (context) => {

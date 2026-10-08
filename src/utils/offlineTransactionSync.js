@@ -6,6 +6,7 @@ export const reconcileSyncedSale = (transactions, queued, sale) => {
   if (!/^[a-f\d]{24}$/i.test(String(sale?._id || ''))) return transactions;
   const sourceId = String(sale._id);
   const requestId = sale.clientRequestId || getQueueEntryKey(queued);
+  const document = sale.transactionReference?.supportingDocument;
   const incoming = {
     ...queued,
     id: `TRX-${sourceId.slice(-8).toUpperCase()}`,
@@ -26,6 +27,13 @@ export const reconcileSyncedSale = (transactions, queued, sale) => {
     grossAmount: sale.grossAmount,
     vatMode: sale.vatMode,
     isArchived: Boolean(sale.isArchived),
+    transactionReference: sale.transactionReference ? {
+      referenceNumber: sale.transactionReference.referenceNumber || '',
+      supportingDocument: document ? {
+        originalName: document.originalName, mimeType: document.mimeType,
+        size: document.size, uploadedAt: document.uploadedAt,
+      } : null,
+    } : null,
     items: (sale.items || []).map((item) => ({
       id: String(item.product || ''), code: item.code, name: item.name,
       qty: item.quantity, price: item.unitPrice, subtotal: item.subtotal,
@@ -154,7 +162,10 @@ export const createOfflineSaleRequest = (transaction = {}) => ({
   options: {
     vatMode: transaction.vatMode,
     ...(String(transaction.paymentMethod || '').toLowerCase() === 'cash'
-      ? { cashTendered: transaction.cashTendered ?? transaction.cash }
+      ? {
+        cashTendered: transaction.cashTendered ?? transaction.cash,
+        transactionReferenceNumber: String(transaction.transactionReference?.referenceNumber || '').trim(),
+      }
       : {}),
   },
 });

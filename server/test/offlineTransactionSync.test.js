@@ -12,6 +12,7 @@ const queuedSale = (suffix, overrides = {}) => ({
   paymentMethod: 'Cash',
   cashTendered: '100.00',
   vatMode: 'vatable',
+  transactionReference: { referenceNumber: '00123456', supportingDocument: null },
   items: [{ id: `product-${suffix}`, qty: 1 }],
   ownerUserId: OWNER_A,
   ...overrides,
@@ -45,7 +46,31 @@ test('enabled reconnect sync uses the queued stable request token and removes on
   assert.equal(result.status, 'synced');
   assert.equal(requests.length, 1);
   assert.equal(requests[0][2], 'sale:one');
+  assert.equal(requests[0][3].transactionReferenceNumber, '00123456');
   assert.deepEqual(result.queue, [second]);
+});
+
+test('offline Cash sync preserves a leading-zero numeric Reference No. and never queues document data', async () => {
+  const {
+    addOfflineTransactionToQueue,
+    createOfflineSaleRequest,
+    getOfflineSyncQueueKey,
+    readOfflineSyncQueue,
+  } = await loadOfflineSync();
+  const sale = queuedSale('reference', {
+    transactionReference: {
+      referenceNumber: '00123456789',
+      supportingDocument: { originalName: 'must-not-sync.jpg', data: 'ignored' },
+    },
+  });
+  const queue = addOfflineTransactionToQueue([], sale, OWNER_A);
+  const storage = new Map([[getOfflineSyncQueueKey(OWNER_A), JSON.stringify(queue)]]);
+  const restored = readOfflineSyncQueue({ getItem: (key) => storage.get(key) || null }, OWNER_A);
+  const request = createOfflineSaleRequest(restored[0]);
+
+  assert.equal(restored[0].transactionReference.referenceNumber, '00123456789');
+  assert.equal(request.options.transactionReferenceNumber, '00123456789');
+  assert.equal(Object.hasOwn(request.options, 'supportingDocument'), false);
 });
 
 test('disabled reconnect leaves queued sales untouched and makes no request', async () => {

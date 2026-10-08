@@ -11,6 +11,15 @@ const { publishSaleCreated, publishInventoryUpdated, publishCreditTransactionsUp
 const { normalizeVatMode, computeTransactionVatBreakdown, toMoney } = require('../utils/vat');
 const { parseStrictWholeNumber } = require('../utils/numericValidation');
 const { isMoneyInputTooLarge, parseSafeMoneyToCentavos } = require('../utils/moneyValidation');
+const { normalizeHumanReadable } = require('../../../shared/textNormalization.cjs');
+const {
+  TRANSACTION_REFERENCE_MAX_LENGTH,
+  TRANSACTION_REFERENCE_NUMERIC_MESSAGE,
+  isValidTransactionReferenceNumber,
+} = require('../../../shared/transactionReference.cjs');
+const { uploadDocument, removeDocument, getDocument } = require('../services/transactionSupportingDocument');
+const { uploadProof, removeProof, getProof } = require('../services/saleVoidProof');
+const { isObjectNotFoundError } = require('../services/r2StorageService');
 
 const MIN_CREDIT_TERM_DAYS = 1;
 const MAX_CREDIT_TERM_DAYS = 60;
@@ -47,7 +56,7 @@ const resolveCreditPaymentMode = ({ mode, other }) => {
     return CREDIT_PAYMENT_MODE_LABELS[normalizedMode];
   }
 
-  const customMode = String(other || '').trim();
+  const customMode = normalizeHumanReadable(other);
   return customMode || null;
 };
 
@@ -83,8 +92,29 @@ const normalizeClientRequestId = (value) => {
 };
 
 const resolveCashierName = (user) => {
-  return user?.displayName || user?.name || user?.username || 'Unknown';
+  return user?.name || user?.displayName || user?.username || 'Unknown';
 };
+
+const publicTransactionReference = (reference) => {
+  if (!reference) return null;
+  const document = reference.supportingDocument;
+  return {
+    referenceNumber: String(reference.referenceNumber || '').trim(),
+    supportingDocument: document ? {
+      originalName: document.originalName,
+      mimeType: document.mimeType,
+      size: document.size,
+      uploadedAt: document.uploadedAt,
+    } : null,
+  };
+};
+
+const publicVoidSupportingProof = (proof) => proof ? {
+  originalName: proof.originalName,
+  mimeType: proof.mimeType,
+  size: proof.size,
+  uploadedAt: proof.uploadedAt,
+} : null;
 
 const mapSaleToTransactionContract = (sale) => {
   const saleObj = typeof sale.toObject === 'function' ? sale.toObject() : sale;
@@ -92,7 +122,7 @@ const mapSaleToTransactionContract = (sale) => {
   const displayId = rawSaleId
     ? `TRX-${rawSaleId.slice(-8).toUpperCase()}`
     : `TRX-${Date.now().toString().slice(-8)}`;
-  const cashierLabel = saleObj?.cashier?.displayName || saleObj?.cashier?.name || saleObj?.cashier?.username || saleObj?.cashierName || 'Unknown';
+  const cashierLabel = saleObj?.cashier?.name || saleObj?.cashier?.displayName || saleObj?.cashier?.username || saleObj?.cashierName || 'Unknown';
   const cashierUser = saleObj?.cashier?._id
     ? {
       id: String(saleObj.cashier._id),
@@ -120,6 +150,7 @@ const mapSaleToTransactionContract = (sale) => {
       voidedByName: saleObj.voidInfo.voidedByName,
       authorizationMethod: saleObj.voidInfo.authorizationMethod,
       requestId: saleObj.voidInfo.requestId,
+      supportingProof: publicVoidSupportingProof(saleObj.voidInfo.supportingProof),
     } : null,
     date: saleObj.createdAt,
     cashierId: String(saleObj?.cashier?._id || saleObj?.cashier || ''),
@@ -150,6 +181,7 @@ const mapSaleToTransactionContract = (sale) => {
     dueDate: saleObj.dueDate || null,
     cashImpactAmount: saleObj.paymentMethod === 'credit' ? 0 : Number(saleObj.totalAmount || 0),
     notes: saleObj.notes || '',
+    transactionReference: publicTransactionReference(saleObj.transactionReference),
     isArchived: Boolean(saleObj.isArchived),
     items: (saleObj.items || []).map((item, index) => ({
       id: item.product ? String(item.product) : `${saleObj._id}-${index}`,
@@ -166,6 +198,8 @@ const listSales = async (req, res, next) => {
   try {
     const includeArchived = parseBool(req.query?.includeArchived, true);
     const query = includeArchived ? {} : { isArchived: false };
+    // This endpoint is a valid-sales feed. The separate history-view endpoint
+    // deliberately retains voided records for audit/history.
     query.status = { $ne: 'voided' };
 
     query.$or = [
@@ -211,11 +245,39 @@ const executeSaleCreation = async ({ req, session = null, clientRequestId = '' }
   const saleType = String(req.body?.saleType || '').trim().toLowerCase() === 'special-order' ? 'special-order' : 'regular';
   const customerId = String(req.body?.customerId || '').trim();
   const creditTermDays = parseCreditTermDays(req.body?.termDays);
+  const hasTransactionReferenceNumber = Object.prototype.hasOwnProperty.call(req.body || {}, 'transactionReferenceNumber');
+  if (hasTransactionReferenceNumber && typeof req.body.transactionReferenceNumber !== 'string') {
+    const referenceError = new Error('Reference No. must be text.');
+    referenceError.status = 400;
+    throw referenceError;
+  }
+  const transactionReferenceNumber = hasTransactionReferenceNumber
+    ? String(req.body.transactionReferenceNumber || '').trim()
+    : '';
+  if (hasTransactionReferenceNumber && !transactionReferenceNumber) {
+    const referenceError = new Error('Provide a Reference No. for an offline Cash Sale.');
+    referenceError.status = 400;
+    throw referenceError;
+  }
+  if (hasTransactionReferenceNumber && (transactionReferenceNumber.length > TRANSACTION_REFERENCE_MAX_LENGTH
+    || !isValidTransactionReferenceNumber(transactionReferenceNumber))) {
+    const referenceError = new Error(transactionReferenceNumber.length > TRANSACTION_REFERENCE_MAX_LENGTH
+      ? `Reference No. must be ${TRANSACTION_REFERENCE_MAX_LENGTH} characters or fewer.`
+      : TRANSACTION_REFERENCE_NUMERIC_MESSAGE);
+    referenceError.status = 400;
+    throw referenceError;
+  }
 
   if (!paymentMethod) {
     const paymentMethodError = new Error('Unsupported payment method.');
     paymentMethodError.status = 400;
     throw paymentMethodError;
+  }
+
+  if (transactionReferenceNumber && paymentMethod !== 'cash') {
+    const referenceError = new Error('Offline Transaction Reference is only supported for Cash Sales.');
+    referenceError.status = 400;
+    throw referenceError;
   }
 
   if (!Array.isArray(items) || items.length === 0) {
@@ -379,6 +441,7 @@ const executeSaleCreation = async ({ req, session = null, clientRequestId = '' }
     notes: isCreditSale ? `Preferred mode of payment: ${creditPaymentMode}` : notes,
     cashier: req.user._id,
     cashierName: resolveCashierName(req.user),
+    ...(transactionReferenceNumber ? { transactionReference: { referenceNumber: transactionReferenceNumber, supportingDocument: null } } : {}),
     ...(saleType === 'special-order' ? { specialOrderId: req.body?.specialOrderId || null, specialOrderNumber: String(req.body?.specialOrderNumber || '').trim() } : {}),
     ...(clientRequestId ? { clientRequestId } : {}),
   }], session ? { session } : undefined);
@@ -510,9 +573,6 @@ const createSale = async (req, res, next) => {
   }
 };
 
-const canAccessSale = (sale, user) => user?.role !== 'cashier'
-  || String(sale?.cashier?._id || sale?.cashier || '') === String(user?._id || '');
-
 const getSaleHistoryView = async (req, res, next) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ message: 'Invalid Sale ID.' });
@@ -526,6 +586,11 @@ const getSaleHistoryView = async (req, res, next) => {
 };
 
 const voidSale = async (req, res, next, dependencies = {}) => {
+  const upload = dependencies.uploadProof || uploadProof;
+  const remove = dependencies.removeProof || removeProof;
+  const findSale = dependencies.findSale || ((id) => Sale.findById(id));
+  let uploaded = null;
+  let persisted = false;
   try {
     if (!['admin', 'superadmin'].includes(String(req.user?.role || '').toLowerCase())) {
       return res.status(403).json({ message: 'Only an Admin or Super Admin can void a Sale.' });
@@ -542,14 +607,24 @@ const voidSale = async (req, res, next, dependencies = {}) => {
     if (!requestId) return res.status(400).json({ message: 'Void request ID is required.' });
     if (requestId.length > 128) return res.status(400).json({ message: 'Void request ID must be 128 characters or fewer.' });
 
+    if (req.file) {
+      const existingSale = await findSale(req.params.id);
+      if (!existingSale) return res.status(404).json({ message: 'Sale not found.' });
+      if (getSaleStatus(existingSale) !== 'voided') uploaded = await upload(req.file);
+    }
+
     const result = await (dependencies.executeSaleVoid || executeSaleVoid)({
       saleId: req.params.id,
       reason,
       requestId,
+      supportingProof: uploaded,
       user: req.user,
       ipAddress: req.ip,
       userAgent: req.get?.('user-agent') || '',
     });
+    persisted = Boolean(uploaded?.key
+      && !result.replayed
+      && String(result.sale?.voidInfo?.supportingProof?.key || '') === String(uploaded.key));
     return res.status(200).json({
       sale: mapSaleToTransactionContract(result.sale),
       replayed: Boolean(result.replayed),
@@ -562,6 +637,126 @@ const voidSale = async (req, res, next, dependencies = {}) => {
         message: 'Sale voiding is temporarily unavailable because the database transaction service is not ready.',
       });
     }
+    if (error?.status) return res.status(error.status).json({ message: error.message });
+    return next(error);
+  } finally {
+    if (uploaded?.key && !persisted) {
+      try { await remove(uploaded.key); } catch (error) { console.error('Unable to remove orphan Sale Void proof:', error.message); }
+    }
+  }
+};
+
+const canAccessSale = (sale, user) => user?.role !== 'cashier'
+  || String(sale?.cashier?._id || sale?.cashier || '') === String(user?._id || '');
+
+const updateSaleTransactionReference = async (req, res, next, dependencies = {}) => {
+  const findSale = dependencies.findSale || ((id) => Sale.findById(id));
+  const updateSale = dependencies.updateSale || ((query, update) => Sale.findOneAndUpdate(query, update, { new: true, runValidators: true }));
+  const upload = dependencies.upload || uploadDocument;
+  const remove = dependencies.remove || removeDocument;
+  let uploaded = null;
+  let persisted = false;
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ message: 'Invalid Sale ID.' });
+    const sale = await findSale(req.params.id);
+    if (!sale) return res.status(404).json({ message: 'Sale not found.' });
+    if (!canAccessSale(sale, req.user)) return res.status(403).json({ message: 'You can only update your own sales.' });
+    if (getSaleStatus(sale) === 'voided') return res.status(409).json({ message: 'Transaction references are read-only after a Sale is voided.' });
+
+    const hasNumber = Object.prototype.hasOwnProperty.call(req.body || {}, 'referenceNumber');
+    if (hasNumber && typeof req.body.referenceNumber !== 'string') {
+      return res.status(400).json({ message: 'Reference No. must be text.' });
+    }
+    const referenceNumber = hasNumber ? String(req.body.referenceNumber || '').trim() : '';
+    if (referenceNumber.length > TRANSACTION_REFERENCE_MAX_LENGTH) {
+      return res.status(400).json({ message: `Reference No. must be ${TRANSACTION_REFERENCE_MAX_LENGTH} characters or fewer.` });
+    }
+    if (referenceNumber && !isValidTransactionReferenceNumber(referenceNumber)) {
+      return res.status(400).json({ message: TRANSACTION_REFERENCE_NUMERIC_MESSAGE });
+    }
+    const existingReferenceNumber = String(sale.transactionReference?.referenceNumber || '').trim();
+    const existingDocument = sale.transactionReference?.supportingDocument || null;
+    const effectiveReferenceNumber = hasNumber ? referenceNumber : existingReferenceNumber;
+    if (!effectiveReferenceNumber && !req.file && !existingDocument) {
+      return res.status(400).json({ message: 'Provide a Reference No. or Supporting Document.' });
+    }
+
+    if (req.file) uploaded = await upload(req.file);
+    const oldKey = sale.transactionReference?.supportingDocument?.key || null;
+    const update = { $set: { transactionReference: {
+      referenceNumber: effectiveReferenceNumber,
+      supportingDocument: uploaded || existingDocument,
+    } } };
+    const query = { _id: sale._id, 'transactionReference.supportingDocument.key': oldKey };
+    const updated = await updateSale(query, update);
+    if (!updated) return res.status(409).json({ message: 'This reference was updated elsewhere. Refresh and retry.' });
+    persisted = true;
+    if (uploaded && oldKey && oldKey !== uploaded.key) {
+      try { await remove(oldKey); } catch (error) { console.error('Unable to remove replaced supporting document:', error.message); }
+    }
+    return res.json(mapSaleToTransactionContract(updated));
+  } catch (error) {
+    if (error?.status) return res.status(error.status).json({ message: error.message });
+    return next(error);
+  } finally {
+    if (uploaded?.key && !persisted) {
+      try { await remove(uploaded.key); } catch (error) { console.error('Unable to remove orphan supporting document:', error.message); }
+    }
+  }
+};
+
+const getSaleSupportingDocument = async (req, res, next, dependencies = {}) => {
+  const findSale = dependencies.findSale || ((id) => Sale.findById(id));
+  const read = dependencies.read || getDocument;
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ message: 'Invalid Sale ID.' });
+    const sale = await findSale(req.params.id);
+    if (!sale) return res.status(404).json({ message: 'Sale not found.' });
+    if (!canAccessSale(sale, req.user)) return res.status(403).json({ message: 'You can only view your own sales.' });
+    const document = sale.transactionReference?.supportingDocument;
+    if (!document?.key) return res.status(404).json({ message: 'Supporting Document is not available.' });
+    const stored = await read(document.key);
+    if (!stored) return res.status(404).json({ message: 'Supporting Document is not available.' });
+    res.set('Cache-Control', 'private, no-store');
+    res.type(document.mimeType);
+    if (stored.type === 'local') return res.sendFile(stored.filePath);
+    const body = stored.object?.Body;
+    if (typeof body?.pipe === 'function') { body.on('error', next); body.pipe(res); return undefined; }
+    if (typeof body?.transformToByteArray === 'function') return res.send(Buffer.from(await body.transformToByteArray()));
+    return res.status(404).json({ message: 'Supporting Document is not available.' });
+  } catch (error) {
+    if (isObjectNotFoundError(error)) return res.status(404).json({ message: 'Supporting Document is not available.' });
+    if (error?.status) return res.status(error.status).json({ message: error.message });
+    return next(error);
+  }
+};
+
+const safeDownloadName = (value, fallback) => String(value || fallback)
+  .replace(/[\r\n"]/g, '_')
+  .replace(/[^a-zA-Z0-9._ ()-]/g, '_');
+
+const getSaleVoidProof = async (req, res, next, dependencies = {}) => {
+  const findSale = dependencies.findSale || ((id) => Sale.findById(id));
+  const read = dependencies.read || getProof;
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ message: 'Invalid Sale ID.' });
+    const sale = await findSale(req.params.id);
+    if (!sale) return res.status(404).json({ message: 'Sale not found.' });
+    if (!canAccessSale(sale, req.user)) return res.status(403).json({ message: 'You can only view your own sales.' });
+    const proof = sale.voidInfo?.supportingProof;
+    if (!proof?.key) return res.status(404).json({ message: 'Supporting Proof is not available.' });
+    const stored = await read(proof.key);
+    if (!stored) return res.status(404).json({ message: 'Supporting Proof is not available.' });
+    res.set('Cache-Control', 'private, no-store');
+    res.set('Content-Disposition', `inline; filename="${safeDownloadName(proof.originalName, 'sale-void-proof')}"`);
+    res.type(proof.mimeType);
+    if (stored.type === 'local') return res.sendFile(stored.filePath);
+    const body = stored.object?.Body;
+    if (typeof body?.pipe === 'function') { body.on('error', next); body.pipe(res); return undefined; }
+    if (typeof body?.transformToByteArray === 'function') return res.send(Buffer.from(await body.transformToByteArray()));
+    return res.status(404).json({ message: 'Supporting Proof is not available.' });
+  } catch (error) {
+    if (isObjectNotFoundError(error)) return res.status(404).json({ message: 'Supporting Proof is not available.' });
     if (error?.status) return res.status(error.status).json({ message: error.message });
     return next(error);
   }
@@ -630,6 +825,9 @@ module.exports = {
   getSaleHistoryView,
   createSale,
   voidSale,
+  getSaleVoidProof,
+  updateSaleTransactionReference,
+  getSaleSupportingDocument,
   archiveSale,
   restoreSale,
 };

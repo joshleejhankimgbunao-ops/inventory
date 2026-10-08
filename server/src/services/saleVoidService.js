@@ -31,6 +31,7 @@ const executeSaleVoid = async ({
   saleId,
   reason,
   requestId,
+  supportingProof = null,
   user,
   ipAddress = '',
   userAgent = '',
@@ -78,6 +79,7 @@ const executeSaleVoid = async ({
       voidedByName: actorName(user),
       authorizationMethod: 'role_authorized',
       requestId,
+      supportingProof,
     };
     const voidedSale = await claimSale(saleId, voidInfo, session);
     if (!voidedSale) {
@@ -121,7 +123,7 @@ const executeSaleVoid = async ({
     await writeActivityLog({
       user,
       action: 'SALE_VOIDED',
-      details: `${saleLabel} voided. Reason: ${reason}. Restored: ${restoredSummary}.`,
+      details: `${saleLabel} voided. Reason: ${reason}. Supporting proof: ${supportingProof ? 'attached' : 'none'}. Restored: ${restoredSummary}.`,
       ipAddress,
       userAgent,
     });
