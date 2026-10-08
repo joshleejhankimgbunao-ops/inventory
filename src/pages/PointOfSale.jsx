@@ -1,9 +1,8 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import Pagination from '../components/Pagination';
-import toast from 'react-hot-toast';
 import { AnimatePresence, motion } from 'framer-motion';
 import { showToast } from '../utils/toastHelper';
-import { getAlternatives, getAlternativesByBudget, getBudgetTierByPrice, getLowStockThreshold, getStockStatus } from '../utils/recommendationLogic';
+import { getPosRecommendationAction, getRecommendationAvailability, getRelativePriceTier, getStockStatus } from '../utils/recommendationLogic';
 import { useInventory } from '../context/InventoryContext';
 import { useAuth } from '../context/AuthContext';
 import { getAuthToken, isApiConnectionFailure } from '../services/apiClient';
@@ -19,12 +18,16 @@ import {
     preventInvalidMoneyPaste,
     preventInvalidWholeNumberKeyDown,
     preventInvalidWholeNumberPaste,
-    sanitizeMoneyInput,
     sanitizeWholeNumberInput,
 } from '../utils/numericInput';
 import { formatCurrency } from '../utils/numberFormat';
+import { buildQuotationPrintLines, buildQuotationReceiptModel } from '../utils/quotationReceipt';
+import { normalizeHumanReadable } from '../utils/textNormalization';
 import { createClientRequestId } from '../utils/clientRequestId';
+import { removeSelectedCartItems, toggleAllCartItemSelections, toggleCartItemSelection } from '../utils/cartSelection';
 import { ROLES } from '../constants/roles';
+import TransactionReferenceModal from '../components/TransactionReferenceModal';
+import { ORDER_CONFIRMATION_PREVIEW_SIZE } from '../constants/orderConfirmationPreview';
 
 const getProductImageUrl = (item) => String(item?.imageUrl || '').trim();
 const QUOTATION_NAME_MAX_LENGTH = 32;
@@ -60,13 +63,26 @@ const formatCurrencyFromCentavos = (centavos) => {
     return `\u20B1${pesos.toLocaleString('en-PH')}.${remainingCentavos}`;
 };
 
+const MotionButton = motion.button;
+const MotionDiv = motion.div;
+
+const PosFieldTooltip = ({ id, children }) => (
+    <div
+        id={id}
+        role="tooltip"
+        className="pointer-events-none absolute bottom-full right-0 z-30 mb-2 hidden w-max max-w-[260px] group-hover/pos-field-tooltip:block"
+    >
+        <div className="rounded-lg bg-gray-900 px-3 py-2 text-[10px] font-semibold leading-snug text-white shadow-xl ring-1 ring-black/10">
+            {children}
+        </div>
+        <span className="absolute -bottom-1 right-4 h-2 w-2 rotate-45 bg-gray-900" aria-hidden="true" />
+    </div>
+);
+
 const ProductThumbnail = ({ item, className = '', onPreview, fit = 'cover' }) => {
     const imageUrl = getProductImageUrl(item);
-    const [imageFailed, setImageFailed] = useState(false);
-
-    useEffect(() => {
-        setImageFailed(false);
-    }, [imageUrl]);
+    const [failedImageUrl, setFailedImageUrl] = useState('');
+    const imageFailed = Boolean(imageUrl && failedImageUrl === imageUrl);
 
     const thumbnailClassName = `shrink-0 overflow-hidden rounded-xl border border-slate-200 bg-slate-50 ${className}`;
 
@@ -81,7 +97,7 @@ const ProductThumbnail = ({ item, className = '', onPreview, fit = 'cover' }) =>
                 <img
                     src={imageUrl}
                     alt={item?.name || item?.code || 'Product image'}
-                    onError={() => setImageFailed(true)}
+                    onError={() => setFailedImageUrl(imageUrl)}
                     className={`h-full w-full ${fit === 'contain' ? 'object-contain' : 'object-cover'}`}
                 />
             </button>
@@ -110,75 +126,14 @@ const PointOfSale = () => {
 
     const productListRef = useRef(null);
     const printLockRef = useRef(false);
-    const { processedInventory: inventory, setInventory, transactions, setTransactions, logAction, logActivity, addToSyncQueue, syncQueue, isOnline } = useInventory();
-    const { appSettings: settings, userPreferences, currentUserName, userRole } = useAuth();
+    const { processedInventory: inventory, setInventory, setTransactions, logAction, logActivity, addToSyncQueue, syncQueue, isOnline } = useInventory();
+    const { appSettings: settings, userPreferences, currentUserName, currentUserFullName, userRole } = useAuth();
     const canQuickAddCreditCustomer = userRole === ROLES.SUPER_ADMIN || userRole === ROLES.ADMIN;
 
     const showErrorDetails = (message, title = 'Action Failed') => {
         showToast(title, message, 'error', 'pos-action-error');
     };
 
-    const wrapText = (text, width = 32) => {
-        const source = String(text || '').trim();
-        if (!source) return [''];
-
-        const words = source.split(/\s+/);
-        const lines = [];
-        let current = '';
-
-        for (const word of words) {
-            const candidate = current ? `${current} ${word}` : word;
-            if (candidate.length <= width) {
-                current = candidate;
-                continue;
-            }
-
-            if (current) {
-                lines.push(current);
-            }
-
-            if (word.length > width) {
-                let start = 0;
-                while (start < word.length) {
-                    lines.push(word.slice(start, start + width));
-                    start += width;
-                }
-                current = '';
-                continue;
-            }
-
-            current = word;
-        }
-
-        if (current) {
-            lines.push(current);
-        }
-
-        return lines.length > 0 ? lines : [''];
-    };
-    const getTierDisplayLabel = (tier) => {
-        if (tier === 'low') return 'Value';
-        if (tier === 'moderate') return 'Standard';
-        if (tier === 'high') return 'Premium';
-        return 'Standard';
-    };
-    const getRelativeTierKey = (candidatePrice, selectedPrice) => {
-        const basePrice = Number(selectedPrice || 0);
-        const altPrice = Number(candidatePrice || 0);
-
-        // Fallback to global tiering when selected price is invalid.
-        if (!Number.isFinite(basePrice) || basePrice <= 0) {
-            return getBudgetTierByPrice(altPrice, settings);
-        }
-
-        // Use +/-10% with a minimum absolute band to avoid over-sensitivity on low-priced items.
-        const toleranceBand = Math.max(basePrice * 0.1, 20);
-        const delta = altPrice - basePrice;
-
-        if (delta < -toleranceBand) return 'low';
-        if (delta > toleranceBand) return 'high';
-        return 'moderate';
-    };
     const normalizeVariantOption = (value) => {
         return String(value || '')
             .trim()
@@ -230,10 +185,15 @@ const PointOfSale = () => {
     };
 
     const [cart, setCart] = useState([]);
+    const [isCartSelectionMode, setIsCartSelectionMode] = useState(false);
+    const [selectedCartItemCodes, setSelectedCartItemCodes] = useState([]);
+    const [isBulkRemoveConfirmationOpen, setIsBulkRemoveConfirmationOpen] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
     const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
     const [selectedCategory, setSelectedCategory] = useState('All');
-    const [recommendationModal, setRecommendationModal] = useState({ isOpen: false, item: null, alternatives: [], budgetOptions: null }); // Recommendation Modal State
+    const [recommendationModal, setRecommendationModal] = useState({ isOpen: false, item: null, alternatives: [], budgetOptions: null, kind: 'alternative' }); // Recommendation Modal State
+    const [recommendationChooserItem, setRecommendationChooserItem] = useState(null);
+    const [productDetailsItem, setProductDetailsItem] = useState(null);
     
     // Payment State
     const [paymentType, setPaymentType] = useState('cash');
@@ -263,10 +223,13 @@ const PointOfSale = () => {
     // Receipt Modal State
     const [showReceipt, setShowReceipt] = useState(false);
     const [lastTransaction, setLastTransaction] = useState(null);
+    const [pendingReferenceSaleId, setPendingReferenceSaleId] = useState('');
+    const [pendingOfflineCheckout, setPendingOfflineCheckout] = useState(null);
 
     const creditPaymentModeRef = useRef(null);
     const creditCustomerComboboxRef = useRef(null);
     const customCreditPaymentModeInputRef = useRef(null);
+    const cartSelectionEntryButtonRef = useRef(null);
     const quickAddCreditCustomerInFlightRef = useRef(false);
     const quickAddCreditCustomerRequestIdRef = useRef('');
 
@@ -283,6 +246,15 @@ const PointOfSale = () => {
             window.clearTimeout(timeoutId);
         };
     }, [searchQuery]);
+
+    useEffect(() => {
+        if (!recommendationChooserItem) return undefined;
+        const handleKeyDown = (event) => {
+            if (event.key === 'Escape') setRecommendationChooserItem(null);
+        };
+        document.addEventListener('keydown', handleKeyDown);
+        return () => document.removeEventListener('keydown', handleKeyDown);
+    }, [recommendationChooserItem]);
 
     useEffect(() => {
         if (!isCreditPaymentModeOpen) return undefined;
@@ -574,7 +546,7 @@ const PointOfSale = () => {
         event.preventDefault();
         if (quickAddCreditCustomerInFlightRef.current) return;
 
-        const name = String(quickAddCreditCustomerName || '').trim();
+        const name = normalizeHumanReadable(quickAddCreditCustomerName);
         if (!name) {
             showErrorDetails('Customer name is required.', 'Missing Customer Name');
             return;
@@ -643,7 +615,7 @@ const PointOfSale = () => {
 
     const resolveCreditPaymentModeLabel = () => {
         if (selectedCreditPaymentMode === 'other') {
-            const customMode = String(customCreditPaymentMode || '').trim();
+            const customMode = normalizeHumanReadable(customCreditPaymentMode);
             return customMode;
         }
         return String(selectedCreditPaymentMode || '').trim();
@@ -679,18 +651,6 @@ const PointOfSale = () => {
                 input.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
             }
         });
-    };
-
-    const normalizeCreditPaymentModeInput = (value) => {
-        const trimmed = String(value || '').trim();
-        const lower = trimmed.toLowerCase();
-        if (!trimmed) {
-            return { mode: '', custom: '' };
-        }
-        if (CREDIT_PAYMENT_MODES.includes(lower)) {
-            return { mode: lower, custom: '' };
-        }
-        return { mode: 'other', custom: trimmed };
     };
 
 
@@ -730,16 +690,13 @@ const PointOfSale = () => {
         const silentNotification = Boolean(options?.silentNotification);
         const requestedQty = Math.max(1, Math.floor(Number(options?.quantity) || 1));
         if (!forceAdd) {
-            const alts = getAlternatives(product, inventory, settings, { maxSuggestions: 8 });
-            const lowThreshold = Math.max(1, Number(getLowStockThreshold(product, settings)) || 10);
-
             if (product.stock <= 0) {
-                setRecommendationModal({ isOpen: true, item: product, alternatives: alts, budgetOptions: null, type: 'out-of-stock' });
-                return;
-            }
-
-            if (product.stock <= lowThreshold) {
-                setRecommendationModal({ isOpen: true, item: product, alternatives: alts, budgetOptions: null, type: 'low-stock' });
+                const availability = getRecommendationAvailability(product, inventory, settings);
+                if (availability.hasAlternatives) {
+                    setRecommendationModal({ isOpen: true, item: product, alternatives: availability.alternatives, budgetOptions: null, type: 'out-of-stock', kind: 'alternative' });
+                } else {
+                    showToast('No Alternatives', 'No alternatives found for this item.', 'info', 'pos-budget-no-alternatives');
+                }
                 return;
             }
         }
@@ -784,39 +741,105 @@ const PointOfSale = () => {
         );
     };
 
-    const openBudgetAlternatives = (product, options = {}) => {
-        const budgetOnly = options?.budgetOnly === true;
-        const forcedType = options?.forcedType;
-        const status = getStockStatus(product, settings);
-        const modalType = forcedType || (budgetOnly
-            ? 'in-stock'
-            : status === 'Out of Stock'
-            ? 'out-of-stock'
-            : status === 'Low Stock'
-                ? 'low-stock'
-                : 'in-stock');
+    const getRecommendationResults = (product, kind) => {
+        const availability = getRecommendationAvailability(product, inventory, settings);
+        return kind === 'budget' ? availability.budgetOptions : availability.alternatives;
+    };
 
-        let alternatives = [];
-
-        if (modalType === 'in-stock') {
-            const byBudget = getAlternativesByBudget(product, inventory, settings, { limitPerTier: 4, maxSuggestions: 18, includeNonInStock: budgetOnly });
-            // Budget-first order for Product Options: Value -> Standard -> Premium fallback.
-            alternatives = [...(byBudget.low || []), ...(byBudget.moderate || []), ...(byBudget.high || [])];
-        } else {
-            alternatives = getAlternatives(product, inventory, settings, { maxSuggestions: 8 });
-        }
-
+    const openRecommendationResults = (product, kind, options = {}) => {
+        const alternatives = getRecommendationResults(product, kind);
         if (alternatives.length === 0) {
-            showToast("No Alternatives", "No alternatives found for this item.", "info", "pos-budget-no-alternatives");
+            showToast('No Alternatives', 'No alternatives found for this item.', 'info', 'pos-budget-no-alternatives');
             return;
         }
 
-        setRecommendationModal({ isOpen: true, item: product, alternatives, budgetOptions: null, type: modalType });
+        const status = getStockStatus(product, settings);
+        const type = options.type || (status === 'Out of Stock' ? 'out-of-stock' : status === 'Low Stock' ? 'low-stock' : 'in-stock');
+        setRecommendationModal({
+            isOpen: true,
+            item: product,
+            alternatives,
+            budgetOptions: null,
+            type,
+            kind,
+            returnToChooser: options.returnToChooser === true,
+        });
+    };
+
+    const openAvailableRecommendations = (product, availability, options = {}) => {
+        const action = getPosRecommendationAction(availability);
+        if (action === 'chooser') {
+            setRecommendationChooserItem(product);
+            return;
+        }
+        if (action) openRecommendationResults(product, action, options);
     };
 
     const removeFromCart = (code) => {
         setCart(prevCart => prevCart.filter(item => item.code !== code));
     };
+
+    const exitCartSelectionMode = ({ restoreFocus = false } = {}) => {
+        setIsCartSelectionMode(false);
+        setSelectedCartItemCodes([]);
+        setIsBulkRemoveConfirmationOpen(false);
+
+        if (restoreFocus) {
+            window.requestAnimationFrame(() => cartSelectionEntryButtonRef.current?.focus());
+        }
+    };
+
+    const toggleCartSelection = (code) => {
+        setSelectedCartItemCodes((previousCodes) => toggleCartItemSelection(previousCodes, code));
+    };
+
+    const toggleAllCartSelections = () => {
+        setSelectedCartItemCodes((previousCodes) => toggleAllCartItemSelections(previousCodes, cart));
+    };
+
+    const removeSelectedCartLines = () => {
+        setCart((previousCart) => removeSelectedCartItems(previousCart, selectedCartItemCodes));
+        exitCartSelectionMode({ restoreFocus: true });
+    };
+
+    const requestBulkRemove = () => {
+        if (selectedCartItemCodes.length === 0) return;
+
+        if (selectedCartItemCodes.length === 1) {
+            removeSelectedCartLines();
+            return;
+        }
+
+        setIsBulkRemoveConfirmationOpen(true);
+    };
+
+    const handlePaymentTypeChange = (nextPaymentType) => {
+        setPaymentType(nextPaymentType);
+        if (isCartSelectionMode) exitCartSelectionMode();
+    };
+
+    useEffect(() => {
+        setSelectedCartItemCodes((previousCodes) => previousCodes.filter((code) => cart.some((item) => item.code === code)));
+
+        if (cart.length === 0 && isCartSelectionMode) {
+            setIsCartSelectionMode(false);
+            setSelectedCartItemCodes([]);
+            setIsBulkRemoveConfirmationOpen(false);
+        }
+    }, [cart, isCartSelectionMode]);
+
+    useEffect(() => {
+        if (!isBulkRemoveConfirmationOpen) return undefined;
+
+        const handleKeyDown = (event) => {
+            if (event.key === 'Escape') {
+                setIsBulkRemoveConfirmationOpen(false);
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [isBulkRemoveConfirmationOpen]);
 
     const updateQuantity = (code, newQty) => {
         if (newQty <= 0) {
@@ -852,11 +875,6 @@ const PointOfSale = () => {
         return 'vatable';
     };
 
-    const getVatRatePercent = (vatMode) => {
-        const mode = normalizeVatMode(vatMode);
-        return mode === 'zero-rated' ? 0 : 12;
-    };
-
     const formatVatModeLabel = (vatMode) => {
         const mode = normalizeVatMode(vatMode);
         return mode === 'zero-rated' ? 'VAT (0%)' : 'VAT (12%)';
@@ -890,10 +908,50 @@ const PointOfSale = () => {
         };
     };
 
+    const completeOfflineCheckout = ({ transactionData, cartSnapshot, canSyncOnline, total, referenceNumber }) => {
+        const referencedTransaction = {
+            ...transactionData,
+            transactionReference: {
+                referenceNumber: String(referenceNumber || '').trim(),
+                supportingDocument: null,
+            },
+        };
+        const queued = addToSyncQueue({
+            ...referencedTransaction,
+            clientRequestId: referencedTransaction.clientRequestId,
+            items: cartSnapshot.map((item) => ({ ...item, id: item.id || item._id })),
+        });
+        if (!queued) throw new Error('The sale could not be added to your offline sync queue.');
+
+        if (canSyncOnline) {
+            showToast('Offline Mode', 'Transaction saved locally and will sync when online.', 'info', 'pos-offline-sync');
+        }
+
+        setInventory(inventory.map((item) => {
+            const cartItem = cartSnapshot.find((candidate) => candidate.code === item.code);
+            if (!cartItem) return item;
+            const stock = item.stock - cartItem.qty;
+            return { ...item, stock, status: getStockStatus({ ...item, stock }, settings) };
+        }));
+        setTransactions((previous) => [referencedTransaction, ...previous]);
+        cartSnapshot.forEach((item) => {
+            logAction('DEDUCT', item.code, `Sold ${item.qty} Qty (TRX: ${referencedTransaction.id})`, currentUserName);
+        });
+        setCart([]);
+        setCashAmount('');
+        setLastTransaction(referencedTransaction);
+        setShowReceipt(true);
+        logActivity(currentUserName, 'Processed Sale', `Transaction ${referencedTransaction.id} — ${formatCurrency(total)}`);
+        showToast('Transaction Complete', 'Sale recorded successfully.', 'success', 'pos-checkout');
+        return referencedTransaction;
+    };
+
     const handleCheckout = async () => {
         if (checkoutInFlightRef.current) {
             return;
         }
+
+        if (pendingOfflineCheckout) return;
 
         if (cart.length === 0) return;
 
@@ -957,7 +1015,7 @@ const PointOfSale = () => {
             creditPaymentMode: isCreditCheckout ? resolveCreditPaymentModeLabel() : '',
             termDays: isCreditCheckout ? Number(selectedCreditTermDays || MIN_CREDIT_TERM_DAYS) : null,
             dueDate: isCreditCheckout ? computedCreditDueDate.toISOString() : null,
-            cashier: currentUserName,
+            cashier: currentUserFullName || currentUserName,
             cashierRole: String(userRole || '').toLowerCase(),
         };
 
@@ -1043,8 +1101,9 @@ const PointOfSale = () => {
                         termDays: isCreditCheckout ? Number(savedSale?.creditTermDays || selectedCreditTermDays) : null,
                         dueDate: isCreditCheckout ? (savedSale?.dueDate || computedCreditDueDate.toISOString()) : null,
                         cashImpactAmount: isCreditCheckout ? 0 : (savedSale?.totalAmount ?? total),
-                        cashier: currentUserName,
+                        cashier: currentUserFullName || currentUserName,
                         cashierRole: String(userRole || '').toLowerCase(),
+                        transactionReference: savedSale?.transactionReference || null,
                     };
 
                     if (!isCreditCheckout) {
@@ -1057,7 +1116,12 @@ const PointOfSale = () => {
                     setCart([]);
                     setCashAmount('');
                     setLastTransaction(remoteTransaction);
-                    setShowReceipt(true);
+                    if (remoteTransaction.sourceId) {
+                        setPendingReferenceSaleId(remoteTransaction.sourceId);
+                        setShowReceipt(false);
+                    } else {
+                        setShowReceipt(true);
+                    }
                     showToast(
                         isCreditCheckout ? 'Credit Order Created' : 'Transaction Complete',
                         isCreditCheckout ? 'Credit sale recorded with pending payment.' : 'Sale recorded successfully.',
@@ -1077,57 +1141,10 @@ const PointOfSale = () => {
                 }
             }
 
-            // Queue for Sync (Offline Mode)
-            // Ensure items have IDs for backend sync later
-            addToSyncQueue({
-                ...transactionData,
-                clientRequestId: transactionData.clientRequestId,
-                items: cartSnapshot.map(i => ({ ...i, id: i.id || i._id })),
-            });
-
-            if (canSyncOnline) {
-                showToast("Offline Mode", "Transaction saved locally and will sync when online.", "info", "pos-offline-sync");
-            }
-
-            // Offline / Fallback Handling
-            // Deduct stock from inventory
-            const newInventory = inventory.map(item => {
-                const cartItem = cartSnapshot.find(c => c.code === item.code);
-                if (cartItem) {
-                    const newStock = item.stock - cartItem.qty;
-                    const statusCarrier = { ...item, stock: newStock };
-                    const newStatus = getStockStatus(statusCarrier, settings);
-                    
-                    return { ...item, stock: newStock, status: newStatus };
-                }
-                return item;
-            });
-
-            setInventory(newInventory);
-            
-            // Log Transaction & Deduction
-            if (!isCreditCheckout) {
-                setTransactions(prev => [transactionData, ...prev]);
-            }
-            cartSnapshot.forEach(item => {
-                logAction('DEDUCT', item.code, `Sold ${item.qty} Qty (TRX: ${transactionData.id})`, currentUserName);
-            });
-
-            setCart([]);
-            setCashAmount('');
-            setLastTransaction(transactionData);
-            setShowReceipt(true);
-            logActivity(
-                currentUserName,
-                isCreditCheckout ? 'Created Credit Sale' : 'Processed Sale',
-                `${isCreditCheckout ? 'Credit transaction' : 'Transaction'} ${transactionData.id} — ${formatCurrency(total)}`
-            );
-            showToast(
-                isCreditCheckout ? 'Credit Order Created' : 'Transaction Complete',
-                isCreditCheckout ? 'Credit sale recorded with pending payment.' : 'Sale recorded successfully.',
-                'success',
-                'pos-checkout'
-            );
+            // Offline Cash Sales require a Reference No. before any local stock,
+            // history, or sync-queue mutation is applied.
+            setPendingOfflineCheckout({ transactionData, cartSnapshot, canSyncOnline, total });
+            return;
         } finally {
             checkoutInFlightRef.current = false;
             setIsCheckoutProcessing(false);
@@ -1175,37 +1192,9 @@ const PointOfSale = () => {
             return;
         }
 
-        const lines = [
-            String(settings?.storeName || 'Quotation').trim(),
-            String(settings?.storeAddress || '').trim(),
-            String(settings?.contactPhone || '').trim() ? `Contact: ${String(settings?.contactPhone || '').trim()}` : '',
-            '--------------------------------',
-            'QUOTATION',
-            `Customer: ${String(quote.customerName || '').trim()}`,
-            `Date: ${String(quote.date || '').trim()}`,
-            '--------------------------------',
-        ].filter((line) => String(line || '').trim().length > 0);
+        const quotationReceipt = buildQuotationReceiptModel(quote, settings);
 
-        quote.items.forEach((item) => {
-            const itemName = String(item?.name || item?.label || 'Item').trim();
-            const itemCode = String(item?.code || '').trim();
-            const itemQty = Number(item?.qty || 0) || 0;
-            const itemPrice = Number(item?.price ?? item?.unitPrice ?? 0) || 0;
-            const itemTotal = itemQty * itemPrice;
-
-            wrapText(itemName, 32).forEach((line) => lines.push(line));
-            if (itemCode) {
-                lines.push(`  Code: ${itemCode}`);
-            }
-            lines.push(`  ${itemQty} x ${formatCurrency(itemPrice).replace('₱', '')} = ${formatCurrency(itemTotal)}`);
-        });
-
-        lines.push('--------------------------------');
-        lines.push(`TOTAL: ${formatCurrency(quote.total)}`);
-        lines.push('');
-        lines.push('Thank you for your business.');
-
-        void printDocument({ lines })
+        void printDocument({ lines: buildQuotationPrintLines(quotationReceipt) })
             .then((result) => {
                 setPrintStatus('success');
                 showToast(
@@ -1240,7 +1229,7 @@ const PointOfSale = () => {
         setPrintStatus('printing');
         try {
             const result = await printReceipt({
-                transaction: lastTransaction,
+                transaction: { ...lastTransaction, documentType: 'order-confirmation' },
                 settings,
                 elementId: 'receipt-content',
                 paperWidthMm: 58,
@@ -1250,8 +1239,8 @@ const PointOfSale = () => {
             showToast(
                 'Print Success',
                 result.source === 'local-service'
-                    ? 'Receipt sent to the thermal printer.'
-                    : 'Receipt printed successfully!',
+                    ? 'Order confirmation sent to the thermal printer.'
+                    : 'Order confirmation printed successfully!',
                 'success',
                 'pos-print-receipt'
             );
@@ -1264,7 +1253,7 @@ const PointOfSale = () => {
         } catch (error) {
             printLockRef.current = false;
             setPrintStatus('idle');
-            showErrorDetails(error?.message || 'Unable to print receipt.');
+            showErrorDetails(error?.message || 'Unable to print order confirmation.');
         }
     };
 
@@ -1284,12 +1273,8 @@ const PointOfSale = () => {
 
     const receiptPaymentMethod = String(lastTransaction?.paymentMethod || 'Cash').trim();
     const isCreditReceipt = receiptPaymentMethod.toLowerCase() === 'credit';
-    const receiptTitle = isCreditReceipt
-        ? 'Credit Sales Receipt'
-        : 'Cash Sales Receipt';
-    const receiptContextLine = isCreditReceipt
-        ? 'Issued once payment is completed.'
-        : 'Official record of your purchase.';
+    const receiptTitle = 'Order Confirmation';
+    const receiptContextLine = 'For transaction reference only';
     const payableTotalForChange = calculateTotal();
     const changeCentavosForDisplay = getCashChangeCentavos(cashAmount, payableTotalForChange);
     const isCashAmountTooLarge = paymentType === 'cash' && isMoneyInputTooLarge(cashAmount);
@@ -1307,6 +1292,8 @@ const PointOfSale = () => {
             : paymentType === 'credit'
                 ? (!selectedCreditCustomer ? 'Select an eligible regular customer first' : 'Select payment method first')
                 : 'Enter cash first';
+    const selectedCartItemCount = selectedCartItemCodes.filter((code) => cart.some((item) => item.code === code)).length;
+    const areAllCartItemsSelected = cart.length > 0 && selectedCartItemCount === cart.length;
 
     return (
         <div className="flex min-h-[calc(100dvh-80px)] flex-col gap-2 overflow-y-auto md:h-[calc(100vh-80px)] md:overflow-hidden">
@@ -1314,121 +1301,157 @@ const PointOfSale = () => {
 
 
             <div className="flex flex-col md:flex-row flex-1 gap-2 md:min-h-0">
+            {pendingOfflineCheckout && (
+                <TransactionReferenceModal
+                    requiredFlow
+                    referenceNumberOnly
+                    saveLabel="Save Offline Sale"
+                    failureMessage="The offline sale was not saved."
+                    onSave={({ referenceNumber }) => completeOfflineCheckout({
+                        ...pendingOfflineCheckout,
+                        referenceNumber,
+                    })}
+                    onSaved={() => setPendingOfflineCheckout(null)}
+                />
+            )}
+            {pendingReferenceSaleId && lastTransaction && (
+                <TransactionReferenceModal
+                    saleId={pendingReferenceSaleId}
+                    requiredFlow
+                    onSaved={(updated) => {
+                        const nextTransaction = { ...lastTransaction, transactionReference: updated.transactionReference };
+                        setLastTransaction(nextTransaction);
+                        if (String(nextTransaction.paymentMethod).toLowerCase() !== 'credit') {
+                            setTransactions((previous) => upsertTransactionByIdentity(previous, nextTransaction));
+                        }
+                        setPendingReferenceSaleId('');
+                        setShowReceipt(true);
+                    }}
+                />
+            )}
             {/* Receipt Modal */}
             {showReceipt && lastTransaction && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-[58mm] overflow-hidden flex flex-col max-h-[90vh]">
-                        <div className="p-3 border-b border-gray-100 flex justify-between items-center bg-gray-50">
+                    <div className={`flex ${ORDER_CONFIRMATION_PREVIEW_SIZE.modal} flex-col overflow-hidden rounded-2xl bg-white shadow-2xl`}>
+                        <div className="flex items-center justify-between border-b border-gray-100 bg-gray-50 px-4 py-3.5 sm:px-5 sm:py-4">
                             <div>
-                                <h3 className="font-semibold text-lg text-gray-800">{receiptTitle}</h3>
-                                <p className="text-[11px] text-gray-500 mt-0.5">{receiptContextLine}</p>
+                                <h3 className="text-xl font-semibold text-gray-800 sm:text-2xl">{receiptTitle}</h3>
+                                <p className="mt-1 text-xs text-gray-500">{receiptContextLine}</p>
                             </div>
-                            <button onClick={() => setShowReceipt(false)} className="text-gray-400 hover:text-gray-600">
-                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                            <button onClick={() => setShowReceipt(false)} className="rounded-lg p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600" aria-label="Close Order Confirmation preview">
+                                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                             </button>
                         </div>
-                        
-                        <div className="flex-1 overflow-y-auto p-2 bg-white" id="receipt-content">
-                            <div className="w-full max-w-[58mm] mx-auto px-1 text-[9px] leading-tight">
-                            <div className="text-center mb-3">
-                                <p className="text-[14px] font-semibold text-gray-900 mb-1 leading-tight">{settings?.storeName || 'Tableria La Confianza'}</p>
-                                <div className="text-[9px] text-gray-400 mt-1 space-y-0.5 leading-tight">
+
+                        <div className="flex-1 overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5" id="receipt-content">
+                            <div className={`${ORDER_CONFIRMATION_PREVIEW_SIZE.content} px-1 text-xs leading-relaxed text-gray-600 sm:text-[13px]`}>
+                            <div className="mb-5 text-center">
+                                <p className="mb-1 text-lg font-semibold leading-tight text-gray-900">{settings?.storeName || 'Tableria La Confianza'}</p>
+                                <div className="mt-1.5 space-y-0.5 text-[11px] leading-relaxed text-gray-400 sm:text-xs">
                                     <p>{settings?.storeAddress || 'Manila S Rd, Calamba, 4027 Laguna'}</p>
                                     <p>Contact: {settings?.contactPhone || '0917-545-2166'}</p>
                                 </div>
+                                <p className="mt-3 text-xs font-semibold tracking-wider text-gray-900">ORDER CONFIRMATION</p>
+                                <p className="text-[11px] text-gray-500">For transaction reference only</p>
                             </div>
                             
-                            <div className="border-t border-dashed border-gray-200 py-2 mb-2">
-                                <div className="flex justify-between mb-0.5">
-                                    <span className="text-gray-500">Receipt No.:</span>
+                            <div className="mb-4 border-y border-dashed border-gray-200 py-3">
+                                <div className="mb-1 flex justify-between gap-3">
+                                    <span className="text-gray-500">Transaction ID:</span>
                                     <span className="font-mono font-semibold text-gray-800">{lastTransaction.id}</span>
                                 </div>
-                                <div className="flex justify-between mb-0.5">
+                                {lastTransaction.transactionReference?.referenceNumber && (
+                                    <div className="mb-1 flex justify-between gap-3">
+                                        <span className="shrink-0 text-gray-500">Transaction Reference:</span>
+                                        <span className="min-w-0 break-all text-right text-gray-800">{lastTransaction.transactionReference.referenceNumber}</span>
+                                    </div>
+                                )}
+                                <div className="mb-1 flex justify-between gap-3">
                                     <span className="text-gray-500">Date:</span>
                                     <span className="text-gray-800">{lastTransaction.date}</span>
                                 </div>
-                                <div className="flex justify-between">
+                                <div className="flex justify-between gap-3">
                                     <span className="text-gray-500">Cashier:</span>
                                     <span className="text-gray-800">{lastTransaction.cashier}</span>
                                 </div>
                             </div>
 
-                            <table className="w-full mb-3">
+                            <table className="mb-4 w-full">
                                 <thead>
                                     <tr className="border-b border-gray-100">
-                                        <th className="py-1 text-left font-semibold text-gray-700 text-[9px]">Item</th>
-                                        <th className="py-1 text-center font-semibold text-gray-700 text-[9px]">Qty</th>
-                                        <th className="py-1 text-right font-semibold text-gray-700 text-[9px]">Amount</th>
+                                        <th className="py-1.5 text-left text-xs font-semibold text-gray-700">Item</th>
+                                        <th className="py-1.5 text-center text-xs font-semibold text-gray-700">Qty</th>
+                                        <th className="py-1.5 text-right text-xs font-semibold text-gray-700">Amount</th>
                                     </tr>
                                 </thead>
-                                <tbody className="text-gray-600 text-[9px] leading-tight">
+                                <tbody className="text-xs leading-relaxed text-gray-600 sm:text-[13px]">
                                     {lastTransaction.items.map((item, i) => (
                                         <tr key={i} className="border-b border-gray-50">
-                                            <td className="py-1">
+                                            <td className="py-2 pr-2">
                                                 <div className="font-semibold text-gray-800 leading-tight">{item.brand ? `${item.brand} ` : ''}{item.name}{item.color ? ` — ${item.color}` : ''}</div>
-                                                <div className="text-[8px] leading-tight">{item.code}</div>
+                                                <div className="text-[11px] leading-tight text-gray-500">{item.code}</div>
                                             </td>
-                                            <td className="py-1 text-center">{item.qty}</td>
-                                            <td className="py-1 text-right">{formatCurrency(item.price * item.qty)}</td>
+                                            <td className="py-2 text-center">{item.qty}</td>
+                                            <td className="py-2 text-right font-medium">{formatCurrency(item.price * item.qty)}</td>
                                         </tr>
                                     ))}
                                 </tbody>
                             </table>
 
-                            <div className="space-y-1 text-right border-t border-gray-200 pt-2 text-[9px] leading-tight">
+                            <div className="space-y-1.5 border-t border-gray-200 pt-3 text-right text-xs leading-relaxed sm:text-[13px]">
                                 {lastTransaction.vatAmount > 0 && (
                                     <>
-                                        <div className="flex justify-between text-gray-600 text-[9px]">
+                                        <div className="flex justify-between text-gray-600">
                                             <span>Net Amount</span>
                                             <span>{formatCurrency(lastTransaction.netAmount)}</span>
                                         </div>
-                                        <div className="flex justify-between text-gray-600 text-[9px]">
+                                        <div className="flex justify-between text-gray-600">
                                             <span>{formatVatModeLabel(lastTransaction.vatMode)}</span>
                                             <span>{formatCurrency(lastTransaction.vatAmount)}</span>
                                         </div>
                                     </>
                                 )}
-                                <div className="flex justify-between text-[13px] font-semibold text-gray-900 pt-1 border-t border-gray-900 mt-1">
+                                <div className="mt-2 flex justify-between border-t border-gray-900 pt-2 text-lg font-semibold text-gray-900">
                                     <span>TOTAL</span>
                                     <span>{formatCurrency(lastTransaction.total)}</span>
                                 </div>
-                                <div className="flex justify-between text-gray-600 pt-1 text-[9px] uppercase font-semibold">
+                                <div className="flex justify-between pt-1 text-xs font-semibold uppercase text-gray-600 sm:text-[13px]">
                                     <span>{isCreditReceipt ? 'Credit Status' : 'Cash Received'}</span>
                                     <span>{isCreditReceipt ? (lastTransaction.paymentStatus || 'Pending') : formatCurrency(lastTransaction.cash)}</span>
                                 </div>
 
                                 {isCreditReceipt ? (
                                     <>
-                                        <div className="flex justify-between text-gray-500 text-[9px]">
+                                        <div className="flex justify-between text-gray-500">
                                             <span>Due Date</span>
                                             <span>{lastTransaction.dueDate ? new Date(lastTransaction.dueDate).toLocaleDateString() : '-'}</span>
                                         </div>
                                         {lastTransaction.creditPaymentMode && (
-                                            <div className="flex justify-between text-gray-500 text-[9px]">
+                                            <div className="flex justify-between text-gray-500">
                                                 <span>Payment Method</span>
                                                 <span>{lastTransaction.creditPaymentMode}</span>
                                             </div>
                                         )}
                                     </>
                                 ) : (
-                                    <div className="flex justify-between text-gray-500 text-[9px]">
+                                    <div className="flex justify-between text-gray-500">
                                         <span>Change</span>
                                         <span>{formatCurrency(lastTransaction.change)}</span>
                                     </div>
                                 )}
                             </div>
 
-                            <div className="mt-3 text-center text-[9px] text-gray-400 leading-tight">
+                            <div className="mt-5 text-center text-[11px] leading-relaxed text-gray-400 sm:text-xs">
                                 <p>Thank you for your business.</p>
-                                <p>Please keep this receipt for returns and support.</p>
+                                <p>Please keep this confirmation for reference.</p>
                             </div>
                             </div>
                         </div>
 
-                        <div className="p-2 bg-gray-50 border-t border-gray-100 grid grid-cols-2 gap-2">
+                        <div className="grid grid-cols-2 gap-2 border-t border-gray-100 bg-gray-50 p-3 sm:p-4">
                             <button 
                                 onClick={() => setShowReceipt(false)}
-                                className="py-2 px-4 rounded-xl text-xs font-semibold tracking-widest hover:bg-gray-100 transition-all duration-300 flex items-center justify-center gap-2 shadow-sm transform hover:-translate-y-0.5 text-gray-600 bg-white"
+                                className="flex items-center justify-center gap-2 rounded-xl bg-white px-4 py-2.5 text-xs font-semibold tracking-widest text-gray-600 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:bg-gray-100"
                                 style={{ border: '2px solid #e5e7eb' }}
                             >
                                 Close
@@ -1436,7 +1459,7 @@ const PointOfSale = () => {
                             <button 
                                 onClick={handlePrint}
                                 disabled={printStatus === 'printing'}
-                                className={`py-2 px-4 rounded-xl text-xs font-semibold tracking-widest transition-all duration-300 flex items-center justify-center gap-2 shadow-sm transform ${printStatus === 'printing' ? 'opacity-80 cursor-wait' : 'hover:opacity-90 hover:-translate-y-0.5'}`}
+                                className={`flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-xs font-semibold tracking-widest shadow-sm transition-all duration-300 ${printStatus === 'printing' ? 'cursor-wait opacity-80' : 'hover:-translate-y-0.5 hover:opacity-90'}`}
                                 style={{ backgroundColor: printStatus === 'success' ? '#10B981' : '#111827', color: '#ffffff', border: printStatus === 'success' ? '2px solid #10B981' : '2px solid #111827' }}
                             >
                                 {printStatus === 'printing' ? (
@@ -1468,7 +1491,7 @@ const PointOfSale = () => {
             <div className="min-h-[400px] md:min-h-0 flex-1 bg-slate-200/50 rounded-2xl shadow-inner border border-slate-300 flex flex-col overflow-hidden">
                 {/* Header */}
                 <div className="p-5 pb-0 shrink-0">
-                    <p className="text-3xl md:text-4xl font-bold text-gray-900 leading-tight">Point of Sale</p>
+                    <p className="text-3xl md:text-4xl font-semibold tracking-tight text-gray-900 leading-tight">Point of Sale</p>
                     <p className="text-gray-500 font-medium text-[11px] md:text-xs mt-1">Process transactions and manage orders</p>
                 </div>
                 
@@ -1528,13 +1551,13 @@ const PointOfSale = () => {
                         </div>
                     ) : (
                         <>
-                            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5 pb-4">
+                            <div className="grid grid-cols-2 gap-3 pb-4 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5">
                                 {currentItems.map(item => (
                                     (() => {
                                         if (item.isGroup) {
-                                            const isOutOfStock = item.stock <= 0;
-                                            const isLowStock = item.variants.some(v => getStockStatus(v, settings) === 'Low Stock');
-
+                                            const groupStockStatus = getStockStatus(item, settings);
+                                            const isOutOfStock = groupStockStatus === 'Out of Stock';
+                                            const isLowStock = groupStockStatus === 'Low Stock';
                                             return (
                                                 <div
                                                     key={item.code}
@@ -1552,16 +1575,15 @@ const PointOfSale = () => {
                                                     }}
                                                     role="button"
                                                     tabIndex={0}
-                                                    className={`relative flex flex-col rounded-2xl border transition-all duration-300 text-left group overflow-hidden bg-white
-                                                        min-h-[196px]
-                                                        ${isOutOfStock 
-                                                            ? 'border-red-100 shadow-sm opacity-80' 
-                                                            : 'border-slate-100 shadow-sm hover:shadow-[0_8px_30px_rgb(0,0,0,0.08)] hover:border-indigo-100 hover:-translate-y-1'
+                                                    className={`group relative flex min-h-[318px] flex-col overflow-hidden rounded-xl border bg-white text-left transition-colors duration-200
+                                                        ${isOutOfStock
+                                                            ? 'border-slate-200 hover:border-red-300 hover:bg-red-50/20'
+                                                            : isLowStock
+                                                                ? 'border-slate-200 hover:border-amber-300 hover:bg-amber-50/20'
+                                                                : 'border-slate-200 hover:border-emerald-200 hover:bg-emerald-50/20'
                                                         }`}
                                                 >
-                                                    <div className={`h-1 w-full absolute top-0 left-0 transition-opacity duration-300 ${isOutOfStock ? 'bg-red-300' : 'bg-gradient-to-r from-indigo-500 to-purple-500 opacity-0 group-hover:opacity-100'}`}></div>
-            
-                                                    <div className="p-3 flex flex-col flex-1 mt-0.5">
+                                                    <div className="flex flex-1 flex-col p-3">
                                                         <button
                                                             type="button"
                                                             data-pos-image-preview="true"
@@ -1570,9 +1592,9 @@ const PointOfSale = () => {
                                                                 onTouchStart={(e) => e.stopPropagation()}
                                                                 onClick={(e) => handleProductImagePreviewClick(e, item)}
                                                             disabled={!item.imageUrl}
-                                                                className={`group/photo relative z-10 mb-2 mx-auto h-16 w-16 rounded-2xl overflow-hidden border transition-all duration-200 touch-manipulation select-none ${
+                                                                className={`group/photo relative z-10 mb-3 h-24 w-full touch-manipulation select-none overflow-hidden rounded-lg border transition-colors duration-200 ${
                                                                 item.imageUrl
-                                                                    ? 'border-slate-200 bg-slate-50 hover:scale-[1.02] cursor-zoom-in'
+                                                                    ? 'cursor-zoom-in border-slate-200 bg-slate-50 hover:border-slate-300'
                                                                     : 'border-dashed border-slate-200 bg-slate-50 cursor-default'
                                                             }`}
                                                             aria-label={item.imageUrl ? `Enlarge image for ${item.name}` : `No image for ${item.name}`}
@@ -1582,9 +1604,9 @@ const PointOfSale = () => {
                                                                     <img
                                                                         src={item.imageUrl}
                                                                         alt={item.name}
-                                                                        className="h-full w-full object-cover transition-all duration-200 group-hover/photo:scale-110 group-hover/photo:opacity-35 group-hover/photo:blur-[1.5px]"
+                                                                        className="h-full w-full object-contain p-1.5"
                                                                     />
-                                                                    <div className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-all duration-150 group-hover/photo:bg-black/45 group-hover/photo:opacity-100 pointer-events-none">
+                                                                    <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-all duration-150 group-hover/photo:bg-black/20 group-hover/photo:opacity-100">
                                                                         <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-white/92 text-gray-900 shadow-md ring-1 ring-black/5">
                                                                             <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 3H3v5M3 3l6 6M16 3h5v5m0-5l-6 6M8 21H3v-5m0 5l6-6M16 21h5v-5m0 5l-6-6"></path>
@@ -1601,51 +1623,62 @@ const PointOfSale = () => {
                                                             )}
                                                         </button>
 
-                                                        <h3 className="font-semibold text-slate-800 text-[15px] leading-snug line-clamp-2 min-h-[44px] mb-2 group-hover:text-indigo-600 transition-colors">
+                                                        <p className="mb-1 text-[9px] font-semibold uppercase tracking-widest text-slate-400">{item.category || 'Product Group'}</p>
+                                                        <h3 className="mb-1.5 min-h-[38px] line-clamp-2 text-[14px] font-semibold leading-snug text-slate-900">
                                                             {item.name}
                                                         </h3>
             
-                                                        <div className="flex items-center gap-1.5 mb-3 overflow-hidden min-h-[22px]">
+                                                        <div className="mb-2 flex min-h-[18px] items-center gap-1.5 overflow-hidden text-[10px] text-slate-500">
                                                             {item.brand && (
-                                                                <span className="text-[10px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md truncate max-w-[86px]">{item.brand}</span>
+                                                                <span className="truncate font-medium">{item.brand}</span>
                                                             )}
+                                                            {item.brand && item.color && <span className="text-slate-300">•</span>}
                                                             {item.color && (
-                                                                <span className="text-[10px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md truncate max-w-[64px]">{item.color}</span>
+                                                                <span className="truncate">{item.color}</span>
                                                             )}
-                                                            <span className="text-[10px] font-semibold text-indigo-600 bg-indigo-50/80 px-2 py-0.5 rounded-md border border-indigo-100 truncate shadow-sm">{item.variants.length} Options</span>
                                                         </div>
             
-                                                        <div className="flex items-center justify-between mb-3 gap-2 min-h-[20px]">
-                                                            <span className="text-[10px] font-mono font-medium text-slate-400 truncate shrink-0">Product Group</span>
+                                                        <div className="mb-2.5 flex min-h-[20px] items-center justify-between gap-2">
+                                                            <span className="shrink-0 truncate text-[10px] font-medium text-slate-400">{item.variants.length} options</span>
                                                             {isOutOfStock ? (
-                                                                <span className="text-[10px] font-semibold text-red-600 bg-red-50/80 px-2 py-0.5 rounded-md border border-red-100 shrink-0">Out of Stock</span>
+                                                                <span className="shrink-0 rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[9px] font-semibold text-red-700">Out of Stock</span>
                                                             ) : (
-                                                                <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-md border shrink-0 ${isLowStock ? 'text-amber-700 bg-amber-50/80 border-amber-100' : 'text-emerald-700 bg-emerald-50/80 border-emerald-100'}`}>
-                                                                    {item.stock} in stock
+                                                                <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[9px] font-semibold ${isLowStock ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
+                                                                    {isLowStock ? 'Low Stock' : 'In Stock'}: {item.stock}
                                                                 </span>
                                                             )}
                                                         </div>
             
-                                                        <div className="mt-auto pt-3 border-t border-slate-100 space-y-2">
-                                                            <div className="flex items-center justify-between gap-2 min-h-[28px]">
-                                                                <span className="font-semibold text-slate-900 text-sm leading-none truncate tracking-tight">
+                                                        <div className="mt-auto space-y-1.5 border-t border-slate-100 pt-2.5">
+                                                            <div className="flex min-h-[24px] items-center justify-between gap-2">
+                                                                <span className="truncate text-sm font-semibold leading-none tracking-tight text-slate-900">
                                                                     {item.minPrice === item.maxPrice ? formatCurrency(item.minPrice) : `${formatCurrency(item.minPrice)} - ${formatCurrency(item.maxPrice)}`}
                                                                 </span>
-                                                                <div className="h-8 w-8 rounded-full bg-indigo-600 text-white flex items-center justify-center opacity-0 scale-75 group-hover:opacity-100 group-hover:scale-100 transition-all duration-300 shadow-md shrink-0">
-                                                                    <svg className="w-4 h-4 ml-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 5l7 7-7 7" /></svg>
-                                                                </div>
                                                             </div>
-                                                            <div className="min-h-[26px]">
+                                                            <div className="space-y-1">
                                                                 <button
                                                                     type="button"
                                                                     onClick={(e) => {
                                                                         e.stopPropagation();
                                                                         setVariantModal(createOpenVariantModalState(item));
                                                                     }}
-                                                                    className="h-7 w-full rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 text-[10px] font-semibold tracking-wider transition-colors hover:bg-indigo-100 hover:border-indigo-300 flex items-center justify-center gap-1 shadow-sm"
+                                                                    className="flex h-7 w-full items-center justify-center rounded-md bg-slate-900 text-[10px] font-medium tracking-wide text-white transition-colors hover:bg-slate-800"
                                                                 >
                                                                     Select Options
                                                                 </button>
+                                                                <div className="flex h-6 min-w-0 items-center justify-center">
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={(event) => {
+                                                                            event.stopPropagation();
+                                                                            setProductDetailsItem(item);
+                                                                        }}
+                                                                        className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[9px] font-medium text-slate-400 transition-colors hover:text-slate-700"
+                                                                    >
+                                                                        <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                                                                        View Details
+                                                                    </button>
+                                                                </div>
                                                             </div>
                                                         </div>
                                                     </div>
@@ -1656,14 +1689,14 @@ const PointOfSale = () => {
                                         const status = getStockStatus(item, settings);
                                         const isOutOfStock = status === 'Out of Stock';
                                         const isLowStock = status === 'Low Stock';
-                                        const hasAlternatives = (() => {
-                                            if (status === 'In Stock') {
-                                                const budget = getAlternativesByBudget(item, inventory, settings, { limitPerTier: 1, maxSuggestions: 9 });
-                                                return [...(budget.low || []), ...(budget.moderate || []), ...(budget.high || [])].length > 0;
-                                            }
-
-                                            return getAlternatives(item, inventory, settings, { maxSuggestions: 1 }).length > 0;
-                                        })();
+                                        const recommendationAvailability = getRecommendationAvailability(item, inventory, settings, {
+                                            alternativeLimit: 1,
+                                            limitPerTier: 1,
+                                            budgetLimit: 9,
+                                        });
+                                        const hasAlternatives = recommendationAvailability.hasAlternatives;
+                                        const recommendationAction = getPosRecommendationAction(recommendationAvailability);
+                                        const recommendationLabel = 'Recommendations';
 
                                         return (
                                     <div
@@ -1672,27 +1705,27 @@ const PointOfSale = () => {
                                             if (e.target?.closest?.('[data-pos-image-preview="true"]')) {
                                                 return;
                                             }
+                                            if (isOutOfStock) return;
                                             addToCart(item);
                                         }}
                                         onKeyDown={(e) => {
                                             if (e.key === 'Enter' || e.key === ' ') {
                                                 e.preventDefault();
+                                                if (isOutOfStock) return;
                                                 addToCart(item);
                                             }
                                         }}
                                         role="button"
                                         tabIndex={0}
-                                        className={`relative flex flex-col rounded-2xl border transition-all duration-300 text-left group overflow-hidden bg-white
-                                            min-h-[220px]
-                                            ${isOutOfStock 
-                                                ? 'border-red-100 shadow-sm opacity-80' 
-                                                : 'border-slate-100 shadow-sm hover:shadow-[0_8px_30px_rgb(0,0,0,0.08)] hover:border-slate-300 hover:-translate-y-1'
+                                        className={`group relative flex min-h-[318px] flex-col overflow-hidden rounded-xl border bg-white text-left transition-colors duration-200
+                                            ${isOutOfStock
+                                                ? 'border-slate-200 hover:border-red-300 hover:bg-red-50/20'
+                                                : isLowStock
+                                                    ? 'border-slate-200 hover:border-amber-300 hover:bg-amber-50/20'
+                                                    : 'border-slate-200 hover:border-emerald-200 hover:bg-emerald-50/20'
                                             }`}
                                     >
-                                        {/* Top accent */}
-                                        <div className={`h-1 w-full absolute top-0 left-0 transition-opacity duration-300 ${isOutOfStock ? 'bg-rose-500' : isLowStock ? 'bg-amber-500 opacity-0 group-hover:opacity-100' : 'bg-slate-800 opacity-0 group-hover:opacity-100'}`}></div>
-
-                                        <div className="p-3 flex flex-col flex-1 mt-0.5">
+                                        <div className="flex flex-1 flex-col p-3">
                                             <button
                                                 type="button"
                                                 data-pos-image-preview="true"
@@ -1701,9 +1734,9 @@ const PointOfSale = () => {
                                                     onTouchStart={(e) => e.stopPropagation()}
                                                     onClick={(e) => handleProductImagePreviewClick(e, item)}
                                                 disabled={!item.imageUrl}
-                                                    className={`group/photo relative z-10 mb-2 mx-auto h-16 w-16 rounded-2xl overflow-hidden border transition-all duration-200 touch-manipulation select-none ${
+                                                    className={`group/photo relative z-10 mb-3 h-24 w-full touch-manipulation select-none overflow-hidden rounded-lg border transition-colors duration-200 ${
                                                     item.imageUrl
-                                                            ? 'border-slate-200 bg-slate-50 hover:scale-[1.02] cursor-zoom-in'
+                                                            ? 'cursor-zoom-in border-slate-200 bg-slate-50 hover:border-slate-300'
                                                         : 'border-dashed border-slate-200 bg-slate-50 cursor-default'
                                                 }`}
                                                 aria-label={item.imageUrl ? `Enlarge image for ${item.name}` : `No image for ${item.name}`}
@@ -1713,9 +1746,9 @@ const PointOfSale = () => {
                                                         <img
                                                             src={item.imageUrl}
                                                             alt={item.name}
-                                                            className="h-full w-full object-cover transition-all duration-200 group-hover/photo:scale-110 group-hover/photo:opacity-35 group-hover/photo:blur-[1.5px]"
+                                                            className="h-full w-full object-contain p-1.5"
                                                         />
-                                                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none bg-black/0 opacity-0 transition-all duration-150 group-hover/photo:bg-black/45 group-hover/photo:opacity-100">
+                                                        <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-all duration-150 group-hover/photo:bg-black/20 group-hover/photo:opacity-100">
                                                             <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-white/92 text-gray-900 shadow-md ring-1 ring-black/5">
                                                                 <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 3H3v5M3 3l6 6M16 3h5v5m0-5l-6 6M8 21H3v-5m0 5l6-6M16 21h5v-5m0 5l-6-6"></path>
@@ -1732,57 +1765,91 @@ const PointOfSale = () => {
                                                 )}
                                             </button>
 
-                                            {/* Row 1: Name (main focus) */}
-                                            <h3 className="font-semibold text-slate-800 text-[14px] leading-snug line-clamp-2 min-h-[38px] mb-1.5 group-hover:text-black transition-colors">
+                                            <p className="mb-1 text-[9px] font-semibold uppercase tracking-widest text-slate-400">{item.category || 'Product'}</p>
+                                            <h3 className="mb-1.5 min-h-[38px] line-clamp-2 text-[14px] font-semibold leading-snug text-slate-900">
                                                 {item.name}
                                             </h3>
 
-                                            {/* Row 2: Brand & Color/Variant tags */}
-                                            <div className="flex items-center gap-1 mb-2.5 overflow-hidden min-h-[20px]">
+                                            <div className="mb-2 flex min-h-[18px] items-center gap-1 overflow-hidden text-[10px] text-slate-500">
                                                 {item.brand && (
-                                                    <span className="text-[9px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-md truncate max-w-[78px]">{item.brand}</span>
+                                                    <span className="truncate font-medium">{item.brand}</span>
                                                 )}
+                                                {item.brand && (item.color || item.size) && <span className="text-slate-300">•</span>}
                                                 {item.color && (
-                                                    <span className="text-[9px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-md truncate max-w-[58px]">{item.color}</span>
+                                                    <span className="truncate">{item.color}</span>
                                                 )}
+                                                {item.color && item.size && <span className="text-slate-300">•</span>}
                                                 {item.size && (
-                                                    <span className="text-[9px] font-semibold text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded-md border border-slate-200 truncate max-w-[92px]">{item.size}</span>
+                                                    <span className="truncate">{item.size}</span>
                                                 )}
                                             </div>
 
-                                            {/* Row 3: Code + Stock (small info row) */}
-                                            <div className="flex items-center justify-between mb-2.5 gap-2 min-h-[18px]">
-                                                <span className="text-[9px] font-mono font-medium text-slate-400 truncate">{item.code}</span>
+                                            <div className="mb-2.5 flex min-h-[18px] items-center justify-end gap-2">
                                                 {isOutOfStock ? (
-                                                    <span className="text-[9px] font-semibold text-red-600 bg-red-50/80 px-1.5 py-0.5 rounded-md border border-red-100 shrink-0">Out of Stock</span>
+                                                    <span className="shrink-0 rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[9px] font-semibold text-red-700">Out of Stock</span>
                                                 ) : (
-                                                    <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-md border shrink-0 ${isLowStock ? 'text-amber-700 bg-amber-50/80 border-amber-100' : 'text-emerald-700 bg-emerald-50/80 border-emerald-100'}`}>
-                                                        {item.stock} in stock
+                                                    <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[9px] font-semibold ${isLowStock ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
+                                                        {isLowStock ? 'Low Stock' : 'In Stock'}: {item.stock}
                                                     </span>
                                                 )}
                                             </div>
 
-                                            {/* Row 4: Price + actions */}
-                                            <div className="mt-auto pt-2.5 border-t border-slate-100 space-y-1.5">
-                                                <div className="flex items-center justify-between gap-2 min-h-[24px]">
-                                                    <span className="font-semibold text-slate-900 text-[15px] leading-none truncate tracking-tight">{formatCurrency(item.price)}</span>
-                                                    <div className="h-7 w-7 rounded-full bg-slate-800 text-white flex items-center justify-center opacity-0 scale-75 group-hover:opacity-100 group-hover:scale-100 transition-all duration-300 shadow-md shrink-0">
-                                                        <svg className="w-3.5 h-3.5 ml-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 4v16m8-8H4"></path></svg>
-                                                    </div>
+                                            <div className="mt-auto space-y-1.5 border-t border-slate-100 pt-2.5">
+                                                <div className="flex min-h-[24px] items-center justify-between gap-2">
+                                                    <span className="truncate text-[15px] font-semibold leading-none tracking-tight text-slate-900">{formatCurrency(item.price)}</span>
                                                 </div>
-                                                <div className="min-h-[26px]">
-                                                    {hasAlternatives && (
+                                                {!isOutOfStock && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={(event) => {
+                                                            event.stopPropagation();
+                                                            addToCart(item);
+                                                        }}
+                                                        className="flex h-7 w-full items-center justify-center gap-1.5 rounded-md bg-slate-900 text-[10px] font-medium tracking-wide text-white transition-colors hover:bg-slate-800"
+                                                    >
+                                                        Add to Cart
+                                                    </button>
+                                                )}
+                                                <div className={`flex min-h-6 whitespace-nowrap ${isOutOfStock ? 'flex-col items-stretch gap-1.5' : 'items-center justify-center gap-1.5'}`}>
+                                                    {isOutOfStock && hasAlternatives && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={(event) => {
+                                                                event.stopPropagation();
+                                                                openRecommendationResults(item, 'alternative', { type: 'out-of-stock' });
+                                                            }}
+                                                            className="inline-flex h-7 w-full items-center justify-center gap-1 whitespace-nowrap rounded-md border border-slate-300 bg-white px-2 text-[10px] font-medium tracking-wide text-slate-800 transition-colors hover:border-slate-400 hover:bg-slate-50"
+                                                        >
+                                                            <svg className="h-3 w-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                                                            </svg>
+                                                            View Recommendations
+                                                        </button>
+                                                    )}
+                                                    {recommendationAction && !isOutOfStock && (
                                                         <button
                                                             type="button"
                                                             onClick={(e) => {
                                                                 e.stopPropagation();
-                                                                openBudgetAlternatives(item, { budgetOnly: true });
+                                                                openAvailableRecommendations(item, recommendationAvailability);
                                                             }}
-                                                            className="h-7 w-full rounded-lg border border-emerald-200 bg-emerald-50/80 text-emerald-700 text-[10px] font-semibold tracking-wider transition-colors hover:bg-emerald-100 hover:border-emerald-300 shadow-sm"
+                                                            className="inline-flex min-w-0 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-md border border-slate-200 bg-white px-1.5 py-1 text-[9px] font-medium text-slate-600 transition-colors hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900"
                                                         >
-                                                            Product Options
+                                                            <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                                                            {recommendationLabel}
                                                         </button>
                                                     )}
+                                                    <button
+                                                        type="button"
+                                                        onClick={(event) => {
+                                                            event.stopPropagation();
+                                                            setProductDetailsItem(item);
+                                                        }}
+                                                        className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[9px] font-medium text-slate-400 transition-colors hover:text-slate-700 ${isOutOfStock ? 'h-5 justify-center' : ''}`}
+                                                    >
+                                                        <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                                                        View Details
+                                                    </button>
                                                 </div>
                                             </div>
                                         </div>
@@ -1805,60 +1872,101 @@ const PointOfSale = () => {
             </div>
 
             {/* Right Side: Cart / Order Summary */}
-            <div className="w-full md:w-80 bg-slate-200/50 rounded-2xl shadow-inner border border-slate-300 flex flex-col min-h-[300px] md:h-full z-20">
-                <div className="p-3 border-b border-slate-300 flex justify-between items-center bg-slate-200/50 rounded-t-2xl shrink-0">
-                    <div className="flex items-center gap-2">
-                        <svg className="w-5 h-5 text-gray-900" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"></path></svg>
-                        <h3 className="font-semibold text-lg text-gray-900">Current Order</h3>
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                        {!isOnline && (
-                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full border bg-rose-100 text-rose-800 border-rose-200">
-                                Offline
-                            </span>
-                        )}
-                        {syncQueue.length > 0 && (
-                            <span
-                                className="text-[10px] font-semibold px-2 py-0.5 rounded-full border bg-amber-100 text-amber-800 border-amber-200"
-                                title={syncQueue.find((entry) => entry?.syncError)?.syncError || 'Waiting to synchronize with the backend'}
-                            >
-                                Pending Sync: {syncQueue.length}
-                            </span>
-                        )}
-                        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${paymentType === 'credit' ? 'bg-amber-100 text-amber-800 border-amber-200' : 'bg-emerald-100 text-emerald-800 border-emerald-200'}`}>
-                            {paymentType === 'credit' ? 'Credit' : 'Cash'}
+            <div className="pos-current-order w-full md:w-80 overflow-hidden rounded-2xl border border-slate-200 bg-slate-50/80 shadow-sm flex flex-col min-h-[300px] md:h-full z-20">
+                {/* Current Order Header */}
+                <div className="pos-current-order-header flex shrink-0 items-center justify-between gap-2 border-b border-slate-200/80 bg-white px-3 py-3">
+                    <h3 className="shrink-0 text-base font-semibold text-slate-900">Current Order</h3>
+                    <div className="flex items-center justify-end gap-1.5">
+                        <span className="rounded-full border border-slate-200 bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-700">
+                            {paymentType === 'credit' ? 'Credit Mode' : 'Cash Mode'}
                         </span>
-                        <span className="bg-slate-300 text-gray-900 text-xs font-semibold px-2 py-0.5 rounded-full">{cart.reduce((acc, item) => acc + item.qty, 0)} items</span>
+                        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600">{cart.reduce((acc, item) => acc + item.qty, 0)} items</span>
                     </div>
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-3 space-y-2">
+                {/* Cart List Management */}
+                {cart.length > 0 && (
+                    <div className={`pos-cart-management shrink-0 border-b border-slate-200/80 bg-slate-50/80 px-3 py-2 text-[11px] ${isCartSelectionMode ? 'pos-cart-selection-toolbar' : ''}`}>
+                        {isCartSelectionMode ? (
+                            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
+                                <button type="button" onClick={toggleAllCartSelections} className="pos-cart-selection-toggle inline-flex items-center gap-1.5 rounded font-medium text-slate-700 transition-colors hover:text-slate-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400" aria-label={areAllCartItemsSelected ? 'Deselect all order items' : 'Select all order items'}>
+                                    <span data-checked={areAllCartItemsSelected} className={`pos-cart-selection-checkbox flex h-3.5 w-3.5 items-center justify-center rounded border ${areAllCartItemsSelected ? 'border-slate-700 bg-slate-700 text-white' : 'border-slate-300 bg-white'}`} aria-hidden="true">
+                                        {areAllCartItemsSelected && <svg className="h-2.5 w-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="m5 12 4 4L19 6" /></svg>}
+                                    </span>
+                                    {areAllCartItemsSelected ? 'Deselect All' : 'Select All'}
+                                </button>
+                                <span className="pos-cart-selection-count text-[10px] font-medium text-slate-500">{selectedCartItemCount} selected</span>
+                                <div className="flex items-center gap-3">
+                                    <button type="button" onClick={requestBulkRemove} disabled={selectedCartItemCount === 0} className="pos-cart-selection-remove rounded font-medium text-rose-600 transition-colors hover:text-rose-700 disabled:cursor-not-allowed disabled:text-slate-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-300" aria-label={`Remove ${selectedCartItemCount} selected order item${selectedCartItemCount === 1 ? '' : 's'}`}>Remove</button>
+                                    <button type="button" onClick={() => exitCartSelectionMode({ restoreFocus: true })} className="pos-cart-selection-cancel rounded font-medium text-slate-500 transition-colors hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400">Cancel</button>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="flex items-center justify-between gap-3">
+                                <div className="flex min-w-0 items-center gap-1.5">
+                                    <span className="pos-cart-items-label font-medium text-slate-500">Items</span>
+                                    {!isOnline && <span className="rounded-full border border-rose-200 bg-rose-50 px-1.5 py-0.5 text-[9px] font-semibold text-rose-700">Offline</span>}
+                                    {syncQueue.length > 0 && (
+                                        <span className="truncate rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[9px] font-semibold text-amber-700" title={syncQueue.find((entry) => entry?.syncError)?.syncError || 'Waiting to synchronize with the backend'}>
+                                            Pending Sync: {syncQueue.length}
+                                        </span>
+                                    )}
+                                </div>
+                                <button ref={cartSelectionEntryButtonRef} type="button" onClick={() => setIsCartSelectionMode(true)} className="pos-cart-select-action shrink-0 rounded font-medium text-slate-600 transition-colors hover:text-slate-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400" aria-label="Select order items for bulk removal">Select</button>
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {/* Cart Item List */}
+                <div className="pos-cart-list flex-1 min-h-0 overflow-y-auto bg-slate-100/70 p-3 space-y-2">
                     {cart.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center h-full text-gray-400 space-y-2">
-                            <div className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center">
-                                <svg className="w-6 h-6 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"></path></svg>
+                        <div className="pos-cart-empty flex flex-col items-center justify-center h-full text-slate-400 space-y-2">
+                            <div className="pos-cart-empty-icon w-11 h-11 rounded-full bg-white border border-slate-100 flex items-center justify-center">
+                                <svg className="w-5 h-5 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"></path></svg>
                             </div>
                             <p className="text-sm font-medium">Cart is empty</p>
                         </div>
                     ) : (
-                        cart.map(item => (
-                            <div key={item.code} className="bg-white border border-gray-100 p-2 rounded-lg shadow-sm hover:border-gray-300 transition-colors group">
-                                <div className="flex justify-between mb-1">
-                                    <h4 className="font-semibold text-gray-800 text-sm line-clamp-1">
-                                        {item.brand && <span className="text-gray-400 font-medium">{item.brand} </span>}
+                        cart.map(item => {
+                            const isSelected = selectedCartItemCodes.includes(item.code);
+
+                            return (
+                            <div
+                                key={item.code}
+                                onClick={() => {
+                                    if (isCartSelectionMode) toggleCartSelection(item.code);
+                                }}
+                                data-selected={isCartSelectionMode ? isSelected : undefined}
+                                className={`pos-cart-item group rounded-xl border p-2.5 transition-colors ${isCartSelectionMode ? isSelected ? 'cursor-pointer border-slate-400 bg-slate-50/80 hover:border-slate-500' : 'cursor-pointer border-slate-200 bg-white hover:border-slate-400 hover:bg-slate-50/60' : 'border-slate-200 bg-white hover:border-slate-300'}`}
+                            >
+                                <div className="flex justify-between mb-1.5 gap-2">
+                                    <div className="flex min-w-0 items-start gap-2">
+                                        {isCartSelectionMode && (
+                                            <input
+                                                type="checkbox"
+                                                checked={isSelected}
+                                                onChange={() => toggleCartSelection(item.code)}
+                                                onClick={(event) => event.stopPropagation()}
+                                                className="pos-cart-item-checkbox mt-0.5 h-3.5 w-3.5 shrink-0 rounded border-slate-300 text-slate-800 focus:ring-slate-500"
+                                                aria-label={`Select ${item.name} for removal`}
+                                            />
+                                        )}
+                                    <h4 className="min-w-0 font-semibold text-slate-800 text-xs leading-4 line-clamp-2">
+                                        {item.brand && <span className="text-slate-400 font-medium">{item.brand} </span>}
                                         {item.name}
                                         {item.color && <span className="text-gray-400 font-normal text-xs"> — {item.color}</span>}
                                     </h4>
-                                    <button onClick={() => removeFromCart(item.code)} className="text-gray-400 hover:text-rose-500">
+                                    </div>
+                                    {!isCartSelectionMode && <button onClick={() => removeFromCart(item.code)} className="shrink-0 rounded-md p-0.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-rose-500" aria-label={`Remove ${item.name} from order`}>
                                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-                                    </button>
+                                    </button>}
                                 </div>
-                                <div className="flex justify-between items-center mt-1">
-                                    <div className="flex items-center gap-2">
+                                <div className="flex justify-between items-center mt-2">
+                                    <div onClick={(event) => event.stopPropagation()} className="flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 p-0.5">
                                         <button 
                                             onClick={() => updateQuantity(item.code, item.qty - 1)}
-                                            className="w-6 h-6 rounded flex items-center justify-center hover:opacity-90 shadow-md transform hover:-translate-y-0.5 transition-all text-sm font-semibold pb-0.5"
-                                            style={{ backgroundColor: '#111827', color: '#ffffff' }}
+                                            className="w-6 h-6 rounded flex items-center justify-center bg-white text-slate-700 transition-colors hover:bg-slate-100 disabled:opacity-50 text-sm font-semibold pb-0.5"
                                         >
                                             -
                                         </button>
@@ -1877,36 +1985,36 @@ const PointOfSale = () => {
                                                     updateQuantity(item.code, Number(value));
                                                 }
                                             }}
-                                            className="w-12 text-center text-sm font-semibold bg-white border border-gray-300 rounded focus:border-[#111827] focus:ring-1 focus:ring-[#111827] outline-none"
+                                            className="w-9 text-center text-xs font-semibold bg-transparent outline-none"
                                         />
                                         <button 
                                             onClick={() => updateQuantity(item.code, item.qty + 1)}
-                                            className="w-6 h-6 rounded flex items-center justify-center hover:opacity-90 shadow-md transform hover:-translate-y-0.5 transition-all text-sm font-semibold pb-0.5"
-                                            style={{ backgroundColor: '#111827', color: '#ffffff' }}
+                                            className="w-6 h-6 rounded flex items-center justify-center bg-slate-900 text-white transition-colors hover:bg-slate-700 text-sm font-semibold pb-0.5"
                                         >
                                             +
                                         </button>
                                     </div>
-                                    <span className="font-semibold text-base text-gray-900">{formatCurrency(item.price * item.qty)}</span>
+                                    <span className="font-semibold text-sm text-slate-900">{formatCurrency(item.price * item.qty)}</span>
                                 </div>
-                                <div className="mt-1 text-[10px] text-gray-500 flex justify-between">
+                                <div className="mt-1.5 text-[10px] text-slate-500 flex justify-between">
                                     <span>{item.code}</span>
                                     <span>@ {formatCurrency(item.price)}</span>
                                 </div>
                             </div>
-                        ))
+                            );
+                        })
                     )}
                 </div>
 
-                <div className="relative p-3 bg-slate-200/50 border-t border-slate-300 rounded-b-2xl shrink-0 z-30">
+                <div className="pos-checkout-panel relative shrink-0 border-t border-slate-200/80 bg-slate-50/80 p-3 z-30">
                     <div className="absolute right-3 top-0 z-10 -translate-y-1/2">
-                        <motion.button
+                        <MotionButton
                             type="button"
                             onClick={() => setIsOrderSummaryDetailsCollapsed((prev) => !prev)}
                             initial={false}
                             whileHover={{ width: 96 }}
                             transition={{ type: 'spring', stiffness: 260, damping: 24 }}
-                            className="group inline-flex h-7 w-7 items-center justify-start overflow-hidden whitespace-nowrap rounded-md border border-gray-300 bg-white px-1.5 text-[9px] font-semibold uppercase tracking-wider text-gray-700 shadow-sm hover:bg-gray-100"
+                            className="pos-summary-collapse group inline-flex h-7 w-7 items-center justify-start overflow-hidden whitespace-nowrap rounded-md border border-gray-300 bg-white px-1.5 text-[9px] font-semibold uppercase tracking-wider text-gray-700 shadow-sm hover:bg-gray-100"
                             aria-label={isOrderSummaryDetailsCollapsed ? 'Show details' : 'Hide details'}
                             title={isOrderSummaryDetailsCollapsed ? 'Show details' : 'Hide details'}
                         >
@@ -1916,12 +2024,12 @@ const PointOfSale = () => {
                             <span className="ml-0 max-w-0 overflow-hidden opacity-0 transition-all duration-200 group-hover:ml-1 group-hover:max-w-[72px] group-hover:opacity-100">
                                 {isOrderSummaryDetailsCollapsed ? 'Show Details' : 'Hide Details'}
                             </span>
-                        </motion.button>
+                        </MotionButton>
                     </div>
 
                     <AnimatePresence initial={false}>
                     {!isOrderSummaryDetailsCollapsed && (
-                    <motion.div
+                    <MotionDiv
                         key="order-summary-details"
                         initial={{ height: 0, opacity: 0, y: -6 }}
                         animate={{ height: 'auto', opacity: 1, y: 0 }}
@@ -1929,19 +2037,19 @@ const PointOfSale = () => {
                         transition={{ duration: 0.22, ease: 'easeInOut' }}
                         className="overflow-hidden"
                     >
-                    <div className="space-y-2 mb-3 bg-white p-2 rounded-lg">
-                        <div className="inline-flex w-full rounded-xl bg-slate-100 p-1 border border-slate-200">
+                    <div className="pos-checkout-form mb-3 space-y-2.5 rounded-xl border border-slate-200 bg-white p-2.5">
+                        <div className="pos-payment-switch inline-flex w-full rounded-lg bg-slate-100 p-1 border border-slate-200">
                             <button
                                 type="button"
-                                onClick={() => setPaymentType('cash')}
-                                className={`flex-1 py-1.5 rounded-lg text-[11px] font-semibold tracking-wider transition-all ${paymentType === 'cash' ? 'bg-emerald-200 text-emerald-900 shadow-sm' : 'text-slate-600 hover:bg-white'}`}
+                                onClick={() => handlePaymentTypeChange('cash')}
+                                className={`pos-payment-option ${paymentType === 'cash' ? 'pos-payment-option-active' : ''} flex-1 py-1.5 rounded-md text-[11px] transition-all ${paymentType === 'cash' ? 'bg-white font-semibold text-slate-900 shadow-sm ring-1 ring-slate-200' : 'font-medium text-slate-500 hover:bg-white/70'}`}
                             >
                                 Cash
                             </button>
                             <button
                                 type="button"
-                                onClick={() => setPaymentType('credit')}
-                                className={`flex-1 py-1.5 rounded-lg text-[11px] font-semibold tracking-wider transition-all ${paymentType === 'credit' ? 'bg-amber-200 text-amber-900 shadow-sm' : 'text-slate-600 hover:bg-white'}`}
+                                onClick={() => handlePaymentTypeChange('credit')}
+                                className={`pos-payment-option ${paymentType === 'credit' ? 'pos-payment-option-active' : ''} flex-1 py-1.5 rounded-md text-[11px] transition-all ${paymentType === 'credit' ? 'bg-white font-semibold text-slate-900 shadow-sm ring-1 ring-slate-200' : 'font-medium text-slate-500 hover:bg-white/70'}`}
                             >
                                 Credit
                             </button>
@@ -1949,9 +2057,9 @@ const PointOfSale = () => {
 
                         {paymentType === 'cash' ? (
                             <>
-                                <div className="flex justify-between items-center text-sm text-gray-600 font-semibold">
-                                    <span>Cash</span>
-                                    <div className="relative group">
+                                <div className="group/pos-field-tooltip relative flex justify-between items-center text-sm font-medium text-slate-600">
+                                    <span>Cash Received</span>
+                                    <div className="relative">
                                     <div className={`flex items-center gap-1 border-b transition-colors ${isCashAmountTooLarge ? 'border-red-500 focus-within:border-red-600' : 'border-gray-300'} ${cart.length > 0 && !isCashAmountTooLarge ? 'focus-within:border-gray-900' : ''}`}>
                                         <span>₱</span>
                                         <input 
@@ -1967,48 +2075,55 @@ const PointOfSale = () => {
                                             aria-invalid={isCashAmountTooLarge}
                                             aria-describedby={isCashAmountTooLarge ? 'cash-tendered-size-error' : undefined}
                                             placeholder="0.00"
-                                            className={`w-20 text-right bg-transparent outline-none font-semibold text-sm text-gray-900 ${cart.length === 0 ? 'cursor-not-allowed' : ''}`}
+                                            className={`w-20 bg-transparent text-right text-sm font-medium text-gray-900 outline-none ${cart.length === 0 ? 'cursor-not-allowed' : ''}`}
                                         />
                                     </div>
-                                    {cart.length === 0 && (
-                                        <div className="pointer-events-none absolute -top-11 right-0 z-30 hidden w-max max-w-[260px] group-hover:block group-focus-within:block">
-                                            <div className="rounded-lg bg-gray-900 px-3 py-2 text-[10px] font-semibold text-white shadow-xl ring-1 ring-black/10">
-                                                Add item first
-                                            </div>
-                                            <span className="absolute -bottom-1 right-4 h-2 w-2 rotate-45 bg-gray-900" />
-                                        </div>
-                                    )}
                                     </div>
+                                    {cart.length === 0 && (
+                                        <PosFieldTooltip id="cash-received-disabled-help">
+                                            Add an item first to enter cash received.
+                                        </PosFieldTooltip>
+                                    )}
                                 </div>
                                 {isCashAmountTooLarge && (
                                     <p id="cash-tendered-size-error" role="alert" className="-mt-1 text-right text-[10px] font-medium text-red-600">
                                         Amount is too large. Please enter a smaller value.
                                     </p>
                                 )}
-                                <div className="flex justify-between items-center text-sm text-gray-600 font-semibold">
+                                <div className="flex justify-between items-center text-sm font-medium text-slate-600">
                                     <span>Change</span>
                                     <span className="text-gray-900 font-semibold">
                                         {isCashAmountTooLarge ? '—' : formatCurrencyFromCentavos(changeCentavosForDisplay ?? 0)}
                                     </span>
                                 </div>
                                 <div className="flex flex-col gap-1">
-                                    <label className="text-[11px] font-semibold text-gray-600 uppercase tracking-wider">VAT Mode</label>
-                                    <select
-                                        value={selectedVatMode}
-                                        onChange={(e) => setSelectedVatMode(e.target.value)}
-                                        disabled={cart.length === 0}
-                                        className="w-full px-2 py-1.5 rounded-md border border-gray-300 text-xs font-semibold bg-white focus:border-emerald-500 focus:outline-none"
-                                    >
-                                        {VAT_MODE_OPTIONS.map((option) => (
-                                            <option key={option.value} value={option.value}>{option.label}</option>
-                                        ))}
-                                    </select>
+                                    <label className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">VAT Mode</label>
+                                    <div className="group/pos-field-tooltip relative">
+                                        <select
+                                            value={selectedVatMode}
+                                            onChange={(e) => setSelectedVatMode(e.target.value)}
+                                            disabled={cart.length === 0}
+                                            className="w-full px-2.5 py-2 rounded-lg border border-slate-300 text-xs font-medium bg-white focus:border-slate-500 focus:outline-none"
+                                        >
+                                            {VAT_MODE_OPTIONS.map((option) => (
+                                                <option key={option.value} value={option.value}>{option.label}</option>
+                                            ))}
+                                        </select>
+                                        {cart.length === 0 && (
+                                            <PosFieldTooltip id="cash-vat-mode-help">
+                                                Add an item first to configure the VAT mode.
+                                            </PosFieldTooltip>
+                                        )}
+                                    </div>
                                 </div>
                             </>
                         ) : (
                             <>
-                                <div className="relative flex flex-col gap-1" ref={creditCustomerComboboxRef}>
-                                    <label className="text-[11px] font-semibold text-gray-600 uppercase tracking-wider">Regular Customer</label>
+                                <div
+                                    className="group/pos-field-tooltip relative flex flex-col gap-1"
+                                    ref={creditCustomerComboboxRef}
+                                >
+                                    <label className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">Regular Customer</label>
                                     <div className="relative">
                                         <input
                                             type="text"
@@ -2027,12 +2142,17 @@ const PointOfSale = () => {
                                             role="combobox"
                                             aria-expanded={isCreditCustomerComboboxOpen}
                                             aria-autocomplete="list"
-                                            className="w-full px-2.5 py-2 pr-8 rounded-lg border border-gray-300 text-sm font-semibold bg-white focus:border-amber-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-gray-50"
+                                            className="w-full px-2.5 py-2 pr-8 rounded-lg border border-slate-300 text-sm font-medium bg-white focus:border-slate-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-gray-50"
                                         />
                                         {(creditCustomerSearchQuery || selectedCreditCustomerId) && cart.length > 0 && (
                                             <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={clearCreditCustomerSelection} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 transition-colors hover:text-gray-700" aria-label="Clear regular customer">
                                                 <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18 18 6M6 6l12 12" /></svg>
                                             </button>
+                                        )}
+                                        {cart.length === 0 && (
+                                            <PosFieldTooltip id="credit-customer-disabled-help">
+                                                Add an item first to select a regular customer.
+                                            </PosFieldTooltip>
                                         )}
                                     </div>
                                     {isCreditCustomerComboboxOpen && cart.length > 0 && (
@@ -2074,26 +2194,34 @@ const PointOfSale = () => {
                                         </div>
                                     )}
                                 </div>
-                                <div className="relative flex flex-col gap-1" ref={creditPaymentModeRef}>
-                                    <label className="text-[11px] font-semibold text-gray-600 uppercase tracking-wider">Payment Method</label>
-                                    <button
-                                        type="button"
-                                        onClick={() => {
-                                            setIsCreditCustomerComboboxOpen(false);
-                                            setIsCreditPaymentModeOpen((prev) => !prev);
-                                        }}
-                                        disabled={cart.length === 0}
-                                        aria-haspopup="listbox"
-                                        aria-expanded={isCreditPaymentModeOpen}
-                                        className="flex w-full items-center justify-between px-2.5 py-2 rounded-lg border border-gray-300 text-sm font-semibold bg-white text-gray-800 text-left transition-colors hover:border-amber-400 focus:border-amber-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-gray-50"
-                                    >
-                                        <span>{selectedCreditPaymentMode
-                                            ? (selectedCreditPaymentMode === 'other'
-                                                ? (customCreditPaymentMode || 'Other')
-                                                : formatCreditPaymentModeLabel(selectedCreditPaymentMode))
-                                            : 'Select payment method'}</span>
-                                        <svg className={`h-4 w-4 text-gray-400 transition-transform ${isCreditPaymentModeOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="m6 9 6 6 6-6" /></svg>
-                                    </button>
+                                <div
+                                    className="group/pos-field-tooltip relative flex flex-col gap-1"
+                                    ref={creditPaymentModeRef}
+                                >
+                                    <label className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">Payment Method</label>
+                                    <div className="relative">
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setIsCreditCustomerComboboxOpen(false);
+                                                setIsCreditPaymentModeOpen((prev) => !prev);
+                                            }}
+                                            disabled={cart.length === 0}
+                                            aria-haspopup="listbox"
+                                            aria-expanded={isCreditPaymentModeOpen}
+                                            className="flex w-full items-center justify-between px-2.5 py-2 rounded-lg border border-slate-300 text-sm font-medium bg-white text-slate-800 text-left transition-colors hover:border-slate-400 focus:border-slate-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-gray-50"
+                                        >
+                                            <span>{selectedCreditPaymentMode
+                                                ? formatCreditPaymentModeLabel(selectedCreditPaymentMode)
+                                                : 'Select payment method'}</span>
+                                            <svg className={`h-4 w-4 text-gray-400 transition-transform ${isCreditPaymentModeOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="m6 9 6 6 6-6" /></svg>
+                                        </button>
+                                        {cart.length === 0 && (
+                                            <PosFieldTooltip id="credit-payment-method-disabled-help">
+                                                Add an item first to select a payment method.
+                                            </PosFieldTooltip>
+                                        )}
+                                    </div>
                                     {isCreditPaymentModeOpen && cart.length > 0 && (
                                         <div className="absolute z-20 top-full mt-1 w-full rounded-lg border border-gray-200 bg-white shadow-lg" role="listbox">
                                             <div className="max-h-40 overflow-y-auto py-1">
@@ -2126,6 +2254,7 @@ const PointOfSale = () => {
                                             type="text"
                                             value={customCreditPaymentMode}
                                             onChange={(e) => setCustomCreditPaymentMode(e.target.value)}
+                                            onBlur={(e) => setCustomCreditPaymentMode(normalizeHumanReadable(e.target.value))}
                                             onKeyDown={(e) => {
                                                 if (e.key === 'Enter') {
                                                     e.preventDefault();
@@ -2136,18 +2265,21 @@ const PointOfSale = () => {
                                                 }
                                             }}
                                             placeholder="Type other payment mode"
-                                            className="w-full px-2.5 py-2 rounded-lg border border-gray-300 text-sm font-semibold bg-white text-gray-800 focus:border-amber-500 focus:outline-none"
+                                            className="w-full px-2.5 py-2 rounded-lg border border-slate-300 text-sm font-medium bg-white text-slate-800 focus:border-slate-500 focus:outline-none"
                                         />
                                     )}
                                 </div>
-                                <div className="flex flex-col gap-1">
-                                    <label className="text-[11px] font-semibold text-gray-600 uppercase tracking-wider">Credit Term</label>
-                                    <div className="flex items-center gap-1">
+                                <div
+                                    className="group/pos-field-tooltip relative flex flex-col gap-1"
+                                >
+                                    <label className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">Credit Term</label>
+                                    <div className="relative flex items-center gap-1.5">
                                         <button
                                             type="button"
                                             onClick={decrementCreditTerm}
                                             disabled={cart.length === 0 || Number(selectedCreditTermDays || MIN_CREDIT_TERM_DAYS) <= MIN_CREDIT_TERM_DAYS}
-                                            className={`w-8 h-8 rounded-lg border border-gray-300 text-sm font-semibold ${cart.length === 0 ? 'text-gray-300 cursor-not-allowed bg-gray-50' : 'text-gray-700 bg-white hover:bg-gray-100'}`}
+                                            aria-label="Decrease credit term"
+                                            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-300 text-lg font-medium leading-none transition-colors active:scale-[0.98] dark:border-slate-600 ${cart.length === 0 ? 'cursor-not-allowed bg-slate-50 text-slate-300 dark:bg-slate-800 dark:text-slate-600' : 'bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-100 active:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:border-slate-500 dark:hover:bg-slate-700 dark:active:bg-slate-600'}`}
                                         >
                                             -
                                         </button>
@@ -2162,42 +2294,64 @@ const PointOfSale = () => {
                                             onPaste={preventInvalidWholeNumberPaste}
                                             onChange={(e) => handleCreditTermInputChange(e.target.value)}
                                             disabled={cart.length === 0}
-                                            className="flex-1 px-2.5 py-2 rounded-lg border border-gray-300 text-sm font-semibold bg-white text-center focus:border-amber-500 focus:outline-none"
+                                            className="h-9 min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-2.5 text-center text-sm font-medium text-slate-900 focus:border-amber-500 focus:outline-none dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
                                         />
                                         <button
                                             type="button"
                                             onClick={incrementCreditTerm}
                                             disabled={cart.length === 0 || Number(selectedCreditTermDays || MIN_CREDIT_TERM_DAYS) >= MAX_CREDIT_TERM_DAYS}
-                                            className={`w-8 h-8 rounded-lg border border-gray-300 text-sm font-semibold ${cart.length === 0 ? 'text-gray-300 cursor-not-allowed bg-gray-50' : 'text-gray-700 bg-white hover:bg-gray-100'}`}
+                                            aria-label="Increase credit term"
+                                            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-300 text-lg font-medium leading-none transition-colors active:scale-[0.98] dark:border-slate-600 ${cart.length === 0 ? 'cursor-not-allowed bg-slate-50 text-slate-300 dark:bg-slate-800 dark:text-slate-600' : 'bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-100 active:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:border-slate-500 dark:hover:bg-slate-700 dark:active:bg-slate-600'}`}
                                         >
                                             +
                                         </button>
-                                        <span className="text-xs font-semibold text-gray-500 whitespace-nowrap">days</span>
+                                        <span className="text-xs font-medium text-gray-500 whitespace-nowrap">days</span>
+                                        {cart.length === 0 && (
+                                            <PosFieldTooltip id="credit-term-disabled-help">
+                                                Add an item first to set the credit term.
+                                            </PosFieldTooltip>
+                                        )}
                                     </div>
                                 </div>
-                                <div className="flex justify-between items-center text-sm text-gray-600 font-semibold">
-                                    <span>Due Date</span>
+                                <div
+                                    className="group/pos-field-tooltip relative flex justify-between items-center text-sm font-medium text-gray-600"
+                                >
+                                    <span className="font-medium text-slate-600">Due Date</span>
                                     <span className="text-gray-900 font-semibold">
                                         {computedCreditDueDate.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
                                     </span>
+                                    {cart.length === 0 && (
+                                        <PosFieldTooltip id="credit-due-date-disabled-help">
+                                            The due date will be calculated after setting the credit term.
+                                        </PosFieldTooltip>
+                                    )}
                                 </div>
-                                <div className="flex flex-col gap-1">
-                                    <label className="text-[11px] font-semibold text-gray-600 uppercase tracking-wider">VAT Mode</label>
-                                    <select
-                                        value={selectedVatMode}
-                                        onChange={(e) => setSelectedVatMode(e.target.value)}
-                                        disabled={cart.length === 0}
-                                        className="w-full px-2 py-1.5 rounded-md border border-gray-300 text-xs font-semibold bg-white focus:border-amber-500 focus:outline-none"
-                                    >
-                                        {VAT_MODE_OPTIONS.map((option) => (
-                                            <option key={option.value} value={option.value}>{option.label}</option>
-                                        ))}
-                                    </select>
+                                <div
+                                    className="group/pos-field-tooltip relative flex flex-col gap-1"
+                                >
+                                    <label className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">VAT Mode</label>
+                                    <div className="relative">
+                                        <select
+                                            value={selectedVatMode}
+                                            onChange={(e) => setSelectedVatMode(e.target.value)}
+                                            disabled={cart.length === 0}
+                                            className="w-full px-2.5 py-2 rounded-lg border border-slate-300 text-xs font-medium bg-white focus:border-slate-500 focus:outline-none"
+                                        >
+                                            {VAT_MODE_OPTIONS.map((option) => (
+                                                <option key={option.value} value={option.value}>{option.label}</option>
+                                            ))}
+                                        </select>
+                                        {cart.length === 0 && (
+                                            <PosFieldTooltip id="credit-vat-mode-disabled-help">
+                                                Add an item first to configure the VAT mode.
+                                            </PosFieldTooltip>
+                                        )}
+                                    </div>
                                 </div>
                             </>
                         )}
 
-                        <div className="flex justify-between font-semibold text-xl text-gray-900 pt-2 border-t border-dashed border-gray-200">
+                        <div className="pos-totals flex justify-between items-end rounded-lg bg-slate-100/80 px-2.5 py-2.5 font-semibold text-xl text-slate-900">
                             <span>Total</span>
                             <span>{formatCurrency(calculateTotal())}</span>
                         </div>
@@ -2206,7 +2360,7 @@ const PointOfSale = () => {
                             if (!vat) return null;
                             return (
                                 vat.netAmount > 0 ? (
-                                    <div className="space-y-1 text-xs pt-2 border-t border-dashed border-gray-200">
+                                    <div className="space-y-1 text-xs px-1 pt-1">
                                         <div className="flex justify-between text-gray-600 font-medium">
                                             <span>Net Amount</span>
                                             <span className="text-gray-900 font-semibold">{formatCurrency(vat.netAmount)}</span>
@@ -2222,16 +2376,15 @@ const PointOfSale = () => {
                             );
                         })()}
                     </div>
-                    </motion.div>
+                    </MotionDiv>
                     )}
                     </AnimatePresence>
-                    <div className="flex gap-2">
-                        <div className={`relative group flex-1 ${cart.length === 0 ? 'cursor-not-allowed' : ''}`}>
+                    <div className="flex gap-2 border-t border-slate-100 pt-2.5">
+                        <div className={`relative group w-[34%] shrink-0 ${cart.length === 0 ? 'cursor-not-allowed' : ''}`}>
                             <button 
                                 onClick={() => setShowQuotationInput(true)}
                                 disabled={cart.length === 0}
-                                style={{ backgroundColor: '#ffffff', color: '#111827', border: '2px solid #111827' }}
-                                className={`w-full py-2.5 rounded-xl text-[10px] font-semibold uppercase tracking-widest flex items-center justify-center shadow-md transform transition-transform duration-150 ${cart.length === 0 ? 'pointer-events-none' : 'hover:opacity-90 hover:-translate-y-0.5'}`}
+                                className={`w-full py-2.5 rounded-lg border border-slate-300 bg-white text-[10px] font-semibold uppercase tracking-wider text-slate-700 flex items-center justify-center transition-colors duration-150 ${cart.length === 0 ? 'pointer-events-none opacity-50' : 'hover:bg-slate-50 hover:border-slate-400'}`}
                             >
                                 Quotation
                             </button>
@@ -2248,8 +2401,7 @@ const PointOfSale = () => {
                             <button 
                                 onClick={handleCheckout}
                                 disabled={isCheckoutDisabled}
-                                style={{ backgroundColor: '#111827', color: '#ffffff', border: '2px solid #111827' }}
-                                className={`w-full py-2.5 rounded-xl text-[10px] font-semibold uppercase tracking-widest flex items-center justify-center shadow-xl transform transition-transform duration-150 ${isCheckoutDisabled ? 'pointer-events-none' : 'hover:opacity-90 hover:-translate-y-0.5'}`}
+                                className={`w-full py-2.5 rounded-lg border border-slate-900 bg-slate-900 text-[10px] font-semibold uppercase tracking-wider text-white flex items-center justify-center shadow-sm transition-colors duration-150 ${isCheckoutDisabled ? 'pointer-events-none opacity-50' : 'hover:bg-slate-800'}`}
                             >
                                 {isCheckoutProcessing ? 'Processing...' : (paymentType === 'credit' ? 'Create Credit Order' : 'Process Payment')}
                             </button>
@@ -2267,109 +2419,239 @@ const PointOfSale = () => {
             </div>
         </div>
         
+        {productDetailsItem && (
+            <div
+                className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
+                onClick={() => setProductDetailsItem(null)}
+            >
+                <div
+                    className="w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+                    onClick={(event) => event.stopPropagation()}
+                >
+                    <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+                        <div className="flex items-center gap-2.5">
+                            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-900 text-white">
+                                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                            </div>
+                            <div>
+                                <h3 className="text-sm font-semibold text-slate-900">Product Details</h3>
+                                <p className="text-[10px] text-slate-500">Reference information only</p>
+                            </div>
+                        </div>
+                        <button type="button" onClick={() => setProductDetailsItem(null)} className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700" aria-label="Close product details">
+                            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>
+                        </button>
+                    </div>
+                    <div className="max-h-[min(560px,calc(100vh-8rem))] overflow-y-auto p-4">
+                        <div className="flex gap-4">
+                            <ProductThumbnail item={productDetailsItem} className="h-28 w-28 shrink-0 rounded-xl" onPreview={handleProductImagePreviewClick} fit="contain" />
+                            <div className="min-w-0 py-1">
+                                <p className="text-[9px] font-semibold uppercase tracking-widest text-slate-400">{productDetailsItem.category || 'Product'}</p>
+                                <h4 className="mt-1 text-base font-semibold leading-snug text-slate-900">{productDetailsItem.name}</h4>
+                                <p className="mt-1 text-xs text-slate-500">
+                                    {[productDetailsItem.brand, productDetailsItem.size, productDetailsItem.color].filter(Boolean).join(' · ') || 'No variant details available'}
+                                </p>
+                                <p className="mt-2 text-lg font-semibold tracking-tight text-slate-900">
+                                    {productDetailsItem.isGroup
+                                        ? (productDetailsItem.minPrice === productDetailsItem.maxPrice ? formatCurrency(productDetailsItem.minPrice) : `${formatCurrency(productDetailsItem.minPrice)} - ${formatCurrency(productDetailsItem.maxPrice)}`)
+                                        : formatCurrency(productDetailsItem.price)}
+                                </p>
+                            </div>
+                        </div>
+                        <dl className="mt-5 grid grid-cols-2 gap-x-5 gap-y-4 border-t border-slate-100 pt-4 text-xs">
+                            <div>
+                                <dt className="text-[9px] font-semibold uppercase tracking-widest text-slate-400">{productDetailsItem.isGroup ? 'Options' : 'SKU'}</dt>
+                                <dd className="mt-1 font-medium text-slate-800">{productDetailsItem.isGroup ? productDetailsItem.variants.length : productDetailsItem.code}</dd>
+                            </div>
+                            <div>
+                                <dt className="text-[9px] font-semibold uppercase tracking-widest text-slate-400">Stock</dt>
+                                <dd className="mt-1 font-medium text-slate-800">{productDetailsItem.stock} available</dd>
+                            </div>
+                            <div>
+                                <dt className="text-[9px] font-semibold uppercase tracking-widest text-slate-400">Product Type</dt>
+                                <dd className="mt-1 font-medium text-slate-800">{productDetailsItem.category || 'General'}</dd>
+                            </div>
+                            {productDetailsItem.isGroup ? (
+                                <div>
+                                    <dt className="text-[9px] font-semibold uppercase tracking-widest text-slate-400">Brands</dt>
+                                    <dd className="mt-1 font-medium text-slate-800">{productDetailsItem.availableBrands?.join(', ') || 'Not specified'}</dd>
+                                </div>
+                            ) : (
+                                productDetailsItem.supplierName && <div>
+                                    <dt className="text-[9px] font-semibold uppercase tracking-widest text-slate-400">Supplier</dt>
+                                    <dd className="mt-1 font-medium text-slate-800">{productDetailsItem.supplierName}</dd>
+                                </div>
+                            )}
+                        </dl>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        {recommendationChooserItem && (
+            <div className="recommendation-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm" onClick={() => setRecommendationChooserItem(null)}>
+                <div role="dialog" aria-modal="true" aria-labelledby="recommendation-type-title" className="recommendation-modal recommendation-chooser-modal w-full max-w-sm overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
+                    <div className="recommendation-modal-header flex items-start justify-between border-b border-slate-100 px-4 py-3">
+                        <div className="min-w-0 pr-3">
+                            <h3 id="recommendation-type-title" className="text-sm font-semibold text-slate-900">Choose Recommendation Type</h3>
+                            <p className="mt-0.5 truncate text-[10px] text-slate-500">{recommendationChooserItem.name} ({recommendationChooserItem.code})</p>
+                        </div>
+                        <button type="button" onClick={() => setRecommendationChooserItem(null)} aria-label="Close recommendation choices" className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700">
+                            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18 18 6M6 6l12 12" /></svg>
+                        </button>
+                    </div>
+                    <div className="recommendation-modal-body space-y-2 bg-slate-50/60 p-4">
+                        <button type="button" onClick={() => { const item = recommendationChooserItem; setRecommendationChooserItem(null); openRecommendationResults(item, 'alternative', { returnToChooser: true }); }} className="recommendation-choice-card flex w-full items-center gap-3 rounded-xl border border-slate-200 bg-white p-3 text-left transition-colors hover:border-slate-300 hover:bg-slate-50">
+                            <span className="recommendation-choice-icon flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-700">
+                                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 7h11m0 0-3-3m3 3-3 3M17 17H6m0 0 3 3m-3-3 3-3" /></svg>
+                            </span>
+                            <span><span className="block text-xs font-semibold text-slate-900">Alternative Products</span><span className="mt-0.5 block text-[10px] text-slate-500">Similar or compatible replacement products.</span></span>
+                        </button>
+                        <button type="button" onClick={() => { const item = recommendationChooserItem; setRecommendationChooserItem(null); openRecommendationResults(item, 'budget', { returnToChooser: true }); }} className="recommendation-choice-card recommendation-choice-card-budget flex w-full items-center gap-3 rounded-xl border border-emerald-100 bg-white p-3 text-left transition-colors hover:border-emerald-200 hover:bg-emerald-50/40">
+                            <span className="recommendation-choice-icon recommendation-choice-icon-budget flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700">
+                                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2v-2m2-6h-6a2 2 0 000 4h6V9z" /></svg>
+                            </span>
+                            <span><span className="block text-xs font-semibold text-slate-900">Budget Options</span><span className="mt-0.5 block text-[10px] text-slate-500">Compare Value, Standard, and Premium price options.</span></span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
+
         {/* Recommendation Modal */}
         {recommendationModal.isOpen && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-                <div className="bg-white w-full max-w-3xl rounded-xl shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
-                    <div className={`p-3 border-b ${recommendationModal.type === 'out-of-stock' ? 'bg-red-50 border-red-100' : recommendationModal.type === 'low-stock' ? 'bg-yellow-50 border-yellow-100' : 'bg-emerald-50 border-emerald-100'}`}>
+            <div className="recommendation-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm" onClick={() => setRecommendationModal({ isOpen: false, item: null, alternatives: [] })}>
+                <div className="recommendation-modal recommendation-results-modal w-full max-w-2xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl animate-in fade-in zoom-in duration-200" onClick={(event) => event.stopPropagation()}>
+                    <div className="recommendation-modal-header border-b border-slate-100 bg-white px-4 py-3">
                         <div className="flex items-center justify-between">
                             <div className="flex items-center gap-3">
-                                <div className={`p-1.5 rounded-lg ${recommendationModal.type === 'out-of-stock' ? 'bg-red-100 text-red-600' : recommendationModal.type === 'low-stock' ? 'bg-yellow-100 text-yellow-600' : 'bg-emerald-100 text-emerald-600'}`}>
-                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-900 text-white">
+                                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
                                     </svg>
                                 </div>
                                 <div>
-                                    <h3 className={`text-base font-semibold tracking-tight ${recommendationModal.type === 'out-of-stock' ? 'text-red-900' : recommendationModal.type === 'low-stock' ? 'text-yellow-900' : 'text-emerald-900'}`}>
-                                        {recommendationModal.type === 'out-of-stock'
-                                            ? 'Item Out of Stock'
-                                            : recommendationModal.type === 'low-stock'
-                                                ? 'Low Stock Warning'
-                                                : 'Budget Alternatives'}
+                                    <h3 className="text-sm font-semibold tracking-tight text-slate-900">
+                                        {recommendationModal.kind === 'budget' ? 'Budget Options' : 'Alternative Products'}
                                     </h3>
-                                    <p className={`text-xs font-medium mt-0 ${recommendationModal.type === 'out-of-stock' ? 'text-red-700' : recommendationModal.type === 'low-stock' ? 'text-yellow-700' : 'text-emerald-700'}`}>
+                                    <p className="mt-0.5 text-[10px] font-medium text-slate-500">
                                         {recommendationModal.item.brand ? `${recommendationModal.item.brand} ` : ''}{recommendationModal.item.name}{recommendationModal.item.color ? ` — ${recommendationModal.item.color}` : ''} ({recommendationModal.item.code})
                                     </p>
                                 </div>
                             </div>
-                            <button 
+                            <button
                                 onClick={() => setRecommendationModal({ isOpen: false, item: null, alternatives: [] })}
-                                className="text-gray-400 hover:text-gray-600 p-1 hover:bg-white rounded-full transition-colors"
+                                className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
+                                aria-label="Close recommendations"
                             >
                                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>
                             </button>
                         </div>
                     </div>
 
-                    <div className="p-4">
-                        <h4 className="text-sm font-semibold text-gray-500 uppercase tracking-widest mb-3 flex items-center gap-2">
-                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-                            {recommendationModal.type === 'in-stock' ? 'Budget Alternatives' : 'Recommended Alternatives'}
-                        </h4>
-
-                        <p className="text-[11px] text-gray-500 mb-3">
-                            {recommendationModal.type === 'in-stock'
-                                ? 'Value/Standard/Premium is based on price relative to the selected product.'
-                                : 'Low/Out-of-stock items use standard alternatives.'}
+                    <div className="recommendation-modal-body bg-slate-50/60 p-4">
+                        <p className="mb-2 text-[11px] text-slate-500">
+                            {recommendationModal.kind === 'budget'
+                                ? 'Compare price-relative options for the selected product.'
+                                : recommendationModal.type === 'out-of-stock'
+                                    ? 'Choose a suitable in-stock replacement. Nothing is substituted automatically.'
+                                    : 'Choose a similar or compatible replacement product.'}
                         </p>
+                        {recommendationModal.returnToChooser && (
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    const item = recommendationModal.item;
+                                    setRecommendationModal({ isOpen: false, item: null, alternatives: [] });
+                                    setRecommendationChooserItem(item);
+                                }}
+                                className="recommendation-back-link mb-3 inline-flex items-center gap-1 text-[10px] font-medium text-slate-500 transition-colors hover:text-slate-800"
+                            >
+                                <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 18l-6-6 6-6" />
+                                </svg>
+                                Back to Recommendation Type
+                            </button>
+                        )}
                         
                         {recommendationModal.alternatives.length > 0 ? (
-                            <div className="max-h-[440px] overflow-y-auto pr-2 -mr-2">
-                                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 pb-2">
-                                    {recommendationModal.alternatives.map(alt => (
-                                        <div 
-                                            key={alt.code} 
-                                            className="group p-4 rounded-2xl border border-slate-200 hover:border-slate-800 hover:shadow-xl transition-all duration-300 cursor-pointer relative bg-white flex flex-col min-h-[248px] overflow-hidden shrink-0 hover:-translate-y-1"
-                                        onClick={() => selectRecommendedAlternative(alt)}
-                                    >
-                                        {/* Decorative Top Line */}
-                                        <div className="absolute top-0 left-0 right-0 h-1 bg-slate-800 opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
-                                          
-                                        <ProductThumbnail item={alt} className="absolute left-4 top-5 h-16 w-16" onPreview={handleProductImagePreviewClick} />
-                                        <div className="mb-3 mt-1 ml-20 min-h-[64px]">
-                                            <h5 className="text-[15px] font-semibold text-slate-800 group-hover:text-black leading-snug mb-2 break-words">
-                                                {alt.brand && <span className="text-slate-400 font-semibold">{alt.brand} </span>}
-                                                {alt.name}
-                                                {alt.color && <span className="text-slate-500 font-medium"> — {alt.color}</span>}
-                                            </h5>
-                                            <div className="flex items-center gap-2 flex-wrap">
-                                                <p className="text-[11px] font-semibold text-slate-400 bg-slate-50 px-2 py-0.5 rounded-md inline-block font-mono">{alt.code}</p>
-                                            {recommendationModal.type === 'in-stock' && (
-                                                <span className={`text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-md inline-block ${(getRelativeTierKey(alt.price, recommendationModal.item?.price) === 'low') ? 'bg-emerald-50/80 text-emerald-700 border border-emerald-200/80' : (getRelativeTierKey(alt.price, recommendationModal.item?.price) === 'moderate') ? 'bg-amber-50/80 text-amber-700 border border-amber-200/80' : 'bg-blue-50/80 text-blue-700 border border-blue-200/80'}`}>
-                                                    {getTierDisplayLabel(getRelativeTierKey(alt.price, recommendationModal.item?.price))}
-                                                </span>
-                                            )}
-                                            </div>
-                                        </div>
-                                        
-                                        <div className="mt-auto space-y-3">
-                                            <div className="grid grid-cols-[48px_1fr] items-start border-b border-slate-100 pb-2 gap-2">
-                                                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mt-0.5">Size</span>
-                                                <span className="text-[13px] font-semibold text-slate-800 leading-tight text-right break-words min-h-[18px]">{alt.size || '-'}</span>
-                                            </div>
-                                            <div className="grid grid-cols-2 gap-2 items-end">
-                                                <div className="min-w-0">
-                                                    <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-1">Price</p>
-                                                    <p className="text-lg font-semibold text-slate-900 truncate tracking-tight">{formatCurrency(alt.price)}</p>
-                                                </div>
-                                                <div className="text-right min-w-0">
-                                                    <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-1">Stock</p>
-                                                    <p className={`text-[15px] font-semibold truncate shadow-sm rounded-md px-2 py-0.5 inline-block border ${alt.stock < 20 ? 'text-amber-700 bg-amber-50/80 border-amber-100' : 'text-emerald-700 bg-emerald-50/80 border-emerald-100'}`}>{alt.stock}</p>
-                                                </div>
-                                            </div>
-                                            <button
-                                                type="button"
-                                                onClick={(event) => {
-                                                    event.stopPropagation();
-                                                    selectRecommendedAlternative(alt);
-                                                }}
-                                                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-[10px] font-semibold tracking-widest text-slate-700 shadow-sm transition-colors hover:border-slate-900 hover:bg-slate-900 hover:text-white focus:border-slate-900 focus:bg-slate-900 focus:text-white focus:outline-none focus:ring-2 focus:ring-slate-900 focus:ring-offset-2"
+                            <div className="recommendation-results-scroll -mr-2 max-h-[430px] overflow-y-auto pr-2">
+                                <div className="grid grid-cols-1 gap-3 pb-2 sm:grid-cols-2">
+                                    {recommendationModal.alternatives.map(alt => {
+                                        const originalPrice = Number(recommendationModal.item?.price || 0);
+                                        const alternativePrice = Number(alt.price || 0);
+                                        const savings = Math.max(0, originalPrice - alternativePrice);
+                                        const priceDifference = alternativePrice - originalPrice;
+                                        const priceTier = getRelativePriceTier(recommendationModal.item?.price, alt.price);
+                                        const tierPresentation = {
+                                            value: { label: 'Value', className: 'border-emerald-100 bg-emerald-50 text-emerald-700' },
+                                            standard: { label: 'Standard', className: 'border-slate-200 bg-slate-50 text-slate-600' },
+                                            premium: { label: 'Premium', className: 'border-indigo-100 bg-indigo-50 text-indigo-700' },
+                                        }[priceTier];
+
+                                        return (
+                                            <div
+                                                key={alt.code}
+                                                className={`recommendation-result-card cursor-pointer rounded-xl border p-3 transition-colors hover:border-slate-400 ${recommendationModal.type === 'out-of-stock' ? 'border-red-200 bg-red-50/30' : 'border-slate-200 bg-white'}`}
+                                                onClick={() => selectRecommendedAlternative(alt)}
                                             >
-                                                SELECT
-                                            </button>
-                                        </div>
-                                    </div>
-                                ))}
+                                                <div className="flex gap-3">
+                                                    <ProductThumbnail item={alt} className="h-20 w-20 shrink-0 rounded-lg" onPreview={handleProductImagePreviewClick} fit="contain" />
+                                                    <div className="min-w-0 flex-1">
+                                                        <div className="mb-1 flex flex-wrap items-center gap-1">
+                                                            {recommendationModal.kind === 'budget' && (
+                                                                <span className={`recommendation-tier-badge recommendation-tier-${priceTier} rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] ${tierPresentation.className}`}>
+                                                                    {tierPresentation.label}
+                                                                </span>
+                                                            )}
+                                                            {recommendationModal.kind === 'alternative' && (
+                                                                <span className="text-[9px] font-medium text-slate-400">Alternative Product</span>
+                                                            )}
+                                                        </div>
+                                                        <h5 className="line-clamp-2 text-[13px] font-semibold leading-snug text-slate-900">
+                                                            {alt.brand && <span className="text-slate-500">{alt.brand} </span>}
+                                                            {alt.name}
+                                                        </h5>
+                                                        <p className="mt-1 truncate text-[10px] text-slate-500">
+                                                            {[alt.size, alt.color].filter(Boolean).join(' · ') || 'Standard option'}
+                                                        </p>
+                                                        <p className="mt-0.5 truncate font-mono text-[9px] text-slate-400">{alt.code}</p>
+                                                    </div>
+                                                </div>
+                                                <div className="mt-3 flex items-end justify-between gap-3 border-t border-slate-100 pt-3">
+                                                    <div>
+                                                        <p className="text-[15px] font-semibold tracking-tight text-slate-900">{formatCurrency(alt.price)}</p>
+                                                        {recommendationModal.kind === 'budget' && priceTier === 'value' && savings > 0 && (
+                                                            <p className="text-[10px] font-medium text-emerald-700">Save {formatCurrency(savings)}</p>
+                                                        )}
+                                                        {recommendationModal.kind === 'budget' && priceTier === 'standard' && Math.abs(priceDifference) > 0 && (
+                                                            <p className="text-[10px] font-medium text-slate-500">
+                                                                {priceDifference < 0 ? `${formatCurrency(Math.abs(priceDifference))} cheaper` : `${formatCurrency(priceDifference)} higher`}
+                                                            </p>
+                                                        )}
+                                                        {recommendationModal.kind === 'budget' && priceTier === 'premium' && priceDifference > 0 && (
+                                                            <p className="text-[10px] font-medium text-indigo-700">{formatCurrency(priceDifference)} higher</p>
+                                                        )}
+                                                    </div>
+                                                    <div className="flex items-center gap-2">
+                                                        <span data-stock-state={alt.stock < 20 ? 'low' : 'in-stock'} className={`recommendation-stock-badge rounded-full px-2 py-1 text-[9px] font-semibold ${alt.stock < 20 ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                                                            {alt.stock} in stock
+                                                        </span>
+                                                        <button
+                                                            type="button"
+                                                            onClick={(event) => {
+                                                                event.stopPropagation();
+                                                                selectRecommendedAlternative(alt);
+                                                            }}
+                                                            className="rounded-lg bg-slate-900 px-3 py-1.5 text-[10px] font-semibold text-white transition-colors hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-900 focus:ring-offset-2"
+                                                        >
+                                                            Add
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
                             </div>
                         </div>
                         ) : (
@@ -2383,19 +2665,17 @@ const PointOfSale = () => {
                         )}
                     </div>
 
-                    <div className="p-4 bg-gray-50 border-t border-gray-100 flex justify-end gap-3">
+                    <div className="recommendation-modal-footer flex justify-end gap-3 border-t border-slate-100 bg-white px-4 py-3">
                         <button 
                             onClick={() => setRecommendationModal({ isOpen: false, item: null, alternatives: [] })}
-                            className="px-4 py-2 rounded-xl text-xs font-semibold text-black bg-transparent hover:bg-gray-100 transition-all shadow-md hover:shadow-lg transform hover:-translate-y-0.5"
-                            style={{ border: '2px solid #000' }}
+                            className="recommendation-modal-cancel rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50"
                         >
                             Cancel
                         </button>
                         {recommendationModal.type === 'low-stock' && (
                             <button 
                                 onClick={() => addToCart(recommendationModal.item, true)}
-                                className="px-5 py-2 rounded-xl text-xs font-semibold text-white hover:opacity-90 transition-all shadow-md hover:shadow-lg transform hover:-translate-y-0.5"
-                                style={{ backgroundColor: '#111827', border: '2px solid #111827' }}
+                                className="recommendation-modal-continue rounded-lg bg-slate-900 px-5 py-2 text-xs font-semibold text-white transition-colors hover:bg-slate-700"
                             >
                                 Continue with Original ({recommendationModal.item.stock} left)
                             </button>
@@ -2434,10 +2714,10 @@ const PointOfSale = () => {
         {/* Variant Picker Modal */}
         {variantModal.isOpen && variantModal.group && (
             <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-md transition-all">
-                <div className="bg-white w-full max-w-lg rounded-3xl shadow-[0_20px_60px_-15px_rgba(0,0,0,0.2)] flex flex-col max-h-[85vh] animate-in fade-in zoom-in-95 duration-300 overflow-hidden ring-1 ring-slate-900/5">
-                    <div className="px-5 py-4 border-b border-slate-100 bg-white/70 backdrop-blur-xl flex flex-col gap-3 relative z-10">
+                <div className="flex w-full max-w-lg flex-col overflow-hidden rounded-2xl bg-slate-50 shadow-[0_16px_44px_-20px_rgba(15,23,42,0.28)] ring-1 ring-slate-900/10 max-h-[82vh] animate-in fade-in zoom-in-95 duration-300">
+                    <div className="relative z-10 flex flex-col gap-2 border-b border-slate-200 bg-white/95 px-4 py-3">
                         <div className="w-full">
-                            <div className="flex flex-wrap items-center gap-2 mb-2">
+                            <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
                                 {variantModal.step === 'variants' && variantModal.group.availableBrands?.length > 1 && (
                                     <button 
                                         onClick={() => setVariantModal(prev => ({ ...prev, step: 'brand', selectedBrand: null, selectedSize: null, selectedColor: null, quantity: 1 }))}
@@ -2447,23 +2727,23 @@ const PointOfSale = () => {
                                         Back to Brands
                                     </button>
                                 )}
-                                <span className="text-[10px] font-semibold text-indigo-700 bg-indigo-50 border border-indigo-100 px-2.5 py-0.5 rounded-full uppercase tracking-widest">{variantModal.step === 'brand' ? 'Select Brand' : 'Product Group'}</span>
-                                {variantModal.step === 'variants' && variantModal.selectedBrand && <span className="text-[10px] font-semibold text-slate-500 bg-slate-100 px-2.5 py-0.5 rounded-full">{variantModal.selectedBrand}</span>}
-                                {variantModal.step === 'variants' && !variantModal.selectedBrand && variantModal.group.brand && variantModal.group.brand !== 'Multiple Brands' && <span className="text-[10px] font-semibold text-slate-500 bg-slate-100 px-2.5 py-0.5 rounded-full">{variantModal.group.brand}</span>}
+                                <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[9px] font-semibold tracking-wide text-slate-600">{variantModal.step === 'brand' ? 'Select Brand' : 'Product Group'}</span>
+                                {variantModal.step === 'variants' && variantModal.selectedBrand && <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[9px] font-medium text-slate-500">{variantModal.selectedBrand}</span>}
+                                {variantModal.step === 'variants' && !variantModal.selectedBrand && variantModal.group.brand && variantModal.group.brand !== 'Multiple Brands' && <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[9px] font-medium text-slate-500">{variantModal.group.brand}</span>}
                             </div>
-                            <h3 className="text-xl font-semibold text-slate-900 tracking-tight leading-tight text-center">
+                            <h3 className="text-center text-lg font-semibold leading-tight tracking-tight text-slate-900">
                                 {variantModal.group.name}
                             </h3>
-                            {variantModal.group.color && variantModal.group.color !== 'Multiple Colors' && <p className="text-xs font-medium text-slate-500 mt-1 text-center">Base Color: <span className="text-slate-800 font-semibold">{variantModal.group.color}</span></p>}
+                            {variantModal.group.color && variantModal.group.color !== 'Multiple Colors' && <p className="mt-0.5 text-center text-[11px] font-medium text-slate-500">Base Color: <span className="font-semibold text-slate-800">{variantModal.group.color}</span></p>}
                             {variantModal.step === 'variants' && (
-                                <div className="mt-3 flex justify-center">
-                                    <ProductThumbnail item={variantModalImageItem} className="h-18 w-18" onPreview={handleProductImagePreviewClick} />
+                                <div className="mt-2 flex justify-center">
+                                    <ProductThumbnail item={variantModalImageItem} className="h-16 w-16" onPreview={handleProductImagePreviewClick} fit="contain" />
                                 </div>
                             )}
                         </div>
                         <button 
                             onClick={() => setVariantModal(createClosedVariantModalState())}
-                            className="absolute top-4 right-5 bg-slate-50 text-slate-400 hover:text-slate-700 hover:bg-slate-100 p-1.5 rounded-full transition-all"
+                            className="absolute right-4 top-3 rounded-lg bg-slate-50 p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
                         >
                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M6 18L18 6M6 6l12 12" /></svg>
                         </button>
@@ -2486,10 +2766,10 @@ const PointOfSale = () => {
                                     return (
                                         <div 
                                             key={brand || 'unbranded'}
-                                            className={`group p-4 rounded-2xl border-2 transition-all duration-300 relative flex flex-col items-center justify-center text-center min-h-[128px] 
+                                            className={`group relative flex min-h-[120px] flex-col items-center justify-center rounded-xl border p-3 text-center transition-colors duration-200
                                                 ${isBrandOutOfStock 
-                                                    ? 'bg-rose-50/30 border-rose-100 cursor-not-allowed opacity-70 grayscale-[0.5]' 
-                                                    : 'bg-white border-transparent shadow-[0_0_0_1px_rgba(0,0,0,0.05),0_4px_10px_rgba(0,0,0,0.03)] hover:border-indigo-500/20 hover:shadow-[0_0_0_2px_rgba(99,102,241,0.2),0_10px_25px_-5px_rgba(0,0,0,0.1)] cursor-pointer hover:-translate-y-1'
+                                                    ? 'cursor-not-allowed border-rose-100 bg-rose-50/30 opacity-70 grayscale-[0.5]'
+                                                    : 'cursor-pointer border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
                                                 }`}
                                             onClick={() => {
                                                 if (!isBrandOutOfStock) {
@@ -2497,11 +2777,11 @@ const PointOfSale = () => {
                                                 }
                                             }}
                                         >
-                                            <ProductThumbnail item={brandImageItem} className="h-12 w-12 mb-3" onPreview={handleProductImagePreviewClick} fit="contain" />
-                                            <h4 className="text-base font-semibold text-slate-800 tracking-tight leading-tight">{brand || 'Unbranded'}</h4>
+                                            <ProductThumbnail item={brandImageItem} className="mb-2 h-12 w-12" onPreview={handleProductImagePreviewClick} fit="contain" />
+                                            <h4 className="text-sm font-semibold leading-tight tracking-tight text-slate-800">{brand || 'Unbranded'}</h4>
                                             
                                             <div className="flex-1 flex flex-col justify-end mt-2 w-full">
-                                                <div className={`text-[11px] font-semibold py-1 px-2.5 rounded-lg inline-block mx-auto transition-all duration-300 ${isBrandOutOfStock ? 'bg-transparent text-rose-500/0 hidden' : 'bg-slate-50 text-slate-600 border border-slate-100 shadow-sm group-hover:bg-indigo-50 group-hover:text-indigo-700 group-hover:border-indigo-100'}`}>
+                                                <div className={`mx-auto inline-block rounded-md border px-2 py-1 text-[10px] font-semibold transition-colors ${isBrandOutOfStock ? 'hidden bg-transparent text-rose-500/0' : 'border-slate-200 bg-slate-50 text-slate-600 group-hover:bg-white'}`}>
                                                     {brandPriceLabel}
                                                 </div>
                                                 {isBrandOutOfStock && (
@@ -2513,7 +2793,7 @@ const PointOfSale = () => {
                                 })}
                             </div>
                         ) : (
-                            <div className="flex flex-col h-full relative">
+                            <div className="flex h-full min-h-0 flex-col">
                                 {(() => {
                                     const filteredVariants = variantModal.group.variants.filter(v => variantModal.selectedBrand ? v.brand === variantModal.selectedBrand : true);
                                     const sizeOptionMap = new Map();
@@ -2558,19 +2838,13 @@ const PointOfSale = () => {
                                         (!needsColor || normalizeVariantOption(v.color) === resolvedSelectedColor) && 
                                         (!needsSize || normalizeVariantOption(v.size) === resolvedSelectedSize)
                                     ) : null;
-                                    const narrowedVariants = filteredVariants.filter((variant) => (
-                                        (!needsColor || !hasSelectedColor || normalizeVariantOption(variant.color) === resolvedSelectedColor)
-                                        && (!needsSize || !hasSelectedSize || normalizeVariantOption(variant.size) === resolvedSelectedSize)
-                                    ));
-                                    const fallbackAlternativeTarget = matchedVariant
-                                        || filteredVariants.find(v =>
-                                            (needsSize && hasSelectedSize && normalizeVariantOption(v.size) === resolvedSelectedSize)
-                                            || (needsColor && hasSelectedColor && normalizeVariantOption(v.color) === resolvedSelectedColor)
-                                        )
-                                        || filteredVariants[0]
-                                        || null;
                                     const canAddSelectedVariant = Boolean(matchedVariant && Number(matchedVariant.stock) > 0);
-                                    const canOpenAlternatives = Boolean(fallbackAlternativeTarget);
+                                    const selectedRecommendationAvailability = matchedVariant
+                                        ? getRecommendationAvailability(matchedVariant, inventory, settings)
+                                        : null;
+                                    const canOpenAlternatives = Boolean(matchedVariant && selectedRecommendationAvailability?.hasAlternatives);
+                                    const selectedRecommendationAction = getPosRecommendationAction(selectedRecommendationAvailability);
+                                    const selectedRecommendationLabel = 'Recommendations';
                                     const isPrimaryDisabled = !isAllSelected || (!canAddSelectedVariant && !canOpenAlternatives);
                                     const maxSelectableQty = Math.max(1, Number(matchedVariant?.stock) || 1);
                                     const selectedQuantity = Math.min(Math.max(1, Number(variantModal.quantity) || 1), maxSelectableQty);
@@ -2578,11 +2852,11 @@ const PointOfSale = () => {
                                     const selectedTotalPrice = selectedUnitPrice * selectedQuantity;
 
                                     return (
-                                        <div className="flex flex-col bg-white overflow-hidden h-full relative">
-                                            <div className="flex-1 overflow-y-auto p-5 pb-32 no-scrollbar">
-                                                <div className="flex justify-between items-start mb-5 bg-slate-50 border border-slate-100 rounded-2xl p-4 shadow-sm">
+                                        <div className="flex h-full min-h-0 flex-col overflow-hidden bg-slate-50/70">
+                                            <div className="flex-1 overflow-y-auto p-4 no-scrollbar">
+                                                <div className="mb-4 flex items-start justify-between gap-3 rounded-xl border border-slate-200 bg-white p-3">
                                                     <div>
-                                                        <h4 className="text-2xl font-semibold text-slate-900 tracking-tight">
+                                                        <h4 className="text-xl font-semibold tracking-tight text-slate-900">
                                                             {matchedVariant 
                                                                 ? formatCurrency(selectedTotalPrice)
                                                                 : (Math.min(...filteredVariants.map(v => v.price)) === Math.max(...filteredVariants.map(v => v.price)) 
@@ -2594,7 +2868,7 @@ const PointOfSale = () => {
                                                                 {formatCurrency(selectedUnitPrice)} x {selectedQuantity}
                                                             </p>
                                                         )}
-                                                        <div className="mt-1.5 flex items-center gap-1.5">
+                                                        <div className="mt-1 flex items-center gap-1.5">
                                                             {!isAllSelected ? (
                                                                 <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-md uppercase tracking-widest border border-amber-100">Select options</span>
                                                             ) : !matchedVariant ? (
@@ -2631,16 +2905,15 @@ const PointOfSale = () => {
                                                     {matchedVariant && (
                                                         <div className="text-right">
                                                             <p className="text-[9px] font-semibold tracking-widest text-slate-400 uppercase mb-1">SKU</p>
-                                                            <p className="text-[11px] font-semibold text-slate-700 bg-white border border-slate-200 px-2.5 py-1 rounded-lg shadow-sm">{matchedVariant.code}</p>
+                                                            <p className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold text-slate-700">{matchedVariant.code}</p>
                                                         </div>
                                                     )}
                                                 </div>
 
                                                 {needsSize && (
-                                                    <div className="mb-6">
-                                                        <div className="flex items-center justify-between mb-2.5">
+                                                    <div className="mb-4">
+                                                        <div className="mb-2 flex items-center">
                                                             <h5 className="text-[11px] font-semibold text-slate-800 uppercase tracking-widest">Select Size/Variant</h5>
-                                                            {hasSelectedSize && <span className="text-[10px] font-semibold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded">{sizeOptionMap.get(resolvedSelectedSize) || resolvedSelectedSize}</span>}
                                                         </div>
                                                         <div className="flex flex-wrap gap-2">
                                                             {uniqueSizes.map((sizeOption) => {
@@ -2663,7 +2936,7 @@ const PointOfSale = () => {
                                                                                 if (!hasMatchingCombination) return;
                                                                                 setVariantModal(prev => ({ ...prev, selectedSize: isSelected ? null : sizeOption.key, quantity: 1 }));
                                                                             }}
-                                                                            className={`min-w-[52px] px-3 py-2 text-[13px] font-semibold rounded-xl border-2 transition-all duration-200 ${isSelected ? 'border-slate-900 bg-slate-900 text-white shadow-md scale-105' : !hasMatchingCombination ? 'border-slate-200 text-slate-300 bg-slate-50 cursor-not-allowed opacity-70' : hasStock ? 'border-slate-200 text-slate-700 hover:border-indigo-400 hover:text-indigo-700 bg-white hover:shadow-sm hover:-translate-y-0.5' : 'border-rose-200 text-rose-700 bg-rose-50 hover:border-rose-300 hover:bg-rose-100 hover:-translate-y-0.5'}`}
+                                                                            className={`min-h-9 min-w-[52px] rounded-lg border px-3 py-2 text-[13px] font-semibold transition-colors ${isSelected ? 'border-slate-900 bg-slate-900 text-white' : !hasMatchingCombination ? 'cursor-not-allowed border-slate-200 bg-slate-50 text-slate-300 opacity-70' : hasStock ? 'border-slate-200 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-50' : 'border-rose-200 bg-rose-50 text-rose-700 hover:border-rose-300 hover:bg-rose-100'}`}
                                                                         >
                                                                             {sizeOption.label}
                                                                         </button>
@@ -2691,9 +2964,8 @@ const PointOfSale = () => {
 
                                                 {needsColor && (
                                                     <div className="mb-4">
-                                                        <div className="flex items-center justify-between mb-2.5">
+                                                        <div className="mb-2 flex items-center">
                                                             <h5 className="text-[11px] font-semibold text-slate-800 uppercase tracking-widest">Select Color</h5>
-                                                            {hasSelectedColor && <span className="text-[10px] font-semibold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded">{colorOptionMap.get(resolvedSelectedColor) || resolvedSelectedColor}</span>}
                                                         </div>
                                                         <div className="flex flex-wrap gap-2">
                                                             {uniqueColors.map((colorOption) => {
@@ -2716,7 +2988,7 @@ const PointOfSale = () => {
                                                                                 if (!hasMatchingCombination) return;
                                                                                 setVariantModal(prev => ({ ...prev, selectedColor: isSelected ? null : colorOption.key, quantity: 1 }));
                                                                             }}
-                                                                            className={`px-4 py-2 text-[13px] font-semibold rounded-xl border-2 transition-all duration-200 flex items-center justify-center ${isSelected ? 'border-slate-900 bg-slate-900 text-white shadow-md scale-105' : !hasMatchingCombination ? 'border-slate-200 text-slate-300 bg-slate-50 cursor-not-allowed opacity-70' : hasStock ? 'border-slate-200 text-slate-700 hover:border-indigo-400 hover:text-indigo-700 bg-white hover:shadow-sm hover:-translate-y-0.5' : 'border-rose-200 text-rose-700 bg-rose-50 hover:border-rose-300 hover:bg-rose-100 hover:-translate-y-0.5'}`}
+                                                                            className={`flex min-h-9 items-center justify-center rounded-lg border px-4 py-2 text-[13px] font-semibold transition-colors ${isSelected ? 'border-slate-900 bg-slate-900 text-white' : !hasMatchingCombination ? 'cursor-not-allowed border-slate-200 bg-slate-50 text-slate-300 opacity-70' : hasStock ? 'border-slate-200 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-50' : 'border-rose-200 bg-rose-50 text-rose-700 hover:border-rose-300 hover:bg-rose-100'}`}
                                                                         >
                                                                             {colorOption.label}
                                                                         </button>
@@ -2743,19 +3015,19 @@ const PointOfSale = () => {
                                                 )}
                                             </div>
 
-                                            <div className="absolute bottom-0 left-0 right-0 p-5 pt-5 bg-gradient-to-t from-white via-white to-transparent border-t-0 border-slate-100 z-20 pointer-events-none">
+                                            <div className="shrink-0 border-t border-slate-200 bg-white p-4">
                                                 {canAddSelectedVariant && (
-                                                    <div className="mb-2.5 flex items-center justify-between gap-2.5 pointer-events-auto">
+                                                    <div className="mb-4 flex items-center justify-between gap-3">
                                                         <div className="min-w-0">
                                                             <p className="text-[10px] font-semibold text-slate-700 uppercase tracking-widest">Quantity</p>
                                                             <p className="text-[10px] text-slate-500">Max {maxSelectableQty} available</p>
                                                         </div>
-                                                        <div className="inline-flex items-center rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+                                                        <div className="inline-flex shrink-0 items-center overflow-hidden rounded-lg border border-slate-200 bg-white">
                                                             <button
                                                                 type="button"
                                                                 disabled={selectedQuantity <= 1}
                                                                 onClick={() => setVariantModal(prev => ({ ...prev, quantity: Math.max(1, (Number(prev.quantity) || 1) - 1) }))}
-                                                                className={`h-9 w-9 flex items-center justify-center text-base font-semibold transition-colors ${selectedQuantity <= 1 ? 'text-slate-300 cursor-not-allowed' : 'text-slate-700 hover:bg-slate-50'}`}
+                                                                className={`flex h-8 w-8 items-center justify-center text-base font-semibold transition-colors ${selectedQuantity <= 1 ? 'cursor-not-allowed text-slate-300' : 'text-slate-700 hover:bg-slate-50'}`}
                                                             >
                                                                 -
                                                             </button>
@@ -2779,13 +3051,13 @@ const PointOfSale = () => {
                                                                     const clamped = Math.min(maxSelectableQty, Math.max(1, parsed));
                                                                     setVariantModal(prev => ({ ...prev, quantity: clamped }));
                                                                 }}
-                                                                className="h-9 w-12 border-x border-slate-200 text-center text-sm font-semibold text-slate-900 outline-none"
+                                                                className="h-8 w-11 border-x border-slate-200 text-center text-sm font-semibold text-slate-900 outline-none"
                                                             />
                                                             <button
                                                                 type="button"
                                                                 disabled={selectedQuantity >= maxSelectableQty}
                                                                 onClick={() => setVariantModal(prev => ({ ...prev, quantity: Math.min(maxSelectableQty, (Number(prev.quantity) || 1) + 1) }))}
-                                                                className={`h-9 w-9 flex items-center justify-center text-base font-semibold transition-colors ${selectedQuantity >= maxSelectableQty ? 'text-slate-300 cursor-not-allowed' : 'text-slate-700 hover:bg-slate-50'}`}
+                                                                className={`flex h-8 w-8 items-center justify-center text-base font-semibold transition-colors ${selectedQuantity >= maxSelectableQty ? 'cursor-not-allowed text-slate-300' : 'text-slate-700 hover:bg-slate-50'}`}
                                                             >
                                                                 +
                                                             </button>
@@ -2801,19 +3073,34 @@ const PointOfSale = () => {
                                                             return;
                                                         }
 
-                                                        if (canOpenAlternatives && fallbackAlternativeTarget) {
-                                                            const forcedType = matchedVariant
-                                                                ? (Number(matchedVariant.stock) <= 0 ? 'out-of-stock' : (getStockStatus(matchedVariant, settings) === 'Low Stock' ? 'low-stock' : undefined))
-                                                                : (isAllSelected && narrowedVariants.length === 0 ? 'out-of-stock' : undefined);
+                                                        if (canOpenAlternatives && matchedVariant) {
+                                                            const forcedType = Number(matchedVariant.stock) <= 0
+                                                                ? 'out-of-stock'
+                                                                : (getStockStatus(matchedVariant, settings) === 'Low Stock' ? 'low-stock' : undefined);
 
-                                                            openBudgetAlternatives(fallbackAlternativeTarget, { forcedType });
+                                                            openRecommendationResults(matchedVariant, 'alternative', { type: forcedType });
                                                             setVariantModal(createClosedVariantModalState());
                                                         }
                                                     }}
-                                                    className={`w-full py-3.5 rounded-2xl font-semibold text-[13px] uppercase tracking-widest transition-all duration-300 flex items-center justify-center gap-2 pointer-events-auto ${isPrimaryDisabled ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-slate-900 text-white hover:bg-slate-800 shadow-[0_10px_20px_-10px_rgba(0,0,0,0.5)] hover:shadow-[0_15px_25px_-10px_rgba(0,0,0,0.6)] hover:-translate-y-0.5 active:scale-[0.98] cursor-pointer ring-4 ring-slate-900/10'}`}
+                                                    className={`flex h-10 w-full items-center justify-center gap-2 rounded-xl text-xs font-semibold uppercase tracking-widest transition-colors ${isPrimaryDisabled ? 'cursor-not-allowed bg-slate-100 text-slate-400' : 'bg-slate-900 text-white hover:bg-slate-800'}`}
                                                 >
-                                                    {!isAllSelected ? "Select Options Required" : (canAddSelectedVariant ? "Add to Cart" : "View Alternatives")}
+                                                    {!isAllSelected ? "Select Options Required" : (canAddSelectedVariant ? "Add to Cart" : canOpenAlternatives ? "View Recommendations" : "Unavailable")}
                                                 </button>
+                                                {canAddSelectedVariant && matchedVariant && selectedRecommendationAction && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            openAvailableRecommendations(matchedVariant, selectedRecommendationAvailability);
+                                                            setVariantModal(createClosedVariantModalState());
+                                                        }}
+                                                        className="mt-2 flex h-9 w-full items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 text-[10px] font-semibold text-slate-700 transition-colors hover:border-slate-300 hover:bg-slate-50"
+                                                    >
+                                                        <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                                                        </svg>
+                                                        {selectedRecommendationLabel}
+                                                    </button>
+                                                )}
                                             </div>
                                         </div>
                                     );
@@ -2902,6 +3189,7 @@ const PointOfSale = () => {
                                 type="text"
                                 value={quickAddCreditCustomerName}
                                 onChange={(event) => setQuickAddCreditCustomerName(event.target.value)}
+                                onBlur={(event) => setQuickAddCreditCustomerName(normalizeHumanReadable(event.target.value))}
                                 autoFocus
                                 maxLength={120}
                                 placeholder="Enter customer name"
@@ -2961,7 +3249,7 @@ const PointOfSale = () => {
         {/* Quotation Preview Modal */}
         {showQuotationPreview && quotationData && (
             <div className="fixed inset-0 z-70 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-                <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm md:max-w-md overflow-hidden flex flex-col max-h-[90vh]">
+                <div className="bg-white rounded-xl shadow-2xl w-full max-w-[58mm] overflow-hidden flex flex-col max-h-[90vh]">
                     <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
                         <h3 className="font-semibold text-lg text-gray-800">Quotation Preview</h3>
                         <button onClick={() => setShowQuotationPreview(false)} className="text-gray-400 hover:text-gray-600">
@@ -2969,59 +3257,61 @@ const PointOfSale = () => {
                         </button>
                     </div>
                     
-                    <div className="flex-1 overflow-y-auto p-4 bg-white" id="quotation-content">
-                        <div className="text-center mb-4">
-                            <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-900 mb-1">PRODUCT QUOTATION</h2>
-                            <div className="text-xs text-gray-400 mt-2 space-y-1">
-                                <p className="text-xl font-semibold text-gray-900">Tableria La Confianza</p>
-                                <p>Manila S Rd, Calamba, 4027 Laguna</p>
-                                <p>Tel: (049) 545-2166</p>
-                            </div>
-                        </div>
-                        
+                    <div className="flex-1 overflow-y-auto bg-white p-3" id="quotation-content">
+                        {(() => {
+                            const quotationReceipt = buildQuotationReceiptModel(quotationData, settings);
 
-                        <div className="border-t border-dashed border-gray-200 py-2 mb-3 text-xs">
-                            <div className="flex justify-between mb-1">
-                                <span className="text-gray-500">Customer:</span>
-                                <span className="font-semibold text-gray-800">{quotationData.customerName}</span>
-                            </div>
-                            <div className="flex justify-between mb-1">
-                                <span className="text-gray-500">Date:</span>
-                                <span className="text-gray-800">{quotationData.date}</span>
-                            </div>
-                            <div className="text-xs mt-2 italic text-gray-500 text-center">
-                                *Estimate only. Prices subject to change.*
-                            </div>
-                        </div>
+                            return (
+                                <div className="mx-auto w-full text-[9px] leading-tight text-gray-700">
+                                    <div className="border-b border-dashed border-gray-200 pb-2 text-center">
+                                        <p className="text-[11px] font-semibold tracking-tight text-gray-900">{quotationReceipt.storeName}</p>
+                                        {quotationReceipt.storeAddress && <p className="mt-0.5 text-gray-500">{quotationReceipt.storeAddress}</p>}
+                                        {quotationReceipt.contactPhone && <p className="text-gray-500">Contact: {quotationReceipt.contactPhone}</p>}
+                                        <p className="mt-2 text-[10px] font-semibold tracking-[0.12em] text-gray-900">{quotationReceipt.title}</p>
+                                    </div>
 
-                        <table className="w-full text-xs mb-4">
-                            <thead>
-                                <tr className="border-b-2 border-gray-100">
-                                    <th className="py-2 text-left font-semibold text-gray-700">Item</th>
-                                    <th className="py-2 text-center font-semibold text-gray-700">Qty</th>
-                                    <th className="py-2 text-right font-semibold text-gray-700">Amount</th>
-                                </tr>
-                            </thead>
-                            <tbody className="text-gray-600">
-                                {quotationData.items.map((item, i) => (
-                                    <tr key={i} className="border-b border-gray-50">
-                                        <td className="py-2">
-                                            <div className="font-semibold text-gray-800">{item.brand ? `${item.brand} ` : ''}{item.name}{item.color ? ` — ${item.color}` : ''}</div>
-                                            <div className="text-xs">{item.code}</div>
-                                        </td>
-                                        <td className="py-2 text-center">{item.qty}</td>
-                                        <td className="py-2 text-right">{formatCurrency(item.price * item.qty)}</td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
+                                    <div className="border-b border-dashed border-gray-200 py-2 text-[9px]">
+                                        <div className="flex items-start justify-between gap-2">
+                                            <span className="shrink-0 text-gray-500">Customer</span>
+                                            <span className="min-w-0 text-right font-semibold text-gray-800 break-words">{quotationReceipt.customerName}</span>
+                                        </div>
+                                        <div className="mt-1 flex items-start justify-between gap-2">
+                                            <span className="shrink-0 text-gray-500">Date</span>
+                                            <span className="min-w-0 text-right text-gray-800 break-words">{quotationReceipt.date}</span>
+                                        </div>
+                                    </div>
 
-                        <div className="space-y-1 text-right text-xs border-t border-gray-200 pt-2">
-                            <div className="flex justify-between text-base font-semibold text-gray-900 pt-1 border-t border-gray-900 mt-1">
-                                <span>ESTIMATED TOTAL</span>
-                                <span>{formatCurrency(quotationData.total)}</span>
-                            </div>
-                        </div>
+                                    <div className="grid grid-cols-[minmax(0,1fr)_2rem_4.25rem] gap-x-1 border-b border-gray-200 py-1.5 text-[8px] font-semibold uppercase tracking-wide text-gray-500">
+                                        <span>Item</span>
+                                        <span className="text-center">Qty</span>
+                                        <span className="text-right">Amount</span>
+                                    </div>
+
+                                    <div className="divide-y divide-gray-100">
+                                        {quotationReceipt.items.map((item, index) => (
+                                            <div key={`${item.code || item.name}-${index}`} className="grid grid-cols-[minmax(0,1fr)_2rem_4.25rem] gap-x-1 py-1.5">
+                                                <div className="min-w-0">
+                                                    <p className="break-words font-semibold text-gray-800">{item.name}</p>
+                                                    {item.code && <p className="mt-0.5 break-all text-[8px] text-gray-500">Code: {item.code}</p>}
+                                                    <p className="mt-0.5 text-[8px] text-gray-500">{formatCurrency(item.unitPrice)} each</p>
+                                                </div>
+                                                <span className="pt-px text-center text-gray-800">{item.quantity}</span>
+                                                <span className="pt-px text-right font-medium text-gray-800 whitespace-nowrap">{formatCurrency(item.amount)}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+
+                                    <div className="mt-1 border-t border-gray-900 pt-1.5">
+                                        <div className="flex items-baseline justify-between gap-2 text-[11px] font-semibold text-gray-900">
+                                            <span>TOTAL</span>
+                                            <span className="whitespace-nowrap">{formatCurrency(quotationReceipt.total)}</span>
+                                        </div>
+                                    </div>
+
+                                    <p className="mt-3 text-center text-[8px] text-gray-400">{quotationReceipt.footer}</p>
+                                </div>
+                            );
+                        })()}
                     </div>
 
                     <div className="p-4 bg-gray-50 border-t border-gray-100 grid grid-cols-2 gap-3">
@@ -3053,6 +3343,27 @@ const PointOfSale = () => {
                                 </>
                             )}
                         </button>
+                    </div>
+                </div>
+            </div>
+        )}
+        {isBulkRemoveConfirmationOpen && (
+            <div
+                className="fixed inset-0 z-70 flex items-center justify-center bg-slate-900/35 p-4 backdrop-blur-sm"
+                onClick={() => setIsBulkRemoveConfirmationOpen(false)}
+            >
+                <div
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="bulk-remove-order-items-title"
+                    className="w-full max-w-xs rounded-2xl border border-slate-200 bg-white p-4 shadow-2xl"
+                    onClick={(event) => event.stopPropagation()}
+                >
+                    <h3 id="bulk-remove-order-items-title" className="text-sm font-semibold text-slate-900">Remove {selectedCartItemCount} items?</h3>
+                    <p className="mt-1.5 text-xs leading-5 text-slate-500">This will remove the selected items from the current order.</p>
+                    <div className="mt-4 flex justify-end gap-2">
+                        <button type="button" onClick={() => setIsBulkRemoveConfirmationOpen(false)} className="rounded-lg px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400">Cancel</button>
+                        <button type="button" onClick={removeSelectedCartLines} className="rounded-lg px-3 py-1.5 text-xs font-medium text-rose-700 transition-colors hover:bg-rose-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-300">Remove</button>
                     </div>
                 </div>
             </div>

@@ -26,7 +26,7 @@ test('paid Credit receipt uses the latest persisted payment and linked Sale snap
         method: 'cheque',
         reference: 'CHK-001',
         recordedBy: 'Saved Recorder',
-        recordedByUser: { displayName: 'Final Recorder' },
+        recordedByUser: { name: 'Final Recorder Full Name', displayName: 'Final Recorder' },
       },
     ],
     orderId: {
@@ -40,7 +40,7 @@ test('paid Credit receipt uses the latest persisted payment and linked Sale snap
   assert.equal(transaction.id, record.creditTransactionId);
   assert.equal(transaction.orderReference, record.orderReference);
   assert.equal(transaction.date, '2026-08-27T03:15:00.000Z');
-  assert.equal(transaction.cashier, 'Final Recorder');
+  assert.equal(transaction.cashier, 'Final Recorder Full Name');
   assert.equal(transaction.creditPaymentMode, 'Cheque');
   assert.equal(transaction.paymentReference, 'CHK-001');
   assert.equal(transaction.amountPaid, 1000);
@@ -73,4 +73,24 @@ test('a finalized Cash credit payment is displayed as Cash on the receipt', asyn
   });
 
   assert.equal(transaction.creditPaymentMode, 'Cash');
+});
+
+test('paid Credit receipt keeps safe legacy actor fallbacks', async () => {
+  const { buildCreditReceiptTransaction } = await loadCreditReceipt();
+
+  const displayNameFallback = buildCreditReceiptTransaction({
+    creditTransactionId: 'CR-LEGACY-DISPLAY',
+    status: 'Paid',
+    remainingBalance: 0,
+    paymentHistory: [{ recordedByUser: { displayName: 'Legacy Display Name' } }],
+  });
+  const storedNameFallback = buildCreditReceiptTransaction({
+    creditTransactionId: 'CR-LEGACY-SNAPSHOT',
+    status: 'Paid',
+    remainingBalance: 0,
+    paymentHistory: [{ recordedBy: 'Saved Historical Actor' }],
+  });
+
+  assert.equal(displayNameFallback.cashier, 'Legacy Display Name');
+  assert.equal(storedNameFallback.cashier, 'Saved Historical Actor');
 });

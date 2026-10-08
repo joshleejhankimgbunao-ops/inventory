@@ -90,6 +90,7 @@ const _getSystemSuggestions = (targetItem, inventory, settings) => {
     return inventory.filter(item => {
         // Must be different
         if (item.code === targetItem.code) return false;
+        if (item.isActive === false || item.isArchived === true) return false;
         
         // Exclusions/Manuals are handled by caller if needed
 
@@ -159,7 +160,7 @@ export const getAlternatives = (targetItem, inventory, settings, options = {}) =
 
     // 1. Get explicitly manually added alternatives
     const manualAlternatives = inventory
-        .filter(item => manualCodes.includes(item.code))
+        .filter(item => manualCodes.includes(item.code) && item.isActive !== false && item.isArchived !== true)
         .map(item => ({
             ...item,
             budgetTier: resolveTier(item, settings),
@@ -207,9 +208,27 @@ export const getAlternativesByBudget = (targetItem, inventory, settings, options
         ? Math.max(1, Number(options.limitPerTier))
         : 2;
 
+    const excludedBudgetCodes = targetItem.excludedBudgetOptions || [];
+    const manualBudgetCodes = targetItem.manualBudgetOptions || [];
     const alternatives = getAlternatives(targetItem, inventory, settings, {
         maxSuggestions: options.maxSuggestions || 9,
-    });
+    }).filter((item) => !excludedBudgetCodes.includes(item.code));
+    const manualBudgetOptions = inventory
+        .filter((item) => (
+            manualBudgetCodes.includes(item.code)
+            && item.code !== targetItem.code
+            && item.isActive !== false
+            && item.isArchived !== true
+            && !excludedBudgetCodes.includes(item.code)
+        ))
+        .map((item) => ({
+            ...item,
+            recommendationTier: getRelativePriceTier(targetItem?.price, item?.price),
+        }));
+    const budgetCandidates = [
+        ...manualBudgetOptions,
+        ...alternatives.filter((item) => !manualBudgetCodes.includes(item.code)),
+    ];
 
     const grouped = {
         low: [],
@@ -217,7 +236,7 @@ export const getAlternativesByBudget = (targetItem, inventory, settings, options
         high: [],
     };
 
-    alternatives.forEach((alt) => {
+    budgetCandidates.forEach((alt) => {
         const relativeTier = getRelativePriceTier(targetItem?.price, alt?.price);
         const tier = relativeTierToBucket(relativeTier);
         if (grouped[tier]) {
@@ -239,6 +258,129 @@ export const getAlternativesByBudget = (targetItem, inventory, settings, options
     });
 
     return grouped;
+};
+
+export const getRecommendationAvailability = (targetItem, inventory, settings, options = {}) => {
+    if (!targetItem || !Array.isArray(inventory)) {
+        return {
+            stockStatus: getStockStatus(targetItem, settings),
+            alternatives: [],
+            budgetOptions: [],
+            hasAlternatives: false,
+            hasBudgetOptions: false,
+            hasAny: false,
+        };
+    }
+
+    const stockStatus = getStockStatus(targetItem, settings);
+    const alternatives = getAlternatives(targetItem, inventory, settings, {
+        maxSuggestions: options.alternativeLimit || 8,
+    });
+    const budgetBuckets = stockStatus === 'In Stock'
+        ? getAlternativesByBudget(targetItem, inventory, settings, {
+            limitPerTier: options.limitPerTier || 4,
+            maxSuggestions: options.budgetLimit || 18,
+        })
+        : { low: [], moderate: [], high: [] };
+    const budgetOptions = [
+        ...(budgetBuckets.low || []),
+        ...(budgetBuckets.moderate || []),
+        ...(budgetBuckets.high || []),
+    ];
+    const hasAlternatives = alternatives.length > 0;
+    const hasBudgetOptions = budgetOptions.length > 0;
+
+    return {
+        stockStatus,
+        alternatives,
+        budgetOptions,
+        hasAlternatives,
+        hasBudgetOptions,
+        hasAny: hasAlternatives || hasBudgetOptions,
+    };
+};
+
+export const getRecommendationModeForStockState = (availability) => {
+    if (availability?.stockStatus === 'In Stock') {
+        return availability.hasBudgetOptions ? 'budget' : null;
+    }
+
+    if (availability?.stockStatus === 'Low Stock' || availability?.stockStatus === 'Out of Stock') {
+        return availability.hasAlternatives ? 'alternative' : null;
+    }
+
+    return null;
+};
+
+export const getPosRecommendationAction = (availability) => {
+    if (!availability) return null;
+    const isInStock = availability.stockStatus === 'In Stock';
+    const alternativesAvailable = availability.hasAlternatives === true;
+    const budgetAvailable = isInStock && availability.hasBudgetOptions === true;
+
+    if (alternativesAvailable && budgetAvailable) return 'chooser';
+    if (alternativesAvailable) return 'alternative';
+    if (budgetAvailable) return 'budget';
+    return null;
+};
+
+export const getManualRecommendationCandidates = (targetItem, inventory, options = {}) => {
+    if (!targetItem || !Array.isArray(inventory)) return [];
+
+    const existingCodes = new Set(options.existingCodes || []);
+    const systemCodes = new Set(options.systemCodes || []);
+    const search = String(options.search || '').trim().toLowerCase();
+    const category = options.category || 'All';
+    const seenCodes = new Set();
+
+    return inventory
+        .map((item) => ({
+            ...item,
+            id: String(item?.id || item?._id || '').trim(),
+            code: String(item?.code || item?.sku || '').trim(),
+        }))
+        .filter((item) => {
+            const code = String(item?.code || '').trim();
+            if (!item?.id || !code || seenCodes.has(code)) return false;
+            if (item.id === targetItem.id || code === targetItem.code) return false;
+            if (item.isActive === false || item.isArchived === true) return false;
+            if (existingCodes.has(code)) return false;
+            if (category !== 'All' && item.category !== category) return false;
+            if (search && ![item.name, code, item.brand]
+                .some((value) => String(value || '').toLowerCase().includes(search))) return false;
+            seenCodes.add(code);
+            return true;
+        })
+        .map((item) => ({
+            ...item,
+            recommendationTier: getRelativePriceTier(targetItem?.price, item?.price),
+            isSystemRecommended: options.recommendationType === 'alternative' && systemCodes.has(item.code),
+        }))
+        .sort((a, b) => {
+            if (a.isSystemRecommended !== b.isSystemRecommended) return a.isSystemRecommended ? -1 : 1;
+            return String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' });
+        });
+};
+
+export const getBudgetPreviewOptions = (budgetBuckets, limit = 3) => {
+    const safeLimit = Math.max(0, Number(limit) || 0);
+    const tiers = ['low', 'moderate', 'high'];
+    const allOptions = tiers.flatMap((tier) => budgetBuckets?.[tier] || []);
+    const selected = tiers
+        .map((tier) => budgetBuckets?.[tier]?.[0])
+        .filter(Boolean)
+        .slice(0, safeLimit);
+    const selectedCodes = new Set(selected.map((item) => item.code));
+
+    for (const option of allOptions) {
+        if (selected.length >= safeLimit) break;
+        if (!selectedCodes.has(option.code)) {
+            selected.push(option);
+            selectedCodes.add(option.code);
+        }
+    }
+
+    return { allOptions, visibleOptions: selected, hiddenCount: Math.max(0, allOptions.length - selected.length) };
 };
 
 // --- Helper Functions for Stock Logic ---

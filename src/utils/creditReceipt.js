@@ -9,8 +9,8 @@ const PAYMENT_METHOD_LABELS = {
 const getRecordedByName = (payment = {}, record = {}) => {
   const user = payment.recordedByUser || payment.recordedById || {};
   return String(
-    user.displayName
-    || user.name
+    user.name
+    || user.displayName
     || user.username
     || payment.recordedBy
     || record.cashierName

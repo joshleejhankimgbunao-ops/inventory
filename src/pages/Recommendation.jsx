@@ -2,6 +2,8 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
     getAlternatives,
     getAlternativesByBudget,
+    getBudgetPreviewOptions,
+    getManualRecommendationCandidates,
     getRelativePriceTier,
     getRawSystemRecommendations,
     getStockStatus,
@@ -11,9 +13,42 @@ import { useAuth } from '../context/AuthContext';
 import { showToast } from '../utils/toastHelper';
 import Pagination from '../components/Pagination';
 import { formatCurrency } from '../utils/numberFormat';
-import { removeProductRecommendationApi } from '../services/inventoryApi';
+import { addProductRecommendationApi, removeProductRecommendationApi } from '../services/inventoryApi';
 
 const DEFAULT_VISIBLE_RECOMMENDATIONS = 3;
+
+const countUniqueRecommendationEntries = (entries = []) => new Set(
+    entries
+        .map((entry) => String(entry?.code || entry?.id || '').trim())
+        .filter(Boolean)
+).size;
+
+const getPriceDifferenceDisplay = (currentPrice, recommendationPrice) => {
+    const difference = Number(recommendationPrice || 0) - Number(currentPrice || 0);
+
+    if (difference === 0) {
+        return { label: 'Same price', isSaving: false };
+    }
+
+    return {
+        label: `${difference < 0 ? 'Save ' : '+'}${formatCurrency(Math.abs(difference))}`,
+        isSaving: difference < 0,
+    };
+};
+
+const RecommendationThumbnail = ({ item, className = 'h-10 w-10' }) => (
+    <div className={`shrink-0 overflow-hidden rounded-lg border border-slate-200 bg-slate-50 ${className}`}>
+        {item?.imageUrl ? (
+            <img src={item.imageUrl} alt="" className="h-full w-full object-contain p-0.5" />
+        ) : (
+            <div className="flex h-full w-full items-center justify-center text-slate-300">
+                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M4 16l4-4a3 3 0 014 0l4 4m-2-2 2-2a3 3 0 014 0l2 2m-14 4h16" />
+                </svg>
+            </div>
+        )}
+    </div>
+);
 
 const Recommendation = () => {
     const listContainerRef = useRef(null);
@@ -40,7 +75,7 @@ const Recommendation = () => {
     };
 
     // Inventory helpers from context
-    const { inventory: rawInventory, setInventory, processedInventory, logActivity, logAction } = useInventory();
+    const { inventory: rawInventory, setInventory, processedInventory } = useInventory();
     
     // Use processed items
     const inventory = rawInventory || processedInventory || [];
@@ -51,6 +86,7 @@ const Recommendation = () => {
     const [addSearchTerm, setAddSearchTerm] = useState('');
     const [debouncedAddSearchTerm, setDebouncedAddSearchTerm] = useState('');
     const [addFilterCategory, setAddFilterCategory] = useState('All'); // New state for category filter in modal
+    const [addRecommendationType, setAddRecommendationType] = useState('alternative');
 
     // State for Product Details Modal
     const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false);
@@ -60,6 +96,7 @@ const Recommendation = () => {
     const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false);
     const [pendingRemoval, setPendingRemoval] = useState(null); // { targetCode, alternativeCode, alternativeName }
     const [recommendationDrawerTarget, setRecommendationDrawerTarget] = useState(null);
+    const [recommendationDrawerMode, setRecommendationDrawerMode] = useState('alternative');
 
     // Restore hidden items on mount
     useEffect(() => {
@@ -144,12 +181,13 @@ const Recommendation = () => {
     }, [currentPage]);
 
     // Remove Alternative Trigger
-    const handleRemoveAlternative = (targetItem, alternativeCode, alternativeName) => {
+    const handleRemoveAlternative = (targetItem, alternativeCode, alternativeName, type = 'alternative') => {
         setPendingRemoval({
             targetId: targetItem?.id,
             targetCode: targetItem?.code,
             alternativeCode,
             alternativeName,
+            type,
         });
         setIsConfirmModalOpen(true);
     };
@@ -158,13 +196,15 @@ const Recommendation = () => {
     const confirmRemoval = async () => {
         if (!pendingRemoval || !setInventory) return;
 
-        const { targetId, targetCode, alternativeCode } = pendingRemoval;
+        const { targetId, targetCode, alternativeCode, type } = pendingRemoval;
         const targetItem = inventory.find((item) => item.id === targetId || item.code === targetCode);
-        const currentAlternatives = targetItem
-            ? getAlternatives(targetItem, inventory, appSettings, { maxSuggestions: 6 })
+        const currentRecommendations = targetItem
+            ? (type === 'budget'
+                ? Object.values(getAlternativesByBudget(targetItem, inventory, appSettings, { limitPerTier: 20, maxSuggestions: 50 })).flat()
+                : getAlternatives(targetItem, inventory, appSettings, { maxSuggestions: 50 }))
             : [];
 
-        if (!targetItem?.id || !currentAlternatives.some((alternative) => alternative.code === alternativeCode)) {
+        if (!targetItem?.id || !currentRecommendations.some((alternative) => alternative.code === alternativeCode)) {
             showToast('Unable to Remove', 'This recommendation is no longer available. Refresh and try again.', 'error');
             setIsConfirmModalOpen(false);
             setPendingRemoval(null);
@@ -172,9 +212,11 @@ const Recommendation = () => {
         }
 
         try {
-            const updatedTarget = await removeProductRecommendationApi(targetItem.id, alternativeCode);
-            const wasPersisted = updatedTarget.excludedAlternatives.includes(alternativeCode)
-                && !updatedTarget.manualAlternatives.includes(alternativeCode);
+            const updatedTarget = await removeProductRecommendationApi(targetItem.id, alternativeCode, type);
+            const excludedField = type === 'budget' ? 'excludedBudgetOptions' : 'excludedAlternatives';
+            const manualField = type === 'budget' ? 'manualBudgetOptions' : 'manualAlternatives';
+            const wasPersisted = updatedTarget[excludedField].includes(alternativeCode)
+                && !updatedTarget[manualField].includes(alternativeCode);
 
             if (!wasPersisted) {
                 throw new Error('The recommendation was not removed.');
@@ -187,7 +229,7 @@ const Recommendation = () => {
                 current?.id === targetItem.id ? updatedTarget : current
             ));
 
-            showToast('Success', 'Alternative removed.', 'success');
+            showToast('Success', `${type === 'budget' ? 'Budget option' : 'Alternative'} removed.`, 'success');
             setIsConfirmModalOpen(false);
             setPendingRemoval(null);
         } catch (error) {
@@ -196,26 +238,21 @@ const Recommendation = () => {
     };
 
     // Add Alternative Logic
-    const handleAddAlternative = (alternativeCode) => {
+    const handleAddAlternative = async (alternative) => {
         if (!setInventory || !activeTargetItem) return;
-
-        setInventory(prev => prev.map(item => {
-            if (item.code !== activeTargetItem.code) return item;
-
-            // Add to manual list
-            const currentManual = item.manualAlternatives || [];
-            const newManual = [...new Set([...currentManual, alternativeCode])];
-
-            // Remove from excluded list if present
-            const currentExcluded = item.excludedAlternatives || [];
-            const newExcluded = currentExcluded.filter(c => c !== alternativeCode);
-
-            return { ...item, manualAlternatives: newManual, excludedAlternatives: newExcluded };
-        }));
-        
-        setIsAddModalOpen(false);
-        setAddSearchTerm('');
-        showToast('Success', 'Alternative added.', 'success');
+        try {
+            const updatedTarget = await addProductRecommendationApi(activeTargetItem.id, {
+                type: addRecommendationType,
+                recommendationId: alternative.id,
+                recommendationCode: alternative.code,
+            });
+            setInventory((current) => current.map((item) => item.id === activeTargetItem.id ? updatedTarget : item));
+            setIsAddModalOpen(false);
+            setAddSearchTerm('');
+            showToast('Success', `${addRecommendationType === 'budget' ? 'Budget option' : 'Alternative'} added.`, 'success');
+        } catch (error) {
+            showToast('Unable to Add', error?.message || 'The recommendation could not be added.', 'error');
+        }
     };
 
     // Filter items for "Add Alternative" modal
@@ -225,41 +262,18 @@ const Recommendation = () => {
         // Get raw top recommendations by system (ignoring exclusions) to flag them
         const systemRecs = getRawSystemRecommendations(activeTargetItem, inventory, appSettings);
         const systemRecCodes = systemRecs.map(r => r.code);
+        const existingCodes = new Set(addRecommendationType === 'budget'
+            ? Object.values(getAlternativesByBudget(activeTargetItem, inventory, appSettings, { limitPerTier: 20, maxSuggestions: 50 })).flat().map((entry) => entry.code)
+            : getAlternatives(activeTargetItem, inventory, appSettings, { maxSuggestions: 50 }).map((entry) => entry.code));
         
-        const search = debouncedAddSearchTerm.toLowerCase();
-
-        return inventory.filter(i => {
-             // Exclude self
-            if (i.code === activeTargetItem.code) return false;
-            // Exclude already linked as manual
-            if ((activeTargetItem.manualAlternatives || []).includes(i.code)) return false;
-
-            // Apply Category Filter
-            if (addFilterCategory !== 'All' && i.category !== addFilterCategory) return false;
-
-            // Apply Search (if empty, show all logic applies but we limit via slice)
-            if (!search) return true;
-
-            const nameMatch = i.name.toLowerCase().includes(search);
-            const codeMatch = i.code.toLowerCase().includes(search);
-            const brandMatch = (i.brand || '').toLowerCase().includes(search);
-
-            return nameMatch || codeMatch || brandMatch;
-        })
-        .map(item => ({
-             ...item,
-               recommendationTier: getRelativePriceTier(activeTargetItem?.price, item?.price),
-             isSystemRecommended: systemRecCodes.includes(item.code)
-        }))
-        .sort((a, b) => {
-             // Sort recommended items to top
-             if (a.isSystemRecommended && !b.isSystemRecommended) return -1;
-             if (!a.isSystemRecommended && b.isSystemRecommended) return 1;
-             // Secondary sort: Alphabetical by name
-             return a.name.localeCompare(b.name);
-        })
-        .slice(0, 50); // Increased limit to show more items, or unlimited if paginated
-    }, [inventory, activeTargetItem, debouncedAddSearchTerm, addFilterCategory]);
+        return getManualRecommendationCandidates(activeTargetItem, inventory, {
+            existingCodes,
+            systemCodes: systemRecCodes,
+            recommendationType: addRecommendationType,
+            search: debouncedAddSearchTerm,
+            category: addFilterCategory,
+        });
+    }, [inventory, activeTargetItem, debouncedAddSearchTerm, addFilterCategory, addRecommendationType, appSettings]);
 
     const recommendationSearchSuggestions = useMemo(() => {
         const terms = new Set();
@@ -298,18 +312,21 @@ const Recommendation = () => {
     }, [potentialAlternatives]);
 
     const drawerAlternatives = recommendationDrawerTarget
-        ? getAlternatives(recommendationDrawerTarget, inventory, appSettings, { maxSuggestions: 6 })
+        ? getAlternatives(recommendationDrawerTarget, inventory, appSettings, { maxSuggestions: 50 })
         : [];
-    const drawerIsInStock = recommendationDrawerTarget
-        ? getStockStatus(recommendationDrawerTarget, appSettings) === 'In Stock'
-        : false;
+    const drawerBudgetBuckets = recommendationDrawerTarget
+        ? getAlternativesByBudget(recommendationDrawerTarget, inventory, appSettings, { limitPerTier: 6, maxSuggestions: 18 })
+        : { low: [], moderate: [], high: [] };
+    const drawerRecommendations = recommendationDrawerMode === 'budget'
+        ? [...drawerBudgetBuckets.low, ...drawerBudgetBuckets.moderate, ...drawerBudgetBuckets.high]
+        : drawerAlternatives;
 
     return (
-        <div className="flex flex-col h-auto md:h-full bg-slate-200/50 p-6 md:overflow-hidden rounded-2xl shadow-inner border border-slate-300">
+        <div className="recommendation-page flex flex-col h-auto md:h-full bg-slate-200/50 p-6 md:overflow-hidden rounded-2xl shadow-inner border border-slate-300">
             {/* Header Section */}
             <div className="flex flex-col gap-4 mb-8 shrink-0 relative z-10">
                 <div className="overflow-hidden">
-                    <p className="text-3xl md:text-4xl font-bold text-gray-900 tracking-tight whitespace-nowrap">Product Recommendations</p>
+                    <p className="text-3xl md:text-4xl font-semibold tracking-tight text-gray-900 leading-tight">Product Recommendation</p>
                     <p className="text-gray-500 font-medium text-[11px] md:text-xs mt-1 truncate">Manage product alternatives and view system suggestions.</p>
                 </div>
                 {/* Search / Filter Controls */}
@@ -367,22 +384,30 @@ const Recommendation = () => {
                     </div>
                 ) : (
                     <>
-                    <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-2">
+                    <div className="grid grid-cols-1 items-start gap-5">
                         {paginatedAttentionItems.map((item) => {
                             const stockStatus = getStockStatus(item, appSettings);
                             const alternatives = getAlternatives(item, inventory, appSettings, { maxSuggestions: 6 });
-                            const budgetOptions = getAlternativesByBudget(item, inventory, appSettings, { limitPerTier: 1, maxSuggestions: 9 });
+                            const fullAlternatives = getAlternatives(item, inventory, appSettings, { maxSuggestions: 50 });
+                            const budgetOptions = getAlternativesByBudget(item, inventory, appSettings, { limitPerTier: 6, maxSuggestions: 18 });
+                            const budgetPreview = getBudgetPreviewOptions(budgetOptions, 3);
                             const isOutOfStock = stockStatus === 'Out of Stock';
                             const isLowStock = stockStatus === 'Low Stock';
                             const isInStock = stockStatus === 'In Stock';
                             const hasMoreAlternatives = alternatives.length > DEFAULT_VISIBLE_RECOMMENDATIONS;
                             const visibleAlternatives = alternatives.slice(0, DEFAULT_VISIBLE_RECOMMENDATIONS);
+                            const currentProductDetails = [
+                                { label: 'Category', value: item.category },
+                                { label: 'Color', value: item.color },
+                            ].filter(({ value }) => String(value || '').trim());
+                            const alternativeCount = countUniqueRecommendationEntries(fullAlternatives);
+                            const budgetOptionCount = countUniqueRecommendationEntries(Object.values(budgetOptions).flat());
                             
                             return (
-                                <div key={item.code} className="self-start bg-white rounded-xl border border-slate-200 hover:border-slate-300 transition-all shadow-sm hover:shadow-md flex flex-col overflow-hidden min-h-[220px]">
+                                <div key={item.code} className="recommendation-current-card self-start bg-white rounded-xl border border-slate-200 hover:border-slate-300 transition-all shadow-sm hover:shadow-md flex flex-col overflow-hidden min-h-[220px]">
                                     <div className="p-4 flex flex-col sm:flex-row gap-4 items-stretch h-full">
                                         {/* Left Side: Product Details (No Adjust Stock Button) */}
-                                        <div className="flex-1 flex flex-col justify-between h-full w-full min-h-[160px] rounded-lg bg-slate-50/70 px-3 py-3">
+                                        <div className="recommendation-current-summary flex-1 flex flex-col justify-between h-full w-full min-h-[160px] rounded-lg bg-slate-50/70 px-3 py-3">
                                             <div>
                                                 <p className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-slate-400">Current Product</p>
                                                 <div className="flex items-center justify-between mb-2">
@@ -410,6 +435,36 @@ const Recommendation = () => {
                                                         <span className="text-lg font-semibold text-gray-900">{formatCurrency(item.price)}</span>
                                                     </div>
                                                 </div>
+
+                                                {currentProductDetails.length > 0 && (
+                                                    <section className="mt-3 border-t border-slate-200/80 pt-3 dark:border-slate-700" aria-label="Product Details">
+                                                        <p className="mb-1.5 text-[9px] font-semibold uppercase tracking-wider text-slate-400">Product Details</p>
+                                                        <dl className="space-y-1.5">
+                                                            {currentProductDetails.map(({ label, value }) => (
+                                                                <div key={label} className="flex items-center justify-between gap-3 text-[10px]">
+                                                                    <dt className="text-slate-400">{label}</dt>
+                                                                    <dd className="truncate font-medium text-slate-700 dark:text-slate-100">{value}</dd>
+                                                                </div>
+                                                            ))}
+                                                        </dl>
+                                                    </section>
+                                                )}
+
+                                                <section className="mt-3 border-t border-slate-200/80 pt-3 dark:border-slate-700" aria-label="Recommendation Summary">
+                                                    <p className="mb-1.5 text-[9px] font-semibold uppercase tracking-wider text-slate-400">Recommendations</p>
+                                                    <dl className="space-y-1.5">
+                                                        <div className="flex items-center justify-between gap-3 text-[10px]">
+                                                            <dt className="text-slate-400">Alternative Products</dt>
+                                                            <dd className="font-semibold text-slate-700 dark:text-slate-100">{alternativeCount}</dd>
+                                                        </div>
+                                                        {isInStock && (
+                                                            <div className="flex items-center justify-between gap-3 text-[10px]">
+                                                                <dt className="text-slate-400">Budget Options</dt>
+                                                                <dd className="font-semibold text-slate-700 dark:text-slate-100">{budgetOptionCount}</dd>
+                                                            </div>
+                                                        )}
+                                                    </dl>
+                                                </section>
                                             </div>
                                             {/* Button to view full product details */}
                                             <div className="mt-3">
@@ -426,142 +481,141 @@ const Recommendation = () => {
                                             </div>
                                         </div>
 
-                                        {/* Right Side: Alternatives Management */}
-                                        <div className="flex w-full shrink-0 flex-col gap-1.5 border-t border-slate-100 pt-3 sm:w-56 sm:border-t-0 sm:border-l sm:pt-0 sm:pl-4 xl:w-60">
-                                            <div className="flex items-center justify-between">
-                                                <h4 className="text-[10px] font-semibold text-gray-900 flex items-center gap-1.5 uppercase tracking-wide">
-                                                    <svg className="w-3 h-3 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-                                                    {isInStock ? 'Budget Options & Alternatives' : 'Alternatives'}
-                                                </h4>
-                                                <button 
+                                        {/* Right Side: Separate recommendation concepts */}
+                                        <div className="flex min-w-0 flex-[1.8] flex-col gap-3 border-t border-slate-100 pt-3 sm:border-l sm:border-t-0 sm:pl-4 sm:pt-0">
+                                            <div className="flex items-center justify-between gap-3">
+                                                <p className="text-[9px] font-medium leading-snug text-slate-400">
+                                                    Recommendations use this exact product and its current stock state.
+                                                </p>
+                                                <button
                                                     type="button"
                                                     onClick={() => {
                                                         setActiveTargetItem(item);
+                                                        setAddRecommendationType('alternative');
                                                         setAddSearchTerm('');
-                                                        setAddFilterCategory('All'); // Default all or item.category
+                                                        setAddFilterCategory('All');
                                                         setIsAddModalOpen(true);
                                                     }}
-                                                    className="group/btn inline-flex items-center rounded-md border border-gray-900 bg-gray-900 text-white hover:bg-black hover:border-black shadow-sm transition-all px-2 py-1"
-                                                    aria-label="Add Alternative"
+                                                    className="inline-flex h-7 shrink-0 items-center gap-1 rounded-lg border border-slate-300 bg-white px-2 text-[9px] font-semibold text-slate-700 transition-colors hover:border-slate-400 hover:bg-slate-50"
+                                                    aria-label="Add Recommendation"
                                                 >
-                                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"/></svg>
-                                                    <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 text-[10px] font-semibold group-hover/btn:ml-1 group-hover/btn:max-w-24 group-hover/btn:opacity-100">Add Alternative</span>
+                                                    <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4" /></svg>
+                                                    Add Recommendation
                                                 </button>
                                             </div>
 
-                                            <p className="text-[9px] leading-snug text-gray-400">
-                                                {isInStock
-                                                    ? 'Budget options are shown only for in-stock products.'
-                                                    : 'Low/Out-of-stock uses standard alternatives only.'}
-                                            </p>
-                                            
-                                            {isInStock && (
-                                                <div className="grid grid-cols-3 gap-1">
-                                                    {[
-                                                        { key: 'low', label: 'Value', color: 'bg-emerald-50 border-emerald-200 text-emerald-700' },
-                                                        { key: 'moderate', label: 'Standard', color: 'bg-amber-50 border-amber-200 text-amber-700' },
-                                                        { key: 'high', label: 'Premium', color: 'bg-blue-50 border-blue-200 text-blue-700' },
-                                                    ].map((tier) => {
-                                                        return (
-                                                            <div key={tier.key} className={`rounded-md border px-1.5 py-1 flex items-center justify-center text-center ${tier.color}`}>
-                                                                <p className="text-[9px] font-semibold uppercase tracking-wider leading-none">{tier.label}</p>
+                                            {alternatives.length > 0 && (
+                                                <section className="recommendation-section recommendation-alternative-section rounded-xl border border-slate-200 bg-slate-50/40 p-3" aria-label={`Alternative Products for ${item.name}`}>
+                                                    <div className="mb-2.5 flex items-start justify-between gap-3">
+                                                        <div className="min-w-0">
+                                                            <h4 className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-900">
+                                                                <svg className="h-3.5 w-3.5 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 7h11m0 0-3-3m3 3-3 3M17 17H6m0 0 3 3m-3-3 3-3" /></svg>
+                                                                Alternative Products
+                                                            </h4>
+                                                            <p className="mt-0.5 text-[9px] leading-snug text-slate-400">Similar or compatible products that can be used as replacements.</p>
+                                                        </div>
+                                                        {hasMoreAlternatives && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => {
+                                                                    setRecommendationDrawerMode('alternative');
+                                                                    setRecommendationDrawerTarget(item);
+                                                                }}
+                                                                aria-haspopup="dialog"
+                                                                className="shrink-0 text-[9px] font-semibold text-slate-600 hover:text-slate-900"
+                                                            >
+                                                                View All Alternatives
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                    <div className="grid gap-2 md:grid-cols-3">
+                                                        {visibleAlternatives.map((alternative) => (
+                                                            <div key={alternative.code} className="recommendation-option-card group/alt min-w-0 rounded-lg border border-slate-200 bg-white p-2 transition-colors hover:border-slate-300">
+                                                                <div className="flex min-w-0 gap-2">
+                                                                    <RecommendationThumbnail item={alternative} />
+                                                                    <div className="min-w-0 flex-1">
+                                                                        <p className="line-clamp-2 text-[10px] font-semibold leading-snug text-slate-900">{alternative.name}</p>
+                                                                        <p className="mt-0.5 truncate text-[9px] text-slate-400">{[alternative.brand, alternative.size].filter(Boolean).join(' • ') || 'No brand'}</p>
+                                                                    </div>
+                                                                </div>
+                                                                <div className="mt-2 flex items-center justify-between gap-2 border-t border-slate-100 pt-1.5">
+                                                                    <span className="text-[10px] font-semibold text-slate-900">{formatCurrency(alternative.price)}</span>
+                                                                    <span className="text-[9px] font-medium text-emerald-700">Stock: {alternative.stock}</span>
+                                                                </div>
+                                                                <div className="mt-1.5 flex items-center justify-between">
+                                                                    <button type="button" onClick={() => { setViewDetailsItem(alternative); setIsDetailsModalOpen(true); }} className="text-[9px] font-medium text-slate-400 hover:text-slate-700">View Details</button>
+                                                                    <button type="button" onClick={() => handleRemoveAlternative(item, alternative.code, alternative.name)} className="text-[9px] font-medium text-slate-400 hover:text-rose-600">Remove</button>
+                                                                </div>
                                                             </div>
-                                                        );
-                                                    })}
-                                                </div>
+                                                        ))}
+                                                    </div>
+                                                </section>
                                             )}
 
-                                            <div className="grid min-h-[18rem] content-start gap-1.5">
-                                                {alternatives.length > 0 ? (
-                                                    visibleAlternatives.map(alt => (
-                                                        <div key={alt.code} className="relative min-h-[5.75rem] p-2.5 bg-white rounded-xl border border-slate-100 hover:border-slate-300 shadow-sm hover:shadow-md transition-all group/alt">
-                                                            
-                                                            {/* View Details Button (Absolute Top Left) */}
-                                                            <button 
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation();
-                                                                    setViewDetailsItem(alt);
-                                                                    setIsDetailsModalOpen(true);
-                                                                }}
-                                                                className="group/btn absolute -top-2 -left-2 opacity-0 group-hover/alt:opacity-100 w-6 h-6 bg-white border border-gray-200 text-gray-400 hover:text-white hover:bg-[#111827] hover:border-gray-900 rounded-full flex items-center justify-center shadow-sm transition-all z-10 transform scale-90 group-hover/alt:scale-100"
-                                                            >
-                                                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
-                                                                <span className="absolute top-full left-0 mt-2 z-50 w-max pointer-events-none opacity-0 transition-opacity duration-150 group-hover/btn:opacity-100">
-                                                                    <span className="bg-gray-900 text-white text-[10px] rounded py-1 px-2 shadow-lg block whitespace-nowrap">
-                                                                        View Details
-                                                                    </span>
-                                                                    <span className="w-2 h-2 bg-gray-900 rotate-45 absolute -top-1 left-3 block"></span>
-                                                                </span>
-                                                            </button>
-
-                                                            {/* Remove Button (Absolute Top Right) */}
-                                                            <button 
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation();
-                                                                    handleRemoveAlternative(item, alt.code, alt.name);
-                                                                }}
-                                                                className="group/btn absolute -top-2 -right-2 opacity-0 group-hover/alt:opacity-100 w-6 h-6 bg-white border border-gray-200 text-gray-400 hover:text-rose-500 hover:border-rose-200 rounded-full flex items-center justify-center shadow-sm transition-all z-10 transform scale-90 group-hover/alt:scale-100"
-                                                            >
-                                                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"/></svg>
-                                                                <span className="absolute top-full right-0 mt-2 z-50 w-max pointer-events-none opacity-0 transition-opacity duration-150 group-hover/btn:opacity-100">
-                                                                    <span className="bg-gray-900 text-white text-[10px] rounded py-1 px-2 shadow-lg block whitespace-nowrap">
-                                                                        Remove from alternatives
-                                                                    </span>
-                                                                    <span className="w-2 h-2 bg-gray-900 rotate-45 absolute -top-1 right-3 block"></span>
-                                                                </span>
-                                                            </button>
-
-                                                            {/* Card Content using Flex and Grid for stability */}
-                                                            <div className="flex flex-col gap-1">
-                                                                <div className="flex justify-between items-start gap-2">
-                                                                    <span className="text-[11px] font-semibold text-gray-800 leading-snug line-clamp-2" title={alt.name}>{alt.name}</span>
-                                                                    <span className="text-[11px] font-semibold text-gray-900 bg-gray-50 px-1.5 py-0.5 rounded shrink-0">{formatCurrency(alt.price)}</span>
-                                                                </div>
-                                                                {isInStock && (
-                                                                    <div className="flex items-center justify-between gap-2">
-                                                                        {(() => {
-                                                                            const tier = alt.recommendationTier || getRelativePriceTier(item?.price, alt?.price);
-                                                                            return (
-                                                                                <span className={`text-[9px] font-semibold uppercase tracking-wider border px-1.5 py-0.5 rounded-full ${getTierBadgeClass(tier)}`}>
-                                                                                    {getTierDisplayLabel(tier)}
-                                                                                </span>
-                                                                            );
-                                                                        })()}
-                                                                    </div>
-                                                                )}
-                                                                
-                                                                <div className="flex justify-between items-center border-t border-slate-50 pt-0.5 mt-0.5">
-                                                                    <span className="text-[9px] font-semibold text-gray-400 uppercase tracking-wider truncate max-w-[80px]">{alt.brand || 'No Brand'}</span>
-                                                                    <div className={`flex items-center gap-1.5 px-1.5 py-0.5 rounded-full text-[9px] font-semibold ${alt.stock > 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
-                                                                        <div className={`w-1.5 h-1.5 rounded-full ${alt.stock > 0 ? 'bg-emerald-500' : 'bg-rose-500'}`}></div>
-                                                                        {alt.stock}
-                                                                    </div>
-                                                                </div>
-                                                            </div>
+                                            {isInStock && Object.values(budgetOptions).some((options) => options.length > 0) && (
+                                                <section className="recommendation-section recommendation-budget-section rounded-xl border border-emerald-100 bg-emerald-50/25 p-3" aria-label={`Budget Options for ${item.name}`}>
+                                                    <div className="mb-2.5 flex items-start justify-between gap-3">
+                                                        <div className="min-w-0">
+                                                            <h4 className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-900">
+                                                                <svg className="h-3.5 w-3.5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2v-2m2-6h-6a2 2 0 000 4h6V9z" /></svg>
+                                                                Budget Options
+                                                            </h4>
+                                                            <p className="mt-0.5 text-[9px] leading-snug text-slate-400">Compare value, similar-price, and premium choices.</p>
                                                         </div>
-                                                    ))
-                                                ) : (
-                                                    <div className="h-20 flex flex-col items-center justify-center text-center text-gray-400">
-                                                        <span className="text-[10px]">No alternatives</span>
-                                                        <span className="text-[9px] mt-1 text-gray-300">Adding some is recommended</span>
+                                                        {budgetPreview.hiddenCount > 0 && (
+                                                            <div className="flex shrink-0 items-center gap-1.5">
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        setRecommendationDrawerMode('budget');
+                                                                        setRecommendationDrawerTarget(item);
+                                                                    }}
+                                                                    aria-haspopup="dialog"
+                                                                    className="text-[9px] font-semibold text-emerald-700 hover:text-emerald-900"
+                                                                >
+                                                                    View All Budget Options
+                                                                </button>
+                                                                <span className="rounded-full bg-white px-1.5 py-0.5 text-[8px] font-medium text-slate-400">+{budgetPreview.hiddenCount} more</span>
+                                                            </div>
+                                                        )}
                                                     </div>
-                                                )}
-                                            </div>
-                                            <div className="flex min-h-6 items-start">
-                                                {hasMoreAlternatives && (
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => setRecommendationDrawerTarget(item)}
-                                                        aria-haspopup="dialog"
-                                                        className="inline-flex self-start items-center gap-1 rounded-md px-1 py-0.5 text-[10px] font-semibold text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-1"
-                                                    >
-                                                        View All Recommendations
-                                                        <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="m9 18 6-6-6-6" />
-                                                        </svg>
-                                                    </button>
-                                                )}
-                                            </div>
+                                                    <div className="grid gap-2 md:grid-cols-3">
+                                                        {budgetPreview.visibleOptions.map((option) => {
+                                                            const tier = option.recommendationTier || getRelativePriceTier(item?.price, option?.price);
+                                                            const priceDifference = getPriceDifferenceDisplay(item?.price, option?.price);
+                                                            return (
+                                                                <div key={option.code} className="recommendation-option-card min-w-0 rounded-lg border border-emerald-100 bg-white p-2 transition-colors hover:border-emerald-200">
+                                                                    <div className="mb-1.5 flex items-center justify-between gap-2">
+                                                                        <span className={`rounded-full border px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-wider ${getTierBadgeClass(tier)}`}>{getTierDisplayLabel(tier)}</span>
+                                                                        <span className={`text-[9px] font-medium ${priceDifference.isSaving ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-400 dark:text-slate-400'}`}>{priceDifference.label}</span>
+                                                                    </div>
+                                                                    <div className="flex min-w-0 gap-2">
+                                                                        <RecommendationThumbnail item={option} />
+                                                                        <div className="min-w-0 flex-1">
+                                                                            <p className="line-clamp-2 text-[10px] font-semibold leading-snug text-slate-900">{option.name}</p>
+                                                                            <p className="mt-0.5 truncate text-[9px] text-slate-400">{[option.brand, option.size].filter(Boolean).join(' • ') || 'No brand'}</p>
+                                                                        </div>
+                                                                    </div>
+                                                                    <div className="mt-2 flex items-center justify-between gap-2 border-t border-slate-100 pt-1.5">
+                                                                        <span className="text-[10px] font-semibold text-slate-900">{formatCurrency(option.price)}</span>
+                                                                        <span className="text-[9px] font-medium text-emerald-700">Stock: {option.stock}</span>
+                                                                    </div>
+                                                                    <div className="mt-1.5 flex items-center justify-between">
+                                                                        <button type="button" onClick={() => { setViewDetailsItem(option); setIsDetailsModalOpen(true); }} className="text-[9px] font-medium text-slate-400 hover:text-slate-700">View Details</button>
+                                                                        <button type="button" onClick={() => handleRemoveAlternative(item, option.code, option.name, 'budget')} className="text-[9px] font-medium text-slate-400 hover:text-rose-600">Remove</button>
+                                                                    </div>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </section>
+                                            )}
+
+                                            {alternatives.length === 0 && (!isInStock || !Object.values(budgetOptions).some((options) => options.length > 0)) && (
+                                                <div className="flex min-h-20 items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50/40 px-4 text-center text-[10px] font-medium text-slate-400">
+                                                    No recommendations available
+                                                </div>
+                                            )}
                                         </div>
                                     </div>
                                 </div>
@@ -589,17 +643,20 @@ const Recommendation = () => {
                     onClick={() => setRecommendationDrawerTarget(null)}
                 >
                     <aside
-                        className="flex h-full min-h-0 w-full max-w-[22.5rem] flex-col bg-slate-50 shadow-lg animate-in slide-in-from-right duration-200"
+                        className="recommendation-modal flex h-full min-h-0 w-full max-w-[26rem] flex-col overflow-hidden border-l border-slate-200 bg-slate-50 shadow-xl animate-in slide-in-from-right duration-200"
                         onClick={(event) => event.stopPropagation()}
                     >
-                        <div className="flex shrink-0 items-start justify-between border-b border-slate-200 bg-white px-3 py-2.5">
+                        <div className="flex shrink-0 items-start justify-between border-b border-slate-200 bg-white px-5 py-4">
                             <div className="min-w-0 pr-4">
                                 <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                                    {drawerIsInStock ? 'Budget Options & Alternatives' : 'Alternatives'}
+                                    {recommendationDrawerMode === 'budget' ? 'Budget Options' : 'Alternative Products'}
                                 </p>
                                 <h3 id="all-recommendations-title" className="mt-0.5 truncate text-sm font-semibold text-gray-900">
                                     {recommendationDrawerTarget.name}
                                 </h3>
+                                <p className="mt-1 text-[10px] leading-snug text-slate-400">
+                                    {recommendationDrawerMode === 'budget' ? 'Compare Value, Standard, and Premium options.' : 'Review similar or compatible replacement products.'}
+                                </p>
                             </div>
                             <button
                                 type="button"
@@ -613,15 +670,20 @@ const Recommendation = () => {
                             </button>
                         </div>
 
-                        <div className="min-h-0 flex-1 overflow-y-auto p-3 overscroll-contain scrollbar-thin scrollbar-track-transparent scrollbar-thumb-slate-300">
-                            <div className="space-y-1.5">
-                                {drawerAlternatives.map((alternative) => {
+                        <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4 overscroll-contain scrollbar-thin scrollbar-track-transparent scrollbar-thumb-slate-300">
+                            <div className="space-y-2.5">
+                                {drawerRecommendations.map((alternative) => {
                                     const tier = alternative.recommendationTier || getRelativePriceTier(recommendationDrawerTarget?.price, alternative?.price);
+                                    const priceDifference = getPriceDifferenceDisplay(recommendationDrawerTarget?.price, alternative?.price);
 
                                     return (
-                                        <div key={alternative.code} className="rounded-lg border border-slate-200 bg-white p-2 shadow-sm">
-                                            <div className="flex items-start gap-2">
-                                                <p className="min-w-0 flex-1 text-xs font-semibold leading-snug text-gray-900">{alternative.name}</p>
+                                        <div key={alternative.code} className="rounded-xl border border-slate-200 bg-white p-3 transition-colors hover:border-slate-300">
+                                            <div className="flex min-w-0 items-start gap-3">
+                                                <RecommendationThumbnail item={alternative} className="h-14 w-14" />
+                                                <div className="min-w-0 flex-1">
+                                                    <p className="line-clamp-2 text-xs font-semibold leading-snug text-slate-900">{alternative.name}</p>
+                                                    <p className="mt-0.5 truncate text-[9px] text-slate-400">{[alternative.brand, alternative.size].filter(Boolean).join(' • ') || 'No brand'}</p>
+                                                </div>
                                                 <div className="flex shrink-0 items-center gap-1">
                                                     <button
                                                         type="button"
@@ -630,35 +692,40 @@ const Recommendation = () => {
                                                             setIsDetailsModalOpen(true);
                                                         }}
                                                         aria-label="View Details"
-                                                        className="group/drawer-view relative inline-flex h-6 w-6 items-center justify-center rounded-full border border-gray-200 bg-white text-gray-400 shadow-sm transition-all hover:border-gray-900 hover:bg-[#111827] hover:text-white"
+                                                        title="View Details"
+                                                        className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-400 transition-colors hover:border-slate-300 hover:bg-slate-50 hover:text-slate-800"
                                                     >
                                                         <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
-                                                        <span role="tooltip" className="pointer-events-none absolute right-0 top-full z-20 mt-1 whitespace-nowrap rounded bg-gray-900 px-2 py-1 text-[10px] font-medium text-white opacity-0 shadow-lg transition-opacity duration-150 group-hover/drawer-view:opacity-100 group-focus-visible/drawer-view:opacity-100">View Details</span>
                                                     </button>
                                                     <button
-                                                        type="button"
-                                                        onClick={() => handleRemoveAlternative(recommendationDrawerTarget, alternative.code, alternative.name)}
-                                                        aria-label="Remove from Recommendation"
-                                                        className="group/drawer-remove relative inline-flex h-6 w-6 items-center justify-center rounded-full border border-gray-200 bg-white text-gray-400 shadow-sm transition-all hover:border-rose-200 hover:text-rose-500"
-                                                    >
-                                                        <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18 18 6M6 6l12 12" /></svg>
-                                                        <span role="tooltip" className="pointer-events-none absolute right-0 top-full z-20 mt-1 whitespace-nowrap rounded bg-gray-900 px-2 py-1 text-[10px] font-medium text-white opacity-0 shadow-lg transition-opacity duration-150 group-hover/drawer-remove:opacity-100 group-focus-visible/drawer-remove:opacity-100">Remove from Recommendation</span>
+                                                            type="button"
+                                                            onClick={() => handleRemoveAlternative(recommendationDrawerTarget, alternative.code, alternative.name, recommendationDrawerMode)}
+                                                            aria-label="Remove from Recommendation"
+                                                            title="Remove"
+                                                            className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-400 transition-colors hover:border-slate-300 hover:bg-slate-50 hover:text-rose-600"
+                                                        >
+                                                            <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18 18 6M6 6l12 12" /></svg>
                                                     </button>
                                                     <span className="rounded bg-slate-50 px-1.5 py-0.5 text-[11px] font-semibold text-gray-900">
                                                         {formatCurrency(alternative.price)}
                                                     </span>
                                                 </div>
                                             </div>
-                                            {drawerIsInStock && (
-                                                <span className={`mt-1.5 inline-flex rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${getTierBadgeClass(tier)}`}>
-                                                    {getTierDisplayLabel(tier)}
-                                                </span>
+                                            {recommendationDrawerMode === 'budget' && (
+                                                <div className="mt-1.5 flex items-center justify-between gap-3">
+                                                    <span className={`inline-flex rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${getTierBadgeClass(tier)}`}>
+                                                        {getTierDisplayLabel(tier)}
+                                                    </span>
+                                                    <span className={`shrink-0 text-[10px] font-medium ${priceDifference.isSaving ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-400 dark:text-slate-400'}`}>
+                                                        {priceDifference.label}
+                                                    </span>
+                                                </div>
                                             )}
-                                            <div className="mt-1.5 flex items-center justify-between border-t border-slate-100 pt-1.5 text-[10px]">
+                                            <div className="mt-2.5 flex items-center justify-between border-t border-slate-100 pt-2 text-[10px]">
                                                 <span className="truncate pr-3 font-semibold uppercase tracking-wider text-gray-400">{alternative.brand || 'No Brand'}</span>
                                                 <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-1.5 py-0.5 font-semibold ${alternative.stock > 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
                                                     <span className={`h-1.5 w-1.5 rounded-full ${alternative.stock > 0 ? 'bg-emerald-500' : 'bg-rose-500'}`} />
-                                                    {alternative.stock}
+                                                    Stock: {alternative.stock}
                                                 </span>
                                             </div>
                                         </div>
@@ -673,13 +740,13 @@ const Recommendation = () => {
             {/* Remove Confirmation Modal */}
             {isConfirmModalOpen && (
                 <div className="fixed inset-0 z-[75] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden p-6 text-center transform scale-100 transition-all">
+                    <div className="recommendation-modal bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden p-6 text-center transform scale-100 transition-all">
                         <div className="w-12 h-12 rounded-full bg-rose-100 flex items-center justify-center mx-auto mb-4">
                             <svg className="w-6 h-6 text-rose-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
                         </div>
                         <h3 className="text-lg font-semibold text-gray-900 mb-2">Remove Alternative?</h3>
                         <p className="text-gray-500 text-sm mb-6">
-                            Are you sure you want to remove <span className="font-semibold text-gray-800">{pendingRemoval?.alternativeName}</span> from alternatives?
+                            Are you sure you want to remove <span className="font-semibold text-gray-800">{pendingRemoval?.alternativeName}</span> from {pendingRemoval?.type === 'budget' ? 'budget options' : 'alternatives'}?
                         </p>
                         <div className="flex gap-3">
                             <button 
@@ -702,13 +769,13 @@ const Recommendation = () => {
                 </div>
             )}
 
-            {/* Add Alternative Modal */}
+            {/* Add Recommendation Modal */}
             {isAddModalOpen && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
-                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200 h-[500px] flex flex-col">
+                    <div className="recommendation-modal bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200 h-[500px] flex flex-col">
                         <div className="p-5 border-b border-gray-100 flex justify-between items-center bg-gray-50/50 shrink-0">
                             <div>
-                                <h3 className="font-semibold text-gray-900">Add Alternative</h3>
+                                <h3 className="font-semibold text-gray-900">Add Recommendation</h3>
                                 <p className="text-xs text-gray-500">For {activeTargetItem?.name}</p>
                             </div>
                             <button onClick={() => setIsAddModalOpen(false)} className="text-gray-400 hover:text-gray-900 transition-colors">
@@ -717,6 +784,12 @@ const Recommendation = () => {
                         </div>
                         
                         <div className="p-4 border-b border-gray-100 bg-white shrink-0 space-y-3">
+                            {getStockStatus(activeTargetItem, appSettings) === 'In Stock' && (
+                                <div className="grid grid-cols-2 gap-2 rounded-xl bg-slate-100 p-1">
+                                    <button type="button" onClick={() => setAddRecommendationType('alternative')} className={`rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${addRecommendationType === 'alternative' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>Alternative Product</button>
+                                    <button type="button" onClick={() => setAddRecommendationType('budget')} className={`rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${addRecommendationType === 'budget' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>Budget Option</button>
+                                </div>
+                            )}
                             <input 
                                 type="text" 
                                 placeholder="Search inventory..." 
@@ -752,25 +825,31 @@ const Recommendation = () => {
                         <div className="flex-1 overflow-y-auto p-2 bg-gray-50">
                             {potentialAlternatives.length > 0 ? (
                                 <div className="space-y-2">
-                                    {potentialAlternatives.map(item => (
+                                    {potentialAlternatives.map(item => {
+                                        const candidateStatus = getStockStatus(item, appSettings);
+                                        const isUnavailable = candidateStatus === 'Out of Stock';
+                                        return (
                                         <div 
                                             key={item.code}
-                                            onClick={() => handleAddAlternative(item.code)}
-                                            className={`w-full p-3 bg-white border rounded-xl hover:shadow-sm transition-all text-left flex justify-between items-center group cursor-pointer ${
-                                                item.isSystemRecommended ? 'border-indigo-100 hover:border-indigo-300 bg-indigo-50/10' : 'border-gray-200 hover:border-gray-400'
+                                            onClick={() => { if (!isUnavailable) handleAddAlternative(item); }}
+                                            className={`w-full p-3 bg-white border rounded-xl transition-all text-left flex justify-between items-center group ${isUnavailable ? 'cursor-not-allowed border-slate-200 opacity-65' : 'cursor-pointer hover:shadow-sm'} ${
+                                                addRecommendationType === 'alternative' && item.isSystemRecommended ? 'border-indigo-100 hover:border-indigo-300 bg-indigo-50/10' : 'border-gray-200 hover:border-gray-400'
                                             }`}
                                         >
                                             <div className="flex-1 min-w-0 mr-3">
                                                 <div className="flex items-center gap-2 mb-0.5">
                                                     <span className="font-semibold text-gray-900 text-sm leading-tight truncate">{item.name}</span>
-                                                    {item.isSystemRecommended && (
+                                                    {addRecommendationType === 'alternative' && item.isSystemRecommended && (
                                                         <span className="bg-indigo-100 text-indigo-700 text-[9px] font-semibold px-1.5 py-0.5 rounded border border-indigo-200 flex items-center gap-1 shrink-0 uppercase tracking-wide">
                                                             <svg className="w-2.5 h-2.5" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clipRule="evenodd" /></svg>
                                                             Recommended
                                                         </span>
                                                     )}
                                                 </div>
-                                                <div className="text-xs text-gray-500 truncate">{item.brand} • {formatCurrency(item.price)} • {item.stock} in stock • {getTierDisplayLabel(item.recommendationTier || getRelativePriceTier(activeTargetItem?.price, item?.price))}</div>
+                                                <div className="text-xs text-gray-500 truncate">
+                                                    {[item.code, item.brand, item.size].filter(Boolean).join(' • ')} • {formatCurrency(item.price)} • {candidateStatus}
+                                                    {addRecommendationType === 'budget' ? ` • ${getTierDisplayLabel(item.recommendationTier || getRelativePriceTier(activeTargetItem?.price, item?.price))}` : ''}
+                                                </div>
                                             </div>
                                             
                                             <div className="flex items-center gap-2 shrink-0">
@@ -787,8 +866,8 @@ const Recommendation = () => {
                                                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
                                                 </button>
 
-                                                <div className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${
-                                                    item.isSystemRecommended 
+                                                <div className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${isUnavailable ? 'bg-slate-100 text-slate-300' :
+                                                    addRecommendationType === 'alternative' && item.isSystemRecommended
                                                         ? 'bg-indigo-100 text-indigo-600 group-hover:bg-indigo-600 group-hover:text-white' 
                                                         : 'bg-gray-100 text-gray-400 group-hover:bg-gray-900 group-hover:text-white'
                                                 }`}>
@@ -796,7 +875,8 @@ const Recommendation = () => {
                                                 </div>
                                             </div>
                                         </div>
-                                    ))}
+                                        );
+                                    })}
                                 </div>
                             ) : (
                                 <div className="h-full flex items-center justify-center text-gray-400 text-sm">
@@ -811,85 +891,89 @@ const Recommendation = () => {
             {/* Product Details Modal */}
             {isDetailsModalOpen && viewDetailsItem && (
                 <div role="dialog" aria-modal="true" className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200" onClick={() => setIsDetailsModalOpen(false)}>
-                    <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-200 border border-gray-100" onClick={e => e.stopPropagation()}>
-                        <div className="p-4 border-b border-gray-200 flex justify-between items-center bg-gray-100/50">
-                            <h3 className="font-semibold text-lg text-gray-900">Product Details</h3>
+                    <div className="recommendation-modal flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl animate-in zoom-in-95 duration-200" onClick={e => e.stopPropagation()}>
+                        <div className="recommendation-modal-header flex items-center justify-between border-b border-slate-200 bg-white px-5 py-4">
+                            <div>
+                                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Inventory Item</p>
+                                <h3 className="mt-0.5 text-base font-semibold text-slate-900 dark:text-slate-100">Product Details</h3>
+                            </div>
                             <button 
                                 onClick={() => setIsDetailsModalOpen(false)}
-                                className="p-1.5 rounded-full hover:bg-gray-200 text-gray-500 hover:text-gray-800 transition-colors"
+                                aria-label="Close product details"
+                                className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-400 transition-colors hover:border-slate-300 hover:bg-slate-50 hover:text-slate-700 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-100"
                             >
-                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>
+                                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>
                             </button>
                         </div>
                         
-                        <div className="p-6 overflow-y-auto space-y-4 bg-slate-50/50">
-                            <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100">
-                                <div className="flex justify-between items-start mb-4">
-                                    <div className="pr-4">
-                                        <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">Product Name</p>
-                                        <p className="text-lg font-semibold text-gray-900 leading-tight">{viewDetailsItem.name}</p>
+                        <div className="recommendation-modal-body overflow-y-auto bg-slate-50/70 p-4 sm:p-5">
+                            <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5">
+                                <div className="flex items-start justify-between gap-4 border-b border-slate-100 pb-4">
+                                    <div className="min-w-0">
+                                        <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">Product Name</p>
+                                        <p className="text-lg font-semibold leading-snug text-slate-900 dark:text-slate-100">{viewDetailsItem.name}</p>
                                     </div>
-                                    <div className="text-right shrink-0">
-                                        <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">SKU</p>
-                                        <span className="inline-block bg-slate-100 border border-slate-200 px-2 py-1 rounded text-xs font-mono font-semibold text-slate-700 select-all">{viewDetailsItem.code}</span>
+                                    <div className="shrink-0 text-right">
+                                        <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">SKU</p>
+                                        <span className="inline-flex max-w-36 truncate rounded-md border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-[11px] font-semibold text-slate-700 select-all dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">{viewDetailsItem.code}</span>
                                     </div>
                                 </div>
 
-                                <div className="grid grid-cols-2 gap-x-4 gap-y-5">
-                                    <div>
-                                        <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">Category</p>
-                                        <p className="text-sm font-semibold text-gray-700">{viewDetailsItem.category || 'N/A'}</p>
+                                <dl className="grid grid-cols-1 gap-x-6 sm:grid-cols-2">
+                                    <div className="border-b border-slate-100 py-3">
+                                        <dt className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">Category</dt>
+                                        <dd className={`text-sm font-semibold ${viewDetailsItem.category ? 'text-slate-800 dark:text-slate-100' : 'text-slate-400 dark:text-slate-500'}`}>{viewDetailsItem.category || 'N/A'}</dd>
                                     </div>
-                                    <div>
-                                        <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">Brand</p>
-                                        <p className="text-sm font-semibold text-gray-700">{viewDetailsItem.brand || 'N/A'}</p>
+                                    <div className="border-b border-slate-100 py-3">
+                                        <dt className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">Brand</dt>
+                                        <dd className={`text-sm font-semibold ${viewDetailsItem.brand ? 'text-slate-800 dark:text-slate-100' : 'text-slate-400 dark:text-slate-500'}`}>{viewDetailsItem.brand || 'N/A'}</dd>
                                     </div>
-                                    <div>
-                                        <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">Stock</p>
-                                        <div className={`text-sm font-semibold ${viewDetailsItem.stock <= 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                                    <div className="border-b border-slate-100 py-3">
+                                        <dt className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">Stock</dt>
+                                        <dd className={`inline-flex rounded-md px-2 py-0.5 text-sm font-semibold ${viewDetailsItem.stock <= 0 ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'}`}>
                                             {viewDetailsItem.stock} {viewDetailsItem.unit}
-                                        </div>
+                                        </dd>
                                     </div>
-                                    <div>
-                                        <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">Price</p>
-                                        <p className="text-sm font-semibold text-gray-900">{formatCurrency(viewDetailsItem.price)}</p>
+                                    <div className="border-b border-slate-100 py-3">
+                                        <dt className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">Price</dt>
+                                        <dd className="text-base font-semibold text-slate-900 dark:text-slate-100">{formatCurrency(viewDetailsItem.price)}</dd>
                                     </div>
-                                    <div>
-                                        <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">Size</p>
-                                        <p className="text-sm font-semibold text-gray-700">{viewDetailsItem.size || 'N/A'}</p>
+                                    <div className="border-b border-slate-100 py-3">
+                                        <dt className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">Size</dt>
+                                        <dd className={`text-sm font-semibold ${viewDetailsItem.size ? 'text-slate-800 dark:text-slate-100' : 'text-slate-400 dark:text-slate-500'}`}>{viewDetailsItem.size || 'N/A'}</dd>
                                     </div>
-                                    <div>
-                                        <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">Color</p>
-                                        <div className="flex items-center gap-2">
+                                    <div className="border-b border-slate-100 py-3">
+                                        <dt className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">Color</dt>
+                                        <dd className={`flex items-center gap-2 text-sm font-semibold ${viewDetailsItem.color ? 'text-slate-800 dark:text-slate-100' : 'text-slate-400 dark:text-slate-500'}`}>
                                             {viewDetailsItem.color && (
-                                                <div className="w-3 h-3 rounded-full border border-gray-200 shadow-sm" style={{ backgroundColor: viewDetailsItem.color }}></div>
+                                                <span className="h-3 w-3 shrink-0 rounded-full border border-slate-200 dark:border-slate-600" style={{ backgroundColor: viewDetailsItem.color }} />
                                             )}
-                                            <p className="text-sm font-semibold text-gray-700">{viewDetailsItem.color || 'N/A'}</p>
-                                        </div>
+                                            {viewDetailsItem.color || 'N/A'}
+                                        </dd>
                                     </div>
-                                    <div>
-                                        <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">Reorder Point</p>
-                                        <p className="text-sm font-semibold text-gray-700">{viewDetailsItem.reorderPoint || 'N/A'}</p>
+                                    <div className="border-b border-slate-100 py-3">
+                                        <dt className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">Reorder Point</dt>
+                                        <dd className={`text-sm font-semibold ${viewDetailsItem.reorderPoint ? 'text-slate-800 dark:text-slate-100' : 'text-slate-400 dark:text-slate-500'}`}>{viewDetailsItem.reorderPoint || 'N/A'}</dd>
                                     </div>
-                                    <div>
-                                        <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">Supplier</p>
-                                        <p className="text-sm font-semibold text-gray-700">{viewDetailsItem.supplier || 'N/A'}</p>
+                                    <div className="border-b border-slate-100 py-3">
+                                        <dt className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">Supplier</dt>
+                                        <dd className={`truncate text-sm font-semibold ${viewDetailsItem.supplier ? 'text-slate-800 dark:text-slate-100' : 'text-slate-400 dark:text-slate-500'}`}>{viewDetailsItem.supplier || 'N/A'}</dd>
                                     </div>
-                                </div>
+                                </dl>
 
                                 {viewDetailsItem.description && (
-                                    <div className="border-t border-slate-100 mt-4 pt-4">
-                                        <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">Description</p>
-                                        <p className="text-sm text-gray-600 leading-relaxed">{viewDetailsItem.description}</p>
+                                    <div className="mt-4 border-t border-slate-100 pt-4">
+                                        <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">Description</p>
+                                        <p className="text-sm leading-relaxed text-slate-600 dark:text-slate-300">{viewDetailsItem.description}</p>
                                     </div>
                                 )}
                             </div>
                         </div>
                         
-                         <div className="p-4 bg-gray-50 border-t border-gray-200 flex justify-end">
+                         <div className="recommendation-modal-footer flex justify-end border-t border-slate-200 bg-white px-5 py-3.5">
                             <button 
                                 onClick={() => setIsDetailsModalOpen(false)}
-                                className="px-6 py-2 bg-white border border-gray-300 text-gray-700 font-semibold rounded-lg hover:bg-gray-50 hover:text-gray-900 transition-colors text-sm shadow-sm hover:shadow"
+                                className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition-colors hover:border-slate-400 hover:bg-slate-50 hover:text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
                             >
                                 Close
                             </button>

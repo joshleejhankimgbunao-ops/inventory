@@ -15,9 +15,12 @@ import { subscribeRealtimeEvent } from '../services/realtimeClient';
 import Pagination from '../components/Pagination';
 import IdentifierChip from '../components/IdentifierChip';
 import ReceiptPreviewModal from '../components/ReceiptPreviewModal';
+import TableActionButton from '../components/TableActionButton';
 import { formatCurrency, formatNumber } from '../utils/numberFormat';
 import { getCreditDueStatus } from '../utils/creditDueStatus';
 import { getActorDisplayName } from '../utils/actorDisplay';
+import { getAttentionRowClass } from '../utils/tableStatusStyle';
+import { normalizeHumanReadable } from '../utils/textNormalization';
 import { createClientRequestId } from '../utils/clientRequestId';
 import { buildCreditReceiptTransaction, isFullyPaidCreditTransaction } from '../utils/creditReceipt';
 import { printReceipt } from '../services/receiptPrinter';
@@ -32,11 +35,12 @@ const STATUS_OPTIONS = ['All', 'Unpaid', 'Near Due', 'Due Today', 'Overdue', 'Pa
 const statusBadgeClass = (status) => {
     const value = String(status || '').toLowerCase();
     if (value === 'paid') return 'bg-emerald-100 text-emerald-800 border-emerald-200';
-    if (value === 'near due') return 'bg-amber-100 text-amber-800 border-amber-200';
+    if (value === 'near due') return 'bg-amber-100 text-amber-900 border-amber-300';
     if (value === 'due today') return 'bg-orange-100 text-orange-800 border-orange-200';
     if (value === 'overdue') return 'bg-rose-100 text-rose-800 border-rose-200';
     if (value === 'cancelled') return 'bg-rose-100 text-rose-800 border-rose-200';
-    if (value === 'partially paid') return 'bg-amber-100 text-amber-800 border-amber-200';
+    if (value === 'partially paid') return 'bg-amber-100 text-amber-900 border-amber-300';
+    if (value === 'unpaid') return 'bg-amber-100 text-amber-900 border-amber-300';
     return 'bg-slate-100 text-slate-700 border-slate-200';
 };
 
@@ -115,7 +119,7 @@ const CreditTransactions = () => {
     const [sortOrder, setSortOrder] = useState('desc');
     const [isLoading, setIsLoading] = useState(true);
     const [currentPage, setCurrentPage] = useState(1);
-    const itemsPerPage = 10;
+    const [itemsPerPage, setItemsPerPage] = useState(10);
 
     const [selectedRecord, setSelectedRecord] = useState(null);
     const [isDetailsOpen, setIsDetailsOpen] = useState(false);
@@ -415,10 +419,8 @@ const CreditTransactions = () => {
     const displayEnd = hasResults ? Math.min(indexOfLastItem, visibleRows.length) : 0;
 
     useEffect(() => {
-        if (totalPages > 0 && currentPage > totalPages) {
-            setCurrentPage(totalPages);
-        }
-    }, [currentPage, totalPages]);
+        setCurrentPage((previous) => Math.min(previous, Math.max(totalPages, 1)));
+    }, [totalPages]);
 
     const handleOpenDetails = async (row) => {
         try {
@@ -586,7 +588,7 @@ const CreditTransactions = () => {
         }
 
         const paymentMethod = markPaidForm.paymentMethod === 'other'
-            ? String(markPaidForm.paymentMethodOther || '').trim()
+            ? normalizeHumanReadable(markPaidForm.paymentMethodOther)
             : markPaidForm.paymentMethod;
         if (!paymentMethod) {
             showToast('Missing Payment Method', 'Enter the other payment method.', 'error', 'credit-payment-method-validation');
@@ -673,7 +675,7 @@ const CreditTransactions = () => {
             <div className="flex h-auto flex-col gap-3 rounded-2xl border border-slate-300 bg-slate-200/50 p-4 shadow-inner md:h-full md:min-h-0">
                 <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 border-b border-gray-200 pb-3">
                     <div>
-                        <p className="text-3xl md:text-4xl font-bold text-gray-900">Credit Transactions</p>
+                        <p className="text-3xl md:text-4xl font-semibold tracking-tight text-gray-900 leading-tight">Credit Transactions</p>
                         <p className="text-gray-500 font-medium text-[11px] md:text-xs">Track receivables, overdue accounts, and payment collections.</p>
                     </div>
 
@@ -846,22 +848,26 @@ const CreditTransactions = () => {
 
                                 {/* Status */}
                                 <div className="px-3 pt-2 pb-1">
-                                    <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Status</div>
+                                    <label
+                                        htmlFor="credit-status-filter"
+                                        className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider"
+                                    >
+                                        Status
+                                    </label>
                                 </div>
-                                <div className="px-2 pb-2 flex flex-wrap gap-1">
-                                    {STATUS_OPTIONS.map((status) => (
-                                        <button
-                                            key={status}
-                                            onClick={() => setStatusFilter(status)}
-                                            className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all ${
-                                                statusFilter === status
-                                                    ? 'bg-gray-900 text-white shadow-sm'
-                                                    : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
-                                            }`}
-                                        >
-                                            {status === 'All' ? 'All Status' : status}
-                                        </button>
-                                    ))}
+                                <div className="px-3 pb-2">
+                                    <select
+                                        id="credit-status-filter"
+                                        value={statusFilter}
+                                        onChange={(e) => setStatusFilter(e.target.value)}
+                                        className="w-full rounded-lg border-2 border-gray-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 focus:border-gray-900 focus:outline-none"
+                                    >
+                                        {STATUS_OPTIONS.map((status) => (
+                                            <option key={status} value={status}>
+                                                {status === 'All' ? 'All Status' : status}
+                                            </option>
+                                        ))}
+                                    </select>
                                 </div>
 
                                 <div className="border-t border-gray-100 mx-3"></div>
@@ -991,7 +997,7 @@ const CreditTransactions = () => {
                                         const displayStatus = getCreditDueStatus(row);
                                         const isCancelled = displayStatus === 'Cancelled';
                                         return (
-                                    <tr key={row._id} className="border-b border-gray-200 hover:bg-gray-50 transition-colors duration-200 group">
+                                    <tr key={row._id} className={`${getAttentionRowClass(displayStatus)} group transition-colors duration-150`}>
                                         <td className="whitespace-nowrap px-0.5 py-1.5 text-center border border-gray-200 leading-tight">
                                             <IdentifierChip className="whitespace-nowrap break-normal px-1.5 text-[11px]">{row.creditTransactionId}</IdentifierChip>
                                         </td>
@@ -1011,49 +1017,35 @@ const CreditTransactions = () => {
                                         </td>
                                         <td className="whitespace-nowrap py-1.5 px-1 text-center border border-gray-200">
                                             <div className="flex flex-nowrap items-center justify-center gap-2">
-                                                <button
+                                                <TableActionButton
                                                     onClick={() => handleOpenDetails(row)}
-                                                    aria-label="View Details"
-                                                    title="View Details"
-                                                    className="group/action relative inline-flex h-7 w-7 items-center justify-center rounded-md border border-black bg-white text-black transition-all hover:bg-gray-100"
+                                                    label="View Details"
                                                 >
                                                     <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
                                                         <path strokeLinecap="round" strokeLinejoin="round" d="M1.5 12s3.6-7 10.5-7 10.5 7 10.5 7-3.6 7-10.5 7S1.5 12 1.5 12z" />
                                                         <circle cx="12" cy="12" r="3" />
                                                     </svg>
-                                                    <span className="pointer-events-none absolute bottom-full right-0 z-30 mb-1 whitespace-nowrap rounded-md bg-gray-900 px-2 py-1 text-[10px] font-semibold text-white opacity-0 shadow-sm transition-opacity duration-150 group-hover/action:opacity-100">
-                                                        View Details
-                                                    </span>
-                                                </button>
-                                                <button
+                                                </TableActionButton>
+                                                <TableActionButton
                                                     onClick={() => handleOpenMarkPaidModal(row, 'extendOnly')}
                                                     disabled={isCancelled || Number(row.remainingBalance || 0) <= 0 || Number(row.termDays || 0) >= 60}
-                                                    aria-label="Extend Day Term"
-                                                    title="Extend Day Term"
-                                                    className={`group/action relative inline-flex items-center justify-center rounded-md transition-all h-7 w-7 ${isCancelled || Number(row.remainingBalance || 0) <= 0 || Number(row.termDays || 0) >= 60 ? 'bg-gray-100 text-gray-400 border border-gray-200 cursor-not-allowed' : 'bg-amber-50 text-amber-700 border border-amber-300 hover:bg-amber-100'}`}
+                                                    label="Extend Day Term"
                                                 >
                                                     <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
                                                         <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3" />
                                                         <circle cx="12" cy="12" r="9" />
                                                     </svg>
-                                                    <span className="pointer-events-none absolute bottom-full right-0 z-30 mb-1 whitespace-nowrap rounded-md bg-gray-900 px-2 py-1 text-[10px] font-semibold text-white opacity-0 shadow-sm transition-opacity duration-150 group-hover/action:opacity-100">
-                                                        Extend Term
-                                                    </span>
-                                                </button>
-                                                <button
+                                                </TableActionButton>
+                                                <TableActionButton
                                                     onClick={() => handleOpenMarkPaidModal(row, 'markPaid')}
                                                     disabled={isCancelled || Number(row.remainingBalance || 0) <= 0}
-                                                    aria-label="Mark as Paid"
-                                                    title="Mark as Paid"
-                                                    className={`group/action relative inline-flex items-center justify-center rounded-md transition-all h-7 w-7 ${isCancelled || Number(row.remainingBalance || 0) <= 0 ? 'bg-gray-100 text-gray-400 border border-gray-200 cursor-not-allowed' : 'bg-emerald-50 text-emerald-700 border border-emerald-300 hover:bg-emerald-100'}`}
+                                                    variant="positive"
+                                                    label="Mark as Paid"
                                                 >
                                                     <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
                                                         <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                                                     </svg>
-                                                    <span className="pointer-events-none absolute bottom-full right-0 z-30 mb-1 whitespace-nowrap rounded-md bg-gray-900 px-2 py-1 text-[10px] font-semibold text-white opacity-0 shadow-sm transition-opacity duration-150 group-hover/action:opacity-100">
-                                                        Mark as Paid
-                                                    </span>
-                                                </button>
+                                                </TableActionButton>
                                             </div>
                                         </td>
                                     </tr>
@@ -1070,7 +1062,7 @@ const CreditTransactions = () => {
                             <div className="text-xs text-gray-500 font-medium">
                                 Showing <span className="font-semibold text-gray-900">{displayStart}</span> to <span className="font-semibold text-gray-900">{displayEnd}</span> of <span className="font-semibold text-gray-900">{visibleRows.length}</span> results
                             </div>
-                            <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} />
+                            <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} pageSize={itemsPerPage} onPageSizeChange={(pageSize) => { setItemsPerPage(pageSize); setCurrentPage(1); }} />
                         </div>
                     </div>
                 </div>
@@ -1343,9 +1335,7 @@ const CreditTransactions = () => {
                                                 aria-expanded={isMarkPaidPaymentMethodOpen}
                                                 className="mt-1 flex w-full items-center justify-between rounded-lg border border-gray-300 bg-white px-2 py-2 text-left text-xs font-semibold text-gray-800 transition-colors hover:border-amber-400 focus:border-amber-500 focus:outline-none"
                                             >
-                                                <span>{markPaidForm.paymentMethod === 'other'
-                                                    ? (markPaidForm.paymentMethodOther || 'Other')
-                                                    : formatPaymentModeLabel(markPaidForm.paymentMethod)}</span>
+                                                <span>{formatPaymentModeLabel(markPaidForm.paymentMethod)}</span>
                                                 <svg className={`h-4 w-4 text-gray-400 transition-transform ${isMarkPaidPaymentMethodOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="m6 9 6 6 6-6" /></svg>
                                             </button>
                                             {isMarkPaidPaymentMethodOpen && (
@@ -1380,6 +1370,7 @@ const CreditTransactions = () => {
                                                     type="text"
                                                     value={markPaidForm.paymentMethodOther || ''}
                                                     onChange={(e) => setMarkPaidForm((prev) => ({ ...prev, paymentMethodOther: e.target.value }))}
+                                                    onBlur={(e) => setMarkPaidForm((prev) => ({ ...prev, paymentMethodOther: normalizeHumanReadable(e.target.value) }))}
                                                     onKeyDown={(e) => {
                                                         if (e.key === 'Enter') e.preventDefault();
                                                         if (e.key === 'Escape') {
@@ -1534,16 +1525,6 @@ const CreditTransactions = () => {
                             </div>
 
                             <div className="flex gap-2.5 pt-1">
-                                {markPaidModalMode === 'extendOnly' && (
-                                    <button
-                                        type="button"
-                                        onClick={handleSaveExtensionOnly}
-                                        disabled={isSavingMarkPaid || isSavingExtensionOnly || isCancellingCredit || !canSaveExtensionOnly || Boolean(extensionInputError)}
-                                        className={`flex-1 py-2.5 rounded-xl text-xs font-semibold shadow-md transition-all transform ${(isSavingMarkPaid || isSavingExtensionOnly || !canSaveExtensionOnly || extensionInputError) ? 'bg-amber-200 text-amber-800 cursor-not-allowed' : 'bg-amber-300 text-amber-900 hover:bg-amber-400 hover:-translate-y-0.5'}`}
-                                    >
-                                        {isSavingExtensionOnly ? 'Saving Extension...' : 'Save Extension'}
-                                    </button>
-                                )}
                                 {markPaidModalMode === 'markPaid' && (
                                     <button
                                         type="button"
@@ -1565,6 +1546,16 @@ const CreditTransactions = () => {
                                 >
                                     Cancel
                                 </button>
+                                {markPaidModalMode === 'extendOnly' && (
+                                    <button
+                                        type="button"
+                                        onClick={handleSaveExtensionOnly}
+                                        disabled={isSavingMarkPaid || isSavingExtensionOnly || isCancellingCredit || !canSaveExtensionOnly || Boolean(extensionInputError)}
+                                        className={`flex-1 py-2.5 rounded-xl text-xs font-semibold shadow-md transition-all transform ${(isSavingMarkPaid || isSavingExtensionOnly || !canSaveExtensionOnly || extensionInputError) ? 'bg-amber-200 text-amber-800 cursor-not-allowed' : 'bg-amber-300 text-amber-900 hover:bg-amber-400 hover:-translate-y-0.5'}`}
+                                    >
+                                        {isSavingExtensionOnly ? 'Saving Extension...' : 'Save Extension'}
+                                    </button>
+                                )}
                                 {markPaidModalMode === 'markPaid' && (
                                     <button
                                         type="submit"
@@ -1582,35 +1573,41 @@ const CreditTransactions = () => {
 
             {isCancelModalOpen && markPaidTarget && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm md:max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-                        <div className="p-6 text-center">
-                            {isCancelConfirmOpen && (
-                                <div className="mx-auto flex items-center justify-center mb-4 text-red-600">
-                                    <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                    <div className="w-full max-w-sm overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl animate-in fade-in zoom-in-95 duration-200 dark:border-slate-700 dark:bg-slate-900">
+                        <div className="border-b border-slate-200 px-5 py-4 dark:border-slate-700">
+                            <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Cancel Credit Order</h3>
+                            <p className="mt-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">Provide a reason before cancelling this credit transaction.</p>
+                        </div>
+
+                        <div className="px-5 py-4">
+                            {isCancelConfirmOpen ? (
+                                <div className="rounded-xl border border-rose-200 bg-rose-50/60 p-3.5 text-left dark:border-rose-900/70 dark:bg-rose-950/25">
+                                    <div className="flex items-start gap-2.5">
+                                        <svg className="mt-0.5 h-4 w-4 shrink-0 text-rose-600 dark:text-rose-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v3.75m0 3.75h.008v.008H12V16.5Zm8.25-4.5a8.25 8.25 0 1 1-16.5 0 8.25 8.25 0 0 1 16.5 0Z" /></svg>
+                                        <div>
+                                            <p className="text-xs font-semibold text-slate-900 dark:text-slate-100">Confirm cancellation</p>
+                                            <p className="mt-1 text-[11px] leading-4 text-slate-600 dark:text-slate-400">
+                                                Cancel <span className="font-semibold text-slate-800 dark:text-slate-200">Transaction {markPaidForm.transactionId || '-'}</span>? This action will update its status.
+                                            </p>
+                                        </div>
+                                    </div>
                                 </div>
-                            )}
-                            {isCancelConfirmOpen && (
-                                <>
-                                    <h3 className="text-xl font-semibold text-gray-900 mb-2">Cancel Transaction?</h3>
-                                    <p className="text-gray-500 text-sm mb-4">
-                                        Are you sure you want to cancel <span className="font-semibold text-gray-900">Transaction {markPaidForm.transactionId || '-'}</span>?
-                                    </p>
-                                </>
-                            )}
-                            {!isCancelConfirmOpen && (
-                                <div className="text-left mb-5">
-                                    <label className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">Cancel Reason</label>
+                            ) : (
+                                <div>
+                                    <label htmlFor="credit-cancel-reason" className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Cancel Reason</label>
                                     <textarea
-                                        rows={4}
+                                        id="credit-cancel-reason"
+                                        rows={3}
                                         value={markPaidForm.cancelReason}
                                         onChange={(e) => setMarkPaidForm((prev) => ({ ...prev, cancelReason: e.target.value }))}
-                                        className="mt-1 w-full p-2 bg-white border border-rose-200 rounded-lg text-xs font-medium focus:ring-2 focus:ring-rose-300 outline-none text-gray-900 resize-none"
+                                        className="mt-1.5 w-full resize-none rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-xs font-medium text-slate-900 outline-none transition-colors placeholder:text-slate-400 focus:border-rose-400 focus:ring-2 focus:ring-rose-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-rose-700 dark:focus:ring-rose-950/60"
                                         placeholder="Add cancellation reason"
                                     />
-                                    <p className="mt-1 text-[10px] text-gray-400">Required to cancel this credit order.</p>
+                                    <p className="mt-1.5 text-[10px] text-slate-500 dark:text-slate-400">Required to cancel this credit order.</p>
                                 </div>
                             )}
-                            <div className="flex gap-3">
+
+                            <div className="mt-4 flex gap-2.5">
                                 <button
                                     type="button"
                                     onClick={() => {
@@ -1618,7 +1615,7 @@ const CreditTransactions = () => {
                                         setIsCancelConfirmOpen(false);
                                     }}
                                     disabled={isCancellingCredit}
-                                    className={`flex-1 py-2.5 bg-gray-100 text-gray-700 rounded-xl font-semibold text-xs hover:bg-gray-200 transition-colors ${isCancellingCredit ? 'opacity-80 cursor-not-allowed' : ''}`}
+                                    className={`flex-1 rounded-xl border border-slate-200 bg-white py-2.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 ${isCancellingCredit ? 'cursor-not-allowed opacity-60' : ''}`}
                                 >
                                     Cancel
                                 </button>
@@ -1632,8 +1629,7 @@ const CreditTransactions = () => {
                                         handleCancelCreditOrder();
                                     }}
                                     disabled={isCancellingCredit || !String(markPaidForm.cancelReason || '').trim()}
-                                    style={{ backgroundColor: '#111827' }}
-                                    className={`flex-1 py-2.5 text-white rounded-xl font-semibold text-xs shadow-md transition-all transform ${(isCancellingCredit || !String(markPaidForm.cancelReason || '').trim()) ? 'opacity-80 cursor-not-allowed' : 'hover:opacity-90 hover:-translate-y-0.5'}`}
+                                    className={`flex-1 rounded-xl border py-2.5 text-xs font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-300 ${(isCancellingCredit || !String(markPaidForm.cancelReason || '').trim()) ? 'cursor-not-allowed border-rose-200 bg-rose-100 text-rose-400 dark:border-rose-950 dark:bg-rose-950/35 dark:text-rose-700' : 'border-rose-700 bg-rose-700 text-white hover:border-rose-800 hover:bg-rose-800 dark:border-rose-800 dark:bg-rose-900/70 dark:text-rose-100 dark:hover:bg-rose-900'}`}
                                 >
                                     {isCancellingCredit ? 'Cancelling...' : (isCancelConfirmOpen ? 'Confirm' : 'Cancel Order')}
                                 </button>

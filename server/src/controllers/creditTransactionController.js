@@ -9,6 +9,7 @@ const { publishCreditTransactionsUpdated } = require('../services/realtimeServic
 const { parseStrictWholeNumber } = require('../utils/numericValidation');
 const { isMoneyInputTooLarge, parseSafeMoney } = require('../utils/moneyValidation');
 const { R2StorageError, isObjectNotFoundError, r2Storage } = require('../services/r2StorageService');
+const { normalizeCreditPaymentMethod } = require('../utils/paymentMethodNormalization');
 
 const normalizeString = (value) => String(value || '').trim();
 const MAX_CREDIT_TERM_DAYS = 60;
@@ -489,10 +490,10 @@ const applyPaymentToCreditTransaction = async ({
   transaction.paymentHistory.push({
     paymentDate: parsedPaymentDate,
     amount: appliedAmount,
-    method: normalizeString(method || 'cash').toLowerCase(),
+    method: normalizeCreditPaymentMethod(method),
     reference: normalizeString(reference),
     note: normalizeString(note),
-    recordedBy: user?.displayName || user?.name || user?.username || 'System',
+    recordedBy: user?.name || user?.displayName || user?.username || 'System',
     recordedById: user?._id || null,
     clientRequestId: normalizeString(clientRequestId),
   });
