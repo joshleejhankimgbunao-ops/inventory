@@ -104,7 +104,7 @@ export const showToast = (title, subtitle, type = 'success', key = 'general', op
         if (typeof key !== 'number' && toast.isActive(key)) {
             toast.dismiss(key);
         }
-    } catch (err) {
+    } catch {
         // ignore errors from toast.isActive/dismiss
     }
 
@@ -153,6 +153,16 @@ export const showToast = (title, subtitle, type = 'success', key = 'general', op
                                 {options.actionLabel}
                             </button>
                         ) : null}
+                        <button
+                            type="button"
+                            onClick={() => toast.dismiss(t.id)}
+                            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-slate-300/80 transition-colors hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+                            aria-label="Dismiss notification"
+                        >
+                            <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="m6 6 12 12M18 6 6 18" />
+                            </svg>
+                        </button>
                     </div>
                 </div>
                 {/* Timer Bar (hidden for loading toasts) */}

@@ -239,7 +239,17 @@ const Dashboard = ({ onLogout }) => {
                
                // 1. ALWAYS Show In-App Toast (No permission needed)
                toast.custom((t) => (
-                <div className={`${t.visible ? 'animate-enter' : 'animate-leave'} w-full max-w-sm pointer-events-auto bg-[#1e1e1e] shadow-2xl rounded-lg ring-1 ring-white/10 overflow-hidden flex items-center p-2 gap-3 border border-gray-700/50`}>
+                <div className={`${t.visible ? 'animate-enter' : 'animate-leave'} relative w-full max-w-sm pointer-events-auto bg-[#1e1e1e] shadow-2xl rounded-lg ring-1 ring-white/10 overflow-hidden flex items-center p-2 pr-9 gap-3 border border-gray-700/50`}>
+                    <button
+                      type="button"
+                      onClick={() => toast.dismiss(t.id)}
+                      className="absolute right-2 top-2 inline-flex h-6 w-6 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+                      aria-label="Dismiss notification"
+                    >
+                      <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="m6 6 12 12M18 6 6 18" />
+                      </svg>
+                    </button>
                     {/* Icon Section */}
                     <div className="flex-shrink-0 bg-red-500/10 p-2 rounded-lg">
                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-8 h-8 text-red-500 animate-pulse">

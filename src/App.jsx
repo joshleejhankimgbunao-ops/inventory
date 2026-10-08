@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
-import { Toaster, ToastBar } from 'react-hot-toast';
+import { Toaster, ToastBar, toast } from 'react-hot-toast';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import ResetCredential from './pages/ResetCredential';
@@ -111,7 +111,17 @@ function App() {
           <ToastBar toast={t}>
             {({ icon, message }) => (
               <div className="flex flex-col w-full relative min-w-60">
-                <div className="flex items-center gap-3 px-4 py-3">
+                <button
+                  type="button"
+                  onClick={() => toast.dismiss(t.id)}
+                  className="absolute right-2 top-2 z-10 inline-flex h-6 w-6 items-center justify-center rounded-md text-white/65 transition-colors hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+                  aria-label="Dismiss notification"
+                >
+                  <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="m6 6 12 12M18 6 6 18" />
+                  </svg>
+                </button>
+                <div className="flex items-center gap-3 px-4 py-3 pr-10">
                   <span className="shrink-0 scale-100">{icon}</span>
                   <div className="text-xs font-semibold leading-relaxed">{message}</div>
                 </div>
