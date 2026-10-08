@@ -24,6 +24,7 @@ require.cache[realtimeServicePath] = {
 
 const Product = require('../src/models/Product');
 const {
+  addProductRecommendation,
   createProduct,
   generateNextSku,
   normalizeSku,
@@ -99,6 +100,43 @@ test('removing a recommendation persists the exclusion and rejects a no-op remov
     Product.updateOne = originalUpdateOne;
     Product.findById = originalFindById;
     Product.exists = originalExists;
+  }
+});
+
+test('adding a recommendation persists an exact active SKU relationship without changing the product', async () => {
+  const originalFindById = Product.findById;
+  const originalFindOne = Product.findOne;
+  const originalUpdateOne = Product.updateOne;
+  const request = makeRequest({ type: 'budget', recommendationId: 'candidate-1', recommendationCode: 'alt-001' });
+  request.params = { id: 'product-1' };
+  const target = { _id: 'product-1', sku: 'TARGET-001', name: 'Target', manualBudgetOptions: [], excludedBudgetOptions: [] };
+  const candidate = { _id: 'candidate-1', sku: 'ALT-001', name: 'Alternative', isActive: true };
+
+  try {
+    Product.findById = async () => target;
+    Product.findOne = async (filter) => {
+      assert.equal(filter._id, 'candidate-1');
+      assert.equal(filter.sku, 'ALT-001');
+      assert.deepEqual(filter.isActive, { $ne: false });
+      assert.deepEqual(filter.stock, { $gt: 0 });
+      return candidate;
+    };
+    Product.updateOne = async (filter, update) => {
+      assert.deepEqual(filter.manualBudgetOptions, { $ne: 'ALT-001' });
+      assert.equal(update.$addToSet.manualBudgetOptions, 'ALT-001');
+      assert.equal(update.$pull.excludedBudgetOptions, 'ALT-001');
+      target.manualBudgetOptions = ['ALT-001'];
+      return { matchedCount: 1, modifiedCount: 1 };
+    };
+
+    const response = makeResponse();
+    await addProductRecommendation(request, response, assert.fail);
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.body.manualBudgetOptions, ['ALT-001']);
+  } finally {
+    Product.findById = originalFindById;
+    Product.findOne = originalFindOne;
+    Product.updateOne = originalUpdateOne;
   }
 });
 

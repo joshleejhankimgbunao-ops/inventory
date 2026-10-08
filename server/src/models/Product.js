@@ -87,6 +87,14 @@ const productSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    manualBudgetOptions: {
+      type: [String],
+      default: [],
+    },
+    excludedBudgetOptions: {
+      type: [String],
+      default: [],
+    },
     isActive: {
       type: Boolean,
       default: true,

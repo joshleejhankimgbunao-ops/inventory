@@ -3,6 +3,7 @@ import Pagination from '../components/Pagination';
 import IdentifierChip from '../components/IdentifierChip';
 import ArchiveIcon from '../components/ArchiveIcon';
 import EditIcon from '../components/EditIcon';
+import TableActionButton from '../components/TableActionButton';
 import { showToast } from '../utils/toastHelper';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
@@ -12,6 +13,7 @@ import { subscribeRealtimeEvent } from '../services/realtimeClient';
 import { createProductApi, updateProductApi, listPartnersApi, listProductsApi } from '../services/inventoryApi';
 import { getStockStatus } from '../utils/recommendationLogic';
 import { formatMoney } from '../utils/numberFormat';
+import { normalizeHumanReadable } from '../utils/textNormalization';
 import {
     formatMoneyInput,
     isMoneyInput,
@@ -56,7 +58,7 @@ const ProductList = () => {
 
     // Pagination
     const [currentPage, setCurrentPage] = useState(1);
-    const itemsPerPage = 20;
+    const [itemsPerPage, setItemsPerPage] = useState(10);
     
     const loadSupplierPartners = useCallback(async () => {
         try {
@@ -703,6 +705,10 @@ const ProductList = () => {
     const indexOfFirstItem = indexOfLastItem - itemsPerPage;
     const paginatedProducts = filteredProducts.slice(indexOfFirstItem, indexOfLastItem);
 
+    React.useEffect(() => {
+        setCurrentPage((previous) => Math.min(previous, Math.max(totalPages, 1)));
+    }, [totalPages]);
+
     // Reset page when filters change
     React.useEffect(() => { setCurrentPage(1); }, [searchTerm, statusFilter, categoryFilter, sortBy]);
 
@@ -774,8 +780,8 @@ const ProductList = () => {
         }
 
         const rules = getCategoryFieldRules(formData.category);
-        const normalizedBrand = rules.showBrand ? String(formData.brand || '').trim() : '';
-        const normalizedColor = rules.showColor ? String(formData.color || '').trim() : '';
+        const normalizedBrand = rules.showBrand ? normalizeHumanReadable(formData.brand) : '';
+        const normalizedColor = rules.showColor ? normalizeHumanReadable(formData.color) : '';
         const normalizedSupplier = rules.showSupplier ? String(formData.supplier || '').trim() : '';
         const supplierExists = supplierPartnerNames.some(
             (name) => name.toLowerCase() === normalizedSupplier.toLowerCase()
@@ -842,7 +848,7 @@ const ProductList = () => {
             // Or I can update `calculateStatus` to look at settings.stockRules if available.
             
             const normalized = normalizeProductNameAndSize(formData.name, formData.category, combinedSize);
-            const cleanedName = normalized.name;
+            const cleanedName = normalizeHumanReadable(normalized.name);
             const finalSize = combinedSize || normalized.size || '';
             const newProduct = {
                 ...formData,
@@ -880,7 +886,7 @@ const ProductList = () => {
         } else {
             // Update Logic
             const normalized = normalizeProductNameAndSize(formData.name, formData.category, combinedSize);
-            const cleanedName = normalized.name;
+            const cleanedName = normalizeHumanReadable(normalized.name);
             const finalSize = combinedSize || normalized.size || '';
             // Check for changes
             const hasChanges = 
@@ -1067,7 +1073,7 @@ const ProductList = () => {
                  <div className="flex items-center justify-between md:shrink-0">
                     <div>
                         <div>
-                            <p className="text-3xl md:text-4xl font-bold text-gray-900 leading-tight">Product Master List</p>
+                            <p className="text-3xl md:text-4xl font-semibold tracking-tight text-gray-900 leading-tight">Product Master List</p>
                             <p className="text-gray-500 dark:text-gray-400 text-[11px] md:text-xs font-medium mt-0.5">Manage catalog, prices, and stock levels</p>
                         </div>
                     </div>
@@ -1410,24 +1416,18 @@ const ProductList = () => {
                                         {isAdminOrAbove() && (
                                         <td className="w-42.5 px-4 py-2 whitespace-nowrap text-center text-sm font-medium border border-gray-200 dark:border-gray-700 overflow-hidden">
                                             <div className="flex items-center justify-center gap-2">
-                                                <button 
+                                                <TableActionButton
                                                     onClick={() => handleOpenEdit(product)}
-                                                    title="Edit"
+                                                    label="Edit"
                                                     aria-label={`Edit ${product.name}`}
-                                                    className="group/btn inline-flex shrink-0 items-center rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-gray-600 transition-all hover:bg-gray-100 hover:text-gray-800"
                                                 >
                                                     <EditIcon />
-                                                    <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap text-[10px] font-semibold opacity-0 transition-all duration-200 group-hover/btn:ml-1 group-hover/btn:max-w-12 group-hover/btn:opacity-100">Edit</span>
-                                                </button>
+                                                </TableActionButton>
                                                 
-                                                <button 
+                                                <TableActionButton
                                                     onClick={() => toggleArchive(product)}
-                                                    className={`group/btn inline-flex items-center rounded-lg transition-all px-2 py-1.5 ${
-                                                        product.isArchived 
-                                                        ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/40' 
-                                                        : 'bg-orange-50 dark:bg-orange-900/20 text-orange-600 dark:text-orange-400 hover:bg-orange-100 dark:hover:bg-orange-900/40'
-                                                    }`}
-                                                    title={product.isArchived ? 'Restore' : 'Archive'}
+                                                    variant={product.isArchived ? 'positive' : 'destructive'}
+                                                    label={product.isArchived ? 'Restore' : 'Archive'}
                                                     aria-label={`${product.isArchived ? 'Restore' : 'Archive'} ${product.name}`}
                                                 >
                                                     {product.isArchived ? (
@@ -1435,8 +1435,7 @@ const ProductList = () => {
                                                     ) : (
                                                         <ArchiveIcon />
                                                     )}
-                                                    <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 text-[10px] font-semibold group-hover/btn:ml-1 group-hover/btn:max-w-20 group-hover/btn:opacity-100">{product.isArchived ? "Restore" : "Archive"}</span>
-                                                </button>
+                                                </TableActionButton>
                                             </div>
                                         </td>
                                         )}
@@ -1450,9 +1449,9 @@ const ProductList = () => {
                 {/* Pagination Controls */}
                 <div className="mt-auto flex shrink-0 flex-col items-start gap-3 border-t border-slate-300 bg-transparent pt-3 pb-1 sm:flex-row sm:items-center sm:justify-between dark:border-gray-700">
                         <div className="text-xs text-gray-500 dark:text-gray-400 font-medium">
-                            Showing <span className="font-semibold text-gray-900 dark:text-white">{indexOfFirstItem + 1}</span> - <span className="font-semibold text-gray-900 dark:text-white">{Math.min(indexOfLastItem, filteredProducts.length)}</span> of <span className="font-semibold text-gray-900 dark:text-white">{filteredProducts.length}</span>
+                            Showing <span className="font-semibold text-gray-900 dark:text-white">{filteredProducts.length === 0 ? 0 : indexOfFirstItem + 1}</span> to <span className="font-semibold text-gray-900 dark:text-white">{Math.min(indexOfLastItem, filteredProducts.length)}</span> of <span className="font-semibold text-gray-900 dark:text-white">{filteredProducts.length}</span> results
                         </div>
-                        <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} />
+                        <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} pageSize={itemsPerPage} onPageSizeChange={(pageSize) => { setItemsPerPage(pageSize); setCurrentPage(1); }} />
                 </div>
             </div>
             </div>
@@ -1599,6 +1598,7 @@ const ProductList = () => {
                                                 type="text" 
                                                 value={formData.brand}
                                                 onChange={e => setFormData({...formData, brand: e.target.value})}
+                                                onBlur={e => setFormData((prev) => ({ ...prev, brand: normalizeHumanReadable(e.target.value) }))}
                                                 required={categoryFieldRules.requireBrand}
                                                 className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
                                                 placeholder={
@@ -1619,6 +1619,7 @@ const ProductList = () => {
                                                 type="text" 
                                                 value={formData.name}
                                                 onChange={e => setFormData({...formData, name: e.target.value})}
+                                                onBlur={e => setFormData((prev) => ({ ...prev, name: normalizeHumanReadable(e.target.value) }))}
                                                 required
                                                 className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
                                                 placeholder={
@@ -1644,6 +1645,7 @@ const ProductList = () => {
                                                 type="text" 
                                                 value={formData.color}
                                                 onChange={e => setFormData({...formData, color: e.target.value})}
+                                                onBlur={e => setFormData((prev) => ({ ...prev, color: normalizeHumanReadable(e.target.value) }))}
                                                 required={categoryFieldRules.requireColor}
                                                 className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
                                                 placeholder={

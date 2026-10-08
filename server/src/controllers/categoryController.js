@@ -1,4 +1,5 @@
 const Category = require('../models/Category');
+const { normalizeHumanReadable } = require('../../../shared/textNormalization.cjs');
 
 const normalizeUnits = (units) => {
   if (!Array.isArray(units)) return undefined;
@@ -35,7 +36,7 @@ const createCategory = async (req, res, next) => {
       sizeUnits
     } = req.body;
 
-    const normalizedName = String(name || '').trim();
+    const normalizedName = normalizeHumanReadable(name);
     if (!normalizedName) {
       res.status(400);
       throw new Error('Category name is required');
@@ -82,7 +83,7 @@ const updateCategory = async (req, res, next) => {
       sizeUnits
     } = req.body;
     const categoryId = req.params.id;
-    const normalizedName = name !== undefined ? String(name || '').trim() : undefined;
+    const normalizedName = name !== undefined ? normalizeHumanReadable(name) : undefined;
 
     const category = await Category.findById(categoryId);
     

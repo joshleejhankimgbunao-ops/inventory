@@ -147,7 +147,7 @@ const Inventory = () => {
 
     // Pagination State
     const [currentPage, setCurrentPage] = useState(1);
-    const itemsPerPage = 15; 
+    const [itemsPerPage, setItemsPerPage] = useState(10);
 
     // Active filter count for Clear All visibility
     const activeFilterCount = (statusFilter !== 'All' ? 1 : 0) + (categoryFilter !== 'All' ? 1 : 0) + (sortBy !== 'off' ? 1 : 0);
@@ -201,6 +201,9 @@ const Inventory = () => {
     const indexOfFirstItem = indexOfLastItem - itemsPerPage;
     const currentItems = filteredInventory.slice(indexOfFirstItem, indexOfLastItem);
     const totalPages = Math.ceil(filteredInventory.length / itemsPerPage);
+    useEffect(() => {
+        setCurrentPage((previous) => Math.min(previous, Math.max(totalPages, 1)));
+    }, [totalPages]);
     const getProductImageUrl = (item) => String(item?.imageUrl || '').trim();
     const previewableInventoryItems = useMemo(() => {
         return filteredInventory.filter((item) => getProductImageUrl(item));
@@ -358,6 +361,8 @@ const Inventory = () => {
             persistedProduct = await updateProductStockApi(selectedItem.id, selectedUpdatedItem.stock, {
                 adjustmentReason: reasonValue,
                 adjustmentRequestId: stockAdjustmentRequestIdRef.current,
+                expectedStock: inventory.find((item) => item.code === selectedItem.code)?.stock,
+                expectedUpdatedAt: inventory.find((item) => item.code === selectedItem.code)?.updatedAt,
             });
         } catch (error) {
             showToast(
@@ -395,7 +400,7 @@ const Inventory = () => {
             {/* Header Area */}
             <div className="p-3 pb-0 md:shrink-0">
                 <div className="mb-4">
-                    <p className="text-3xl md:text-4xl font-bold text-gray-900 leading-tight">Stock Operations</p>
+                    <p className="text-3xl md:text-4xl font-semibold tracking-tight text-gray-900 leading-tight">Stock Operations</p>
                     <p className="text-gray-500 dark:text-gray-400 text-[11px] md:text-xs font-medium mt-1">Manage stock in/out flow and adjustments</p>
                 </div>
 
@@ -521,17 +526,17 @@ const Inventory = () => {
             </div>
 
             {/* Inventory Table */}
-            <div ref={listContainerRef} className="flex-1 overflow-x-auto md:overflow-y-auto px-4 pb-4">
-                <table className="main-data-table w-full text-left border-separate border-spacing-0 table-fixed min-w-205">
+            <div ref={listContainerRef} className="flex-1 overflow-x-auto overscroll-x-contain md:overflow-y-auto px-4 pb-4">
+                <table className="main-data-table w-full text-left border-separate border-spacing-0 table-fixed min-w-[980px] md:min-w-205">
                     <thead className="sticky top-0 z-10 shadow-sm">
                         <tr className="bg-gray-900 dark:bg-gray-700 text-white uppercase tracking-wider">
                             <th className="py-2 px-3 w-[15%] text-center text-[11px] font-semibold border border-gray-700">SKU</th>
                             <th className="py-2 px-3 w-[10%] text-center text-[11px] font-semibold border border-gray-700">Photo</th>
-                            <th className="py-2 px-3 w-[25%] text-center text-[11px] font-semibold border border-gray-700">Product</th>
-                            <th className="py-2 px-3 w-[15%] text-center text-[11px] font-semibold border border-gray-700">Category</th>
-                            <th className="py-2 px-3 w-[15%] text-center text-[11px] font-semibold border border-gray-700">Current Stock</th>
-                            <th className="py-2 px-3 w-[10%] text-center text-[11px] font-semibold border border-gray-700">Status</th>
-                            <th className="py-2 px-3 w-[10%] text-center text-[11px] font-semibold border border-gray-700">Actions</th>
+                            <th className="py-2 px-3 w-[21%] md:w-[25%] text-center text-[11px] font-semibold border border-gray-700">Product</th>
+                            <th className="py-2 px-3 w-[13%] md:w-[15%] text-center text-[11px] font-semibold border border-gray-700">Category</th>
+                            <th className="py-2 px-3 w-[14%] md:w-[15%] text-center text-[11px] font-semibold border border-gray-700">Current Stock</th>
+                            <th className="py-2 px-3 w-[12%] md:w-[10%] text-center text-[11px] font-semibold border border-gray-700">Status</th>
+                            <th className="py-2 pl-3 pr-5 w-[15%] md:w-[10%] text-center text-[11px] font-semibold border border-gray-700">Actions</th>
                         </tr>
                     </thead>
                     <tbody className="text-sm divide-y divide-gray-100 dark:divide-gray-700">
@@ -591,31 +596,31 @@ const Inventory = () => {
                                         <span className="font-semibold text-gray-900 dark:text-white text-base">{formatNumber(item.stock)}</span>
                                     </td>
                                     <td className="py-2 px-3 text-center border border-gray-200 dark:border-gray-700">
-                                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${getStatusColor(deriveStatus(item))}`}>
+                                        <span className={`inline-flex whitespace-nowrap px-2 py-0.5 rounded-full text-[10px] font-semibold border ${getStatusColor(deriveStatus(item))}`}>
                                             {deriveStatus(item)}
                                         </span>
                                     </td>
-                                    <td className="py-2 px-3 text-center border border-gray-200 dark:border-gray-700">
-                                        <div className="flex justify-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
+                                    <td className="py-2 pl-3 pr-5 text-center border border-gray-200 dark:border-gray-700">
+                                        <div className="flex flex-nowrap items-center justify-center gap-2 whitespace-nowrap">
                                             <button 
                                                 onClick={() => handleOpenStockModal(item, 'IN')}
-                                                className="flex items-center gap-0.5 px-1.5 py-1 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 rounded text-[10px] font-semibold transition-colors border border-emerald-100 dark:border-emerald-900/30"
+                                                className="inline-flex h-8 w-14 shrink-0 items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white px-1.5 text-[11px] font-medium tracking-wide text-slate-600 transition-colors hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-700 active:bg-emerald-100 focus-visible:border-emerald-200 focus-visible:bg-emerald-50 focus-visible:text-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/25 focus-visible:ring-offset-1 dark:border-slate-700 dark:bg-[#282b30] dark:text-slate-200 dark:hover:border-emerald-800/60 dark:hover:bg-emerald-950/35 dark:hover:text-emerald-300 dark:active:bg-emerald-900/35 dark:focus-visible:border-emerald-800/60 dark:focus-visible:bg-emerald-950/35 dark:focus-visible:text-emerald-300 dark:focus-visible:ring-emerald-400/25 dark:focus-visible:ring-offset-[#222428]"
                                                 title="Received Stock"
                                             >
-                                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
+                                                <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.25" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
                                                 IN
                                             </button>
                                             <button
                                                 onClick={() => item.stock > 0 && handleOpenStockModal(item, 'OUT')}
                                                 disabled={item.stock <= 0}
                                                 title={item.stock <= 0 ? 'No stock available' : 'Remove/Adjust Stock'}
-                                                className={`flex items-center gap-0.5 px-1.5 py-1 rounded text-[10px] font-semibold transition-colors border ${
+                                                className={`inline-flex h-8 w-14 shrink-0 items-center justify-center gap-1 rounded-lg border px-1.5 text-[11px] font-medium tracking-wide transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/25 focus-visible:ring-offset-1 dark:focus-visible:ring-rose-400/25 dark:focus-visible:ring-offset-[#222428] ${
                                                     item.stock <= 0
-                                                    ? 'opacity-40 cursor-not-allowed bg-rose-50/50 text-rose-300 border-rose-100'
-                                                    : 'bg-rose-50 dark:bg-rose-900/20 text-rose-700 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-900/40 border-rose-100 dark:border-rose-900/30'
+                                                    ? 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400 dark:border-slate-700 dark:bg-[#24262a] dark:text-slate-500'
+                                                    : 'border-slate-200 bg-white text-slate-600 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700 active:bg-rose-100 focus-visible:border-rose-200 focus-visible:bg-rose-50 focus-visible:text-rose-700 dark:border-slate-700 dark:bg-[#282b30] dark:text-slate-200 dark:hover:border-rose-800/60 dark:hover:bg-rose-950/35 dark:hover:text-rose-300 dark:active:bg-rose-900/35 dark:focus-visible:border-rose-800/60 dark:focus-visible:bg-rose-950/35 dark:focus-visible:text-rose-300'
                                                 }`}
                                             >
-                                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M20 12H4"></path></svg>
+                                                <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.25" d="M20 12H4"></path></svg>
                                                 OUT
                                             </button>
                                         </div>
@@ -632,7 +637,7 @@ const Inventory = () => {
                     <div className="text-gray-500 dark:text-gray-400 text-xs font-medium">
                         Showing <span className="font-semibold text-gray-900 dark:text-white">{filteredInventory.length === 0 ? 0 : indexOfFirstItem + 1}</span> to <span className="font-semibold text-gray-900 dark:text-white">{Math.min(indexOfLastItem, filteredInventory.length)}</span> of <span className="font-semibold text-gray-900 dark:text-white">{filteredInventory.length}</span> results
                     </div>
-                    <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} />
+                    <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} pageSize={itemsPerPage} onPageSizeChange={(pageSize) => { setItemsPerPage(pageSize); setCurrentPage(1); }} />
             </div>
 
             {isStockModalOpen && (

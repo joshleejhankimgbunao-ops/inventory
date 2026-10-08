@@ -1,5 +1,6 @@
 const Partner = require('../models/Partner');
 const { publishPartnersUpdated } = require('../services/realtimeService');
+const { normalizeHumanReadable } = require('../../../shared/textNormalization.cjs');
 
 const EMAIL_RULE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -99,10 +100,10 @@ const createPartner = async (req, res, next, dependencies = {}) => {
     }
 
     const type = normalizeString(req.body?.type).toLowerCase();
-    const name = normalizeString(req.body?.name);
+    const name = normalizeHumanReadable(req.body?.name);
     const contact = normalizeString(req.body?.contact);
     const email = normalizeEmail(req.body?.email);
-    const address = normalizeString(req.body?.address);
+    const address = normalizeHumanReadable(req.body?.address);
     const note = normalizeString(req.body?.note);
     const supplierCapabilities = normalizeSupplierCapabilities(req.body?.supplierCapabilities);
     const customerType = normalizeCustomerType(req.body?.customerType);
@@ -170,10 +171,10 @@ const updatePartner = async (req, res, next) => {
 
     const payload = {};
 
-    if (req.body?.name !== undefined) payload.name = normalizeString(req.body.name);
+    if (req.body?.name !== undefined) payload.name = normalizeHumanReadable(req.body.name);
     if (req.body?.contact !== undefined) payload.contact = normalizeString(req.body.contact);
     if (req.body?.email !== undefined) payload.email = normalizeEmail(req.body.email);
-    if (req.body?.address !== undefined) payload.address = normalizeString(req.body.address);
+    if (req.body?.address !== undefined) payload.address = normalizeHumanReadable(req.body.address);
     if (req.body?.note !== undefined) payload.note = normalizeString(req.body.note);
     if (req.body?.supplierCapabilities !== undefined) {
       payload.supplierCapabilities = normalizeSupplierCapabilities(req.body.supplierCapabilities);

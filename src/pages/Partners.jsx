@@ -18,10 +18,11 @@ import { subscribeRealtimeEvent } from '../services/realtimeClient';
 import Pagination from '../components/Pagination';
 import ArchiveIcon from '../components/ArchiveIcon';
 import EditIcon from '../components/EditIcon';
+import TableActionButton from '../components/TableActionButton';
 import { createClientRequestId } from '../utils/clientRequestId';
+import { normalizeHumanReadable } from '../utils/textNormalization';
 
 const EMAIL_RULE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const PARTNERS_PER_PAGE = 15;
 
 const parseLegacySupplierNoteToCapabilities = (noteValue) => {
     const note = String(noteValue || '').trim();
@@ -77,6 +78,7 @@ const Partners = ({ viewOnly = false }) => {
     const [searchQuery, setSearchQuery] = useState('');
     const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
     const [currentPage, setCurrentPage] = useState(1);
+    const [itemsPerPage, setItemsPerPage] = useState(10);
     const [isAddModalOpen, setIsAddModalOpen] = useState(false);
     
     const [isEditMode, setIsEditMode] = useState(false);
@@ -251,12 +253,12 @@ const Partners = ({ viewOnly = false }) => {
     });
 
     const filteredData = filteredDataBase;
-    const totalPages = Math.ceil(filteredData.length / PARTNERS_PER_PAGE);
+    const totalPages = Math.ceil(filteredData.length / itemsPerPage);
     const activePage = Math.min(currentPage, Math.max(totalPages, 1));
-    const indexOfFirstPartner = (activePage - 1) * PARTNERS_PER_PAGE;
-    const paginatedData = filteredData.slice(indexOfFirstPartner, indexOfFirstPartner + PARTNERS_PER_PAGE);
+    const indexOfFirstPartner = (activePage - 1) * itemsPerPage;
+    const paginatedData = filteredData.slice(indexOfFirstPartner, indexOfFirstPartner + itemsPerPage);
     const displayStart = filteredData.length === 0 ? 0 : indexOfFirstPartner + 1;
-    const displayEnd = Math.min(indexOfFirstPartner + PARTNERS_PER_PAGE, filteredData.length);
+    const displayEnd = Math.min(indexOfFirstPartner + itemsPerPage, filteredData.length);
     React.useEffect(() => {
         setCurrentPage(1);
     }, [activeTab, debouncedSearchQuery, showArchived]);
@@ -363,10 +365,10 @@ const Partners = ({ viewOnly = false }) => {
         
         const payload = {
             type: activeTab === 'suppliers' ? 'supplier' : 'customer',
-            name: newPartner.name,
+            name: normalizeHumanReadable(newPartner.name),
             contact: newPartner.contact,
             email: normalizedEmail,
-            address: newPartner.address,
+            address: normalizeHumanReadable(newPartner.address),
             note: newPartner.note || (activeTab === 'suppliers' ? 'General' : 'Regular'),
             supplierCapabilities: activeTab === 'suppliers'
                 ? (Array.isArray(newPartner.supplierCapabilities) ? newPartner.supplierCapabilities : [])
@@ -508,7 +510,7 @@ const Partners = ({ viewOnly = false }) => {
                     {/* Header */}
                     <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-6 gap-3">
                         <div>
-                            <p className="text-3xl md:text-4xl font-bold text-gray-900 leading-tight">Partners & Directory</p>
+                            <p className="text-3xl md:text-4xl font-semibold tracking-tight text-gray-900 leading-tight">Partners & Directory</p>
                             <p className="text-gray-500 font-medium text-[11px] md:text-xs mt-0.5">
                                 {isViewOnly ? 'View suppliers and regular customers (read-only)' : 'Manage your suppliers and regular customers'}
                             </p>
@@ -663,50 +665,44 @@ const Partners = ({ viewOnly = false }) => {
                                             <td className="border border-gray-200 px-2 py-2 text-center">
                                                 <div className="flex items-center justify-center gap-1">
                                                     {activeTab === 'suppliers' && (
-                                                        <button
+                                                        <TableActionButton
                                                             type="button"
                                                             onClick={() => handleOpenRecommendations(item)}
-                                                            title="View Restock Plan"
+                                                            label="View Restock Plan"
                                                             aria-label={`View restock plan for ${item.name}`}
-                                                            className="group/btn inline-flex shrink-0 items-center rounded-lg border border-indigo-100 bg-indigo-50 px-2 py-1.5 text-indigo-700 transition-all hover:bg-indigo-100"
                                                         >
                                                             <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-                                                            <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap text-[10px] font-semibold opacity-0 transition-all duration-200 group-hover/btn:ml-1 group-hover/btn:max-w-16 group-hover/btn:opacity-100">Restock</span>
-                                                        </button>
+                                                        </TableActionButton>
                                                     )}
                                                     {!isViewOnly && (item.isArchived ? (
-                                                        <button
+                                                        <TableActionButton
                                                             type="button"
                                                             onClick={() => handleRestore(item.id)}
-                                                            title="Restore"
+                                                            variant="positive"
+                                                            label="Restore"
                                                             aria-label={`Restore ${item.name}`}
-                                                            className="group/btn inline-flex shrink-0 items-center rounded-lg border border-teal-100 bg-teal-50 px-2 py-1.5 text-teal-600 transition-all hover:bg-teal-100"
                                                         >
                                                             <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
-                                                            <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap text-[10px] font-semibold opacity-0 transition-all duration-200 group-hover/btn:ml-1 group-hover/btn:max-w-16 group-hover/btn:opacity-100">Restore</span>
-                                                        </button>
+                                                        </TableActionButton>
                                                     ) : (
                                                         <>
-                                                            <button
+                                                            <TableActionButton
                                                                 type="button"
                                                                 onClick={() => handleEdit(item)}
-                                                                title="Edit"
+                                                                label="Edit"
                                                                 aria-label={`Edit ${item.name}`}
-                                                                className="group/btn inline-flex shrink-0 items-center rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-gray-600 transition-all hover:bg-gray-100 hover:text-gray-800"
                                                             >
                                                                 <EditIcon />
-                                                                <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap text-[10px] font-semibold opacity-0 transition-all duration-200 group-hover/btn:ml-1 group-hover/btn:max-w-12 group-hover/btn:opacity-100">Edit</span>
-                                                            </button>
-                                                            <button
+                                                            </TableActionButton>
+                                                            <TableActionButton
                                                                 type="button"
                                                                 onClick={() => handleArchive(item.id)}
-                                                                title="Archive"
+                                                                variant="destructive"
+                                                                label="Archive"
                                                                 aria-label={`Archive ${item.name}`}
-                                                                className="group/btn inline-flex shrink-0 items-center rounded-lg border border-orange-100 bg-orange-50 px-2 py-1.5 text-orange-600 transition-all hover:bg-orange-100"
                                                             >
                                                                 <ArchiveIcon />
-                                                                <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap text-[10px] font-semibold opacity-0 transition-all duration-200 group-hover/btn:ml-1 group-hover/btn:max-w-16 group-hover/btn:opacity-100">Archive</span>
-                                                            </button>
+                                                            </TableActionButton>
                                                         </>
                                                     ))}
                                                 </div>
@@ -724,7 +720,7 @@ const Partners = ({ viewOnly = false }) => {
                             <div className="text-xs font-medium text-gray-500">
                                 Showing <span className="font-semibold text-gray-900">{displayStart}</span> to <span className="font-semibold text-gray-900">{displayEnd}</span> of <span className="font-semibold text-gray-900">{filteredData.length}</span> results
                             </div>
-                            <Pagination currentPage={activePage} totalPages={totalPages} onPageChange={setCurrentPage} />
+                            <Pagination currentPage={activePage} totalPages={totalPages} onPageChange={setCurrentPage} pageSize={itemsPerPage} onPageSizeChange={(pageSize) => { setItemsPerPage(pageSize); setCurrentPage(1); }} />
                         </div>
                     </div>
                 </div>
@@ -763,6 +759,7 @@ const Partners = ({ viewOnly = false }) => {
                                         className="w-full bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-gray-900 outline-none transition-all" 
                                         value={newPartner.name}
                                         onChange={e => setNewPartner({...newPartner, name: e.target.value})}
+                                        onBlur={e => setNewPartner((prev) => ({ ...prev, name: normalizeHumanReadable(e.target.value) }))}
                                     />
                                 </div>
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -808,6 +805,7 @@ const Partners = ({ viewOnly = false }) => {
                                         className="w-full bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-gray-900 outline-none transition-all" 
                                         value={newPartner.address}
                                         onChange={e => setNewPartner({...newPartner, address: e.target.value})}
+                                        onBlur={e => setNewPartner((prev) => ({ ...prev, address: normalizeHumanReadable(e.target.value) }))}
                                     />
                                 </div>
                                 <div>

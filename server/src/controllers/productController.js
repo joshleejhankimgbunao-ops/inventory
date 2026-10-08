@@ -3,6 +3,7 @@ const { writeActivityLog, writeInventoryLog } = require('../services/logService'
 const { publishInventoryUpdated } = require('../services/realtimeService');
 const { parseStrictWholeNumber } = require('../utils/numericValidation');
 const { isMoneyInputTooLarge, parseSafeMoney } = require('../utils/moneyValidation');
+const { normalizeHumanReadable } = require('../../../shared/textNormalization.cjs');
 
 const normalizeString = (value) => {
   if (typeof value !== 'string') {
@@ -107,13 +108,13 @@ const createProduct = async (req, res, next) => {
       if (existing) return res.status(200).json(existing);
     }
 
-    const name = normalizeString(req.body?.name);
+    const name = normalizeHumanReadable(req.body?.name);
     const requestedSku = normalizeSku(req.body?.sku);
-    const category = normalizeString(req.body?.category);
-    const brand = normalizeString(req.body?.brand);
-    const color = normalizeString(req.body?.color);
+    const category = normalizeHumanReadable(req.body?.category);
+    const brand = normalizeHumanReadable(req.body?.brand);
+    const color = normalizeHumanReadable(req.body?.color);
     const size = normalizeString(req.body?.size);
-    const supplierName = normalizeString(req.body?.supplierName);
+    const supplierName = normalizeHumanReadable(req.body?.supplierName);
     const imageUrl = normalizeString(req.body?.imageUrl);
     const hasStock = Object.prototype.hasOwnProperty.call(req.body || {}, 'stock');
     const stock = hasStock ? parseStrictWholeNumber(req.body.stock) : 0;
@@ -212,10 +213,64 @@ const createProduct = async (req, res, next) => {
   }
 };
 
+const getRecommendationFields = (type) => (
+  type === 'budget'
+    ? { manualField: 'manualBudgetOptions', excludedField: 'excludedBudgetOptions', label: 'Budget Option' }
+    : { manualField: 'manualAlternatives', excludedField: 'excludedAlternatives', label: 'Alternative Product' }
+);
+
+const addProductRecommendation = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const type = req.body?.type === 'budget' ? 'budget' : 'alternative';
+    const recommendationCode = normalizeSku(req.body?.recommendationCode);
+    const recommendationId = normalizeString(req.body?.recommendationId);
+    const { manualField, excludedField, label } = getRecommendationFields(type);
+
+    if (!recommendationCode || !recommendationId) {
+      return res.status(400).json({ message: 'A recommendation product is required.' });
+    }
+
+    const [target, candidate] = await Promise.all([
+      Product.findById(id),
+      Product.findOne({ _id: recommendationId, sku: recommendationCode, isActive: { $ne: false }, stock: { $gt: 0 } }),
+    ]);
+    if (!target) return res.status(404).json({ message: 'Product not found.' });
+    if (!candidate) return res.status(400).json({ message: 'The selected recommendation is unavailable.' });
+    if (String(target._id) === String(candidate._id) || target.sku === candidate.sku) {
+      return res.status(400).json({ message: 'A product cannot recommend itself.' });
+    }
+
+    const result = await Product.updateOne(
+      { _id: id, [manualField]: { $ne: recommendationCode } },
+      { $addToSet: { [manualField]: recommendationCode }, $pull: { [excludedField]: recommendationCode } },
+      { runValidators: true }
+    );
+    if (result.matchedCount !== 1 || result.modifiedCount !== 1) {
+      return res.status(409).json({ message: 'This recommendation is already present.' });
+    }
+
+    const product = await Product.findById(id);
+    await writeActivityLog({
+      user: req.user,
+      action: 'Added Recommendation',
+      details: `Added ${label} ${recommendationCode} to ${product.name} (${product.sku})`,
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent') || '',
+    });
+    publishInventoryUpdated({ reason: 'product.recommendation.added', productCodes: [product.sku] });
+    return res.json(product);
+  } catch (error) {
+    return next(error);
+  }
+};
+
 const removeProductRecommendation = async (req, res, next) => {
   try {
     const { id, alternativeCode } = req.params;
     const normalizedAlternativeCode = normalizeSku(alternativeCode);
+    const type = req.query?.type === 'budget' ? 'budget' : 'alternative';
+    const { manualField, excludedField, label } = getRecommendationFields(type);
 
     if (!normalizedAlternativeCode) {
       return res.status(400).json({ message: 'A recommendation code is required.' });
@@ -225,13 +280,13 @@ const removeProductRecommendation = async (req, res, next) => {
       {
         _id: id,
         $or: [
-          { manualAlternatives: normalizedAlternativeCode },
-          { excludedAlternatives: { $ne: normalizedAlternativeCode } },
+          { [manualField]: normalizedAlternativeCode },
+          { [excludedField]: { $ne: normalizedAlternativeCode } },
         ],
       },
       {
-        $addToSet: { excludedAlternatives: normalizedAlternativeCode },
-        $pull: { manualAlternatives: normalizedAlternativeCode },
+        $addToSet: { [excludedField]: normalizedAlternativeCode },
+        $pull: { [manualField]: normalizedAlternativeCode },
       },
       { runValidators: true }
     );
@@ -253,7 +308,7 @@ const removeProductRecommendation = async (req, res, next) => {
     await writeActivityLog({
       user: req.user,
       action: 'Removed Recommendation',
-      details: `Removed recommendation ${normalizedAlternativeCode} from ${product.name} (${product.sku})`,
+      details: `Removed ${label} ${normalizedAlternativeCode} from ${product.name} (${product.sku})`,
       ipAddress: req.ip,
       userAgent: req.get('user-agent') || '',
     });
@@ -279,10 +334,11 @@ const updateProduct = async (req, res, next) => {
     const adjustmentRequestId = req.body?.stock !== undefined
       ? normalizeString(req.body?.adjustmentRequestId)
       : '';
+    // A retry of an accepted adjustment must replay even though its original
+    // stock/timestamp preconditions are now stale.
     if (adjustmentRequestId && existing.lastStockAdjustmentRequestId === adjustmentRequestId) {
       return res.json(existing);
     }
-
     const expectedUpdatedAtRaw = normalizeString(req.body?.expectedUpdatedAt);
     if (expectedUpdatedAtRaw) {
       const expectedUpdatedAt = new Date(expectedUpdatedAtRaw);
@@ -306,7 +362,7 @@ const updateProduct = async (req, res, next) => {
 
     const payload = {};
 
-    if (req.body?.name !== undefined) payload.name = normalizeString(req.body.name);
+    if (req.body?.name !== undefined) payload.name = normalizeHumanReadable(req.body.name);
     if (req.body?.sku !== undefined) {
       const requestedSku = normalizeSku(req.body.sku);
       const validationMessage = validateSku(requestedSku);
@@ -319,11 +375,11 @@ const updateProduct = async (req, res, next) => {
       }
       payload.sku = requestedSku;
     }
-    if (req.body?.category !== undefined) payload.category = normalizeString(req.body.category);
-    if (req.body?.brand !== undefined) payload.brand = normalizeString(req.body.brand);
-    if (req.body?.color !== undefined) payload.color = normalizeString(req.body.color);
+    if (req.body?.category !== undefined) payload.category = normalizeHumanReadable(req.body.category);
+    if (req.body?.brand !== undefined) payload.brand = normalizeHumanReadable(req.body.brand);
+    if (req.body?.color !== undefined) payload.color = normalizeHumanReadable(req.body.color);
     if (req.body?.size !== undefined) payload.size = normalizeString(req.body.size);
-    if (req.body?.supplierName !== undefined) payload.supplierName = normalizeString(req.body.supplierName);
+    if (req.body?.supplierName !== undefined) payload.supplierName = normalizeHumanReadable(req.body.supplierName);
     if (req.body?.imageUrl !== undefined) payload.imageUrl = normalizeString(req.body.imageUrl);
     if (req.body?.isActive !== undefined) payload.isActive = Boolean(req.body.isActive);
 
@@ -346,6 +402,8 @@ const updateProduct = async (req, res, next) => {
 
     const product = await Product.findOneAndUpdate({
       _id: id,
+      // Compare inside the actual write, including callers without a client
+      // timestamp, so changes after our read cannot be silently overwritten.
       ...(payload.stock !== undefined ? { stock: stockBefore } : {}),
       ...((payload.stock !== undefined || expectedUpdatedAtRaw) && existing.updatedAt
         ? { updatedAt: new Date(expectedUpdatedAtRaw || existing.updatedAt) } : {}),
@@ -418,6 +476,7 @@ const updateProduct = async (req, res, next) => {
 };
 
 module.exports = {
+  addProductRecommendation,
   buildInventoryLogDetails,
   generateNextSku,
   getSkuPrefix,
