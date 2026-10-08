@@ -1,3 +1,5 @@
+import { isValidCreditCollectionForReporting } from '../../shared/saleLifecycle.mjs';
+
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 
 const toCalendarStart = (value) => {
@@ -32,4 +34,20 @@ export const getCreditDueAlertCounts = (records, now = new Date()) => {
     if (status === 'Near Due') counts.nearDue += 1;
     return counts;
   }, { overdue: 0, dueToday: 0, nearDue: 0 });
+};
+
+export const getOutstandingCreditSummary = (records, now = new Date()) => {
+  return (Array.isArray(records) ? records : []).reduce((summary, record) => {
+    const status = getCreditDueStatus(record, now);
+    const remainingBalance = Number(record?.remainingBalance || 0);
+
+    if (!isValidCreditCollectionForReporting(record) || !Number.isFinite(remainingBalance) || remainingBalance <= 0 || status === 'Paid' || status === 'Cancelled') {
+      return summary;
+    }
+
+    summary.outstandingBalance += remainingBalance;
+    summary.openCount += 1;
+    if (status === 'Overdue') summary.overdueCount += 1;
+    return summary;
+  }, { outstandingBalance: 0, openCount: 0, overdueCount: 0 });
 };

@@ -3,7 +3,6 @@ import { toast } from 'react-hot-toast';
 import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { AnimatePresence } from 'framer-motion';
 import AnimatedPage from '../components/AnimatedPage';
-import { getLowStockThreshold } from '../utils/recommendationLogic';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
 import { ROLES, canAccess } from '../constants/roles';
@@ -64,6 +63,12 @@ const RequirePageAccess = ({ userRole, page, children }) => {
 const getCreditDueAlertSessionKey = (userId) => `credit-due-alert-shown:${userId}`;
 const getLowStockAlertSessionKey = (userId) => `low-stock-alert-shown:${userId}`;
 
+const SignOutIcon = () => (
+  <svg className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+  </svg>
+);
+
 const Dashboard = ({ onLogout }) => {
   const navigate = useNavigate();
   const location = useLocation();
@@ -88,19 +93,18 @@ const Dashboard = ({ onLogout }) => {
     const isProfilePage = location.pathname.startsWith('/profile');
 
   // Handle Navigation and Close Menu
-  const handleNavigation = (menuName, path) => {
+  const handleNavigation = (path) => {
       // Force update location and state
       navigate(path);
       // We don't need to manually set activeMenu because it is derived from location.pathname
   };
 
-    const { userRole, appSettings, updateSettings, currentUserName, isDarkMode, setIsDarkMode, isAdminOrAbove, roleNames, currentUserAvatar, currentAuthUsername, currentAuthUserId, mustChangeCredentials, isAuthBootstrapLoading } = useAuth();
+    const { userRole, appSettings, currentUserName, isDarkMode, setIsDarkMode, isAdminOrAbove, roleNames, currentUserAvatar, currentAuthUsername, currentAuthUserId, mustChangeCredentials, isAuthBootstrapLoading } = useAuth();
   // we rely on the context's currentUserAvatar which already handles
   // super‑admin/appSettings and any avatar stored on a user record.
   const { 
-    activityLogs, setActivityLogs, logActivity,
+    activityLogs, setActivityLogs,
     processedInventory, 
-        renameUserReferences,
         isPageDataLoading
   } = useInventory();
 
@@ -140,13 +144,6 @@ const Dashboard = ({ onLogout }) => {
             isMounted = false;
         };
     }, []);
-
-  const handleUpdateSettings = (newSettings) => {
-    if (newSettings.adminDisplayName !== appSettings.adminDisplayName) {
-        renameUserReferences(appSettings.adminDisplayName, newSettings.adminDisplayName);
-    }
-    updateSettings(newSettings);
-  };
 
     const isRouteContentLoading = isAuthBootstrapLoading || isPageDataLoading || isBackendUsersLoading;
   
@@ -663,14 +660,6 @@ const Dashboard = ({ onLogout }) => {
     }
   };
 
-  // Close mobile menu when selecting an item
-  const handleMenuClick = (menuName) => {
-    // setActiveMenu is removed, rely on URL
-    setIsMobileMenuOpen(false);
-  };
-
-
-
   const menuItems = React.useMemo(() => {
     const allItems = [
     { 
@@ -699,14 +688,14 @@ const Dashboard = ({ onLogout }) => {
             name: 'Special Orders',
             page: 'SpecialOrders',
             path: '/special-orders',
-            icon: <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6M7 4h10l3 3v13a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2z" /></svg>
+            icon: <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9 2 2 4-4" /></svg>
         },
         {
             category: 'Sales',
             name: 'Credit Transactions',
             page: 'CreditTransactions',
             path: '/credit-transactions',
-            icon: <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7h12a2 2 0 012 2v3" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v8a2 2 0 002 2h6" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 11h14" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 16l-2-2m2 2l-2 2m2-2h-6" /></svg>
+            icon: <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5h14a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2zM3 10h18M7 15h4" /></svg>
         },
     { 
       category: 'Inventory',
@@ -1061,11 +1050,11 @@ const Dashboard = ({ onLogout }) => {
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
             </button>
 
-            <div className="flex min-w-0 items-center gap-2">
-              <img src={logo} alt="TLC Logo" className="w-10 h-10 object-contain hidden sm:block rounded-full border-2 border-white/20" />
+            <div className="flex min-w-0 items-center gap-1.5 sm:gap-2">
+              <img src={logo} alt="TLC Logo" className="h-7 w-7 shrink-0 rounded-full border border-white/20 object-contain sm:h-10 sm:w-10 sm:border-2" />
               <div className="flex min-w-0 flex-col">
-                <span className="truncate text-sm font-semibold leading-tight tracking-tight text-white">Tableria La Confianza</span>
-                <span className="hidden text-sm font-medium text-white sm:block">Company, Incorporated</span>
+                <span className="whitespace-nowrap text-[11px] font-semibold leading-[1.15] tracking-tight text-white min-[375px]:text-xs sm:text-sm">Tableria La Confianza</span>
+                <span className="whitespace-nowrap text-[10px] font-medium leading-[1.15] text-gray-300 sm:text-sm sm:text-white">Company, Incorporated</span>
               </div>
             </div>
          </div>
@@ -1113,14 +1102,14 @@ const Dashboard = ({ onLogout }) => {
 
                 {/* Dropdown Menu */}
                 {isProfileMenuOpen && (
-                    <div className="absolute right-0 mt-3 w-56 bg-[#1f2937] backdrop-blur-xl border border-gray-700/50 rounded-2xl shadow-[0_20px_60px_-15px_rgba(0,0,0,0.5)] py-1 z-50 transform origin-top-right transition-all duration-200 animate-in fade-in zoom-in-95 ring-1 ring-white/10">
+                    <div className="account-menu absolute right-0 mt-3 w-56 backdrop-blur-xl border rounded-2xl py-1 z-50 transform origin-top-right transition-all duration-200 animate-in fade-in zoom-in-95">
                         {/* Header Section */}
-                        <div className="px-3 py-3 border-b border-gray-700/50 bg-gray-800/30">
-                             <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest leading-none mb-1.5 ml-1">Signed in as</p>
-                             <div className="bg-gray-800/80 rounded-xl p-2 flex items-center gap-3 border border-gray-700/50 shadow-inner">
+                        <div className="account-menu-header px-3 py-3 border-b">
+                             <p className="account-menu-eyebrow text-[10px] font-semibold uppercase tracking-widest leading-none mb-1.5 ml-1">Signed in as</p>
+                             <div className="account-menu-summary rounded-xl p-2 flex items-center gap-3 border">
                                  <div className="rounded-full bg-linear-to-br from-white/30 via-gray-300/20 to-transparent p-[1.5px] shrink-0">
-                                    <div className="h-8 w-8 rounded-full bg-gray-800 p-[1.5px]">
-                                        <div className="h-full w-full rounded-full bg-gray-700 flex items-center justify-center text-white font-semibold text-xs border border-gray-600 overflow-hidden">
+                                    <div className="account-menu-avatar-ring h-8 w-8 rounded-full p-[1.5px]">
+                                        <div className="account-menu-avatar h-full w-full rounded-full flex items-center justify-center font-semibold text-xs border overflow-hidden">
                                             {currentUserAvatar ? (
                                                 <img src={currentUserAvatar} alt="User" className="w-full h-full object-cover rounded-full" />
                                             ) : (
@@ -1130,12 +1119,12 @@ const Dashboard = ({ onLogout }) => {
                                     </div>
                                  </div>
                                  <div className="overflow-hidden">
-                                     <p className="text-xs font-semibold text-white truncate leading-tight mb-0.5">
+                                     <p className="account-menu-primary text-xs font-semibold truncate leading-tight mb-0.5">
                                          {roleNames[userRole] || 'User'}
                                      </p>
                                      <div className="flex items-center gap-1.5">
                                          <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
-                                         <p className="text-[10px] font-medium text-gray-400">{currentUserName}</p>
+                                         <p className="account-menu-secondary text-[10px] font-medium">{currentUserName}</p>
                                      </div>
                                  </div>
                              </div>
@@ -1143,16 +1132,16 @@ const Dashboard = ({ onLogout }) => {
 
                         {/* Menu Items */}
                         <div className="p-1.5 space-y-0.5">
-                            <button onClick={() => { handleNavigation('Profile', '/profile'); setIsProfileMenuOpen(false); }} className="w-full text-left px-2.5 py-2 text-xs font-semibold text-gray-300 hover:text-white rounded-xl flex items-center gap-2.5 transition-all group !bg-transparent hover:!bg-gray-800/80">
-                                <div className="p-1 bg-gray-800 rounded-lg group-hover:bg-gray-700 transition-all text-gray-400 group-hover:text-white shadow-sm ring-1 ring-gray-700/50">
+                            <button onClick={() => { handleNavigation('/profile'); setIsProfileMenuOpen(false); }} className="account-menu-item w-full text-left px-2.5 py-2 text-xs font-semibold rounded-xl flex items-center gap-2.5 transition-colors group">
+                                <div className="account-menu-icon p-1 rounded-lg transition-colors">
                                     <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
                                 </div>
                                 <span className="flex-1">My Profile</span>
-                                <svg className="w-3 h-3 text-gray-600 group-hover:text-gray-400 transition-transform group-hover:translate-x-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7" /></svg>
+                                <svg className="account-menu-chevron w-3 h-3 transition-all group-hover:translate-x-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7" /></svg>
                             </button>
                             
-                            <button onClick={handleOpenActivityLog} className="w-full text-left px-2.5 py-2 text-xs font-semibold text-gray-300 hover:text-white rounded-xl flex items-center gap-2.5 transition-all group !bg-transparent hover:!bg-gray-800/80 relative">
-                                <div className="p-1 bg-gray-800 rounded-lg group-hover:bg-gray-700 transition-all text-gray-400 group-hover:text-white shadow-sm ring-1 ring-gray-700/50">
+                            <button onClick={handleOpenActivityLog} className="account-menu-item w-full text-left px-2.5 py-2 text-xs font-semibold rounded-xl flex items-center gap-2.5 transition-colors group relative">
+                                <div className="account-menu-icon p-1 rounded-lg transition-colors">
                                     <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                                 </div>
                                 Activity Log
@@ -1163,15 +1152,15 @@ const Dashboard = ({ onLogout }) => {
                                 )}
                             </button>
 
-                            <div className="w-full text-left px-2.5 py-2 text-xs font-semibold text-gray-300 hover:text-white rounded-xl flex items-center justify-between transition-all group !bg-transparent hover:!bg-gray-800/80 cursor-pointer" onClick={(e) => { e.stopPropagation(); setIsDarkMode(!isDarkMode); }}>
+                            <div className="account-menu-item w-full text-left px-2.5 py-2 text-xs font-semibold rounded-xl flex items-center justify-between transition-colors group cursor-pointer" onClick={(e) => { e.stopPropagation(); setIsDarkMode(!isDarkMode); }}>
                                 <div className="flex items-center gap-2.5">
-                                    <div className="p-1 bg-gray-800 rounded-lg group-hover:bg-gray-700 transition-all text-gray-400 group-hover:text-white shadow-sm ring-1 ring-gray-700/50">
+                                    <div className="account-menu-icon p-1 rounded-lg transition-colors">
                                         <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path></svg>
                                     </div>
                                     Dark Mode
                                 </div>
                                 <button 
-                                    className={`w-8 h-4.5 rounded-full p-0.5 transition-colors duration-300 focus:outline-none ring-1 ring-inset ${isDarkMode ? 'bg-indigo-600 ring-indigo-500' : 'bg-gray-700 ring-gray-600'}`}
+                                    className={`account-theme-toggle w-8 h-4.5 rounded-full p-0.5 transition-colors duration-300 focus:outline-none ${isDarkMode ? 'account-theme-toggle-on' : ''}`}
                                 >
                                     <div className={`w-3.5 h-3.5 bg-white rounded-full shadow-md transform transition-transform duration-300 flex items-center justify-center ${isDarkMode ? 'translate-x-[14px]' : 'translate-x-0'}`}>
                                         {isDarkMode && <div className="w-1 h-1 rounded-full bg-indigo-600/20"></div>}
@@ -1180,15 +1169,15 @@ const Dashboard = ({ onLogout }) => {
                             </div>
                         </div>
 
-                        <div className="border-t border-gray-700/50 my-1 mx-3"></div>
+                        <div className="account-menu-divider border-t my-1 mx-3"></div>
 
                         <div className="p-1.5">
                             <button 
                                 onClick={handleLogoutClick}
-                                className="w-full text-left px-2.5 py-2 text-xs font-semibold text-red-400 hover:text-red-300 rounded-xl flex items-center gap-2.5 transition-all group !bg-transparent hover:!bg-red-900/20"
+                                className="account-menu-signout w-full text-left px-2.5 py-2 text-xs font-semibold rounded-xl flex items-center gap-2.5 transition-colors group"
                             >
-                                <div className="p-1.5 bg-red-900/20 rounded-lg group-hover:bg-red-900/40 transition-all text-red-500 hover:text-red-400 shadow-sm ring-1 ring-red-900/30">
-                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
+                                <div className="account-menu-signout-icon p-1.5 rounded-lg transition-colors">
+                                    <SignOutIcon />
                                 </div>
                                 <span className="flex-1">Sign Out</span>
                             </button>
@@ -1219,14 +1208,14 @@ const Dashboard = ({ onLogout }) => {
                         transition-[width,transform] duration-420 ease-[cubic-bezier(0.16,1,0.3,1)]
             md:translate-x-0 
             ${isMobileMenuOpen ? 'translate-x-0 w-56' : '-translate-x-full w-56'} 
-                        ${isSidebarHovered ? 'md:w-60' : 'md:w-16'}
+                        ${isSidebarHovered ? 'md:w-[13.5rem]' : 'md:w-16'}
           `}
           onMouseEnter={handleMouseEnter}
           onMouseLeave={handleMouseLeave}
         >
           
-                      <nav className="flex-1 overflow-y-auto pb-6 scrollbar-hide overflow-x-hidden pt-6 transition-[padding] duration-420 ease-[cubic-bezier(0.16,1,0.3,1)]">
-            <ul className="space-y-1 px-3">
+                      <nav className={`flex-1 overflow-y-auto scrollbar-hide overflow-x-hidden transition-[padding] duration-420 ease-[cubic-bezier(0.16,1,0.3,1)] ${isSidebarExpanded ? 'pb-3 pt-3' : 'pb-4 pt-4'}`}>
+            <ul className={isSidebarExpanded ? 'space-y-px px-2' : 'space-y-0.5 px-2.5'}>
               {menuItems.map((item, index) => {
                  if (item.hidden) return null; // Skip hidden items from sidebar
                  const prevCategory = index > 0 ? menuItems[index - 1].category : null;
@@ -1236,24 +1225,24 @@ const Dashboard = ({ onLogout }) => {
                  return (
                     <React.Fragment key={item.name}>
                         {showHeader && isSidebarExpanded && (
-                            <li className="px-3 py-2 mt-6 first:mt-2 text-xs font-semibold text-gray-300 uppercase tracking-widest transition-opacity duration-300">
+                            <li className="mt-3 px-2 py-1 text-[10px] font-medium uppercase tracking-[0.11em] text-gray-400 first:mt-0.5 transition-opacity duration-300">
                                 {item.category}
                             </li>
                         )}
                         <li>
                         <button
                             onClick={() => {
-                                handleNavigation(item.name, item.path);
+                                handleNavigation(item.path);
                                 setIsMobileMenuOpen(false);
                             }}
-                            className={`group relative w-full flex items-center ${isSidebarExpanded ? 'space-x-3 px-3' : 'justify-center px-0'} py-2 rounded-lg border text-sm outline-none transition-[background-color,border-color,color] duration-200 ease-in-out ${
+                            className={`group relative flex w-full items-center rounded-lg border text-sm font-medium leading-none outline-none transition-[background-color,border-color,color] duration-200 ease-in-out ${isSidebarExpanded ? 'h-9 gap-2 px-2' : 'h-10 justify-center px-0'} ${
                             isActive
-                                ? 'font-medium bg-slate-800/70 border-slate-700 text-white before:absolute before:inset-y-1 before:left-0 before:w-1 before:rounded-r-sm before:bg-[#FC0D2C]'
-                                : 'font-medium border-transparent text-gray-200 hover:bg-slate-800/70 hover:border-slate-700 hover:text-white active:scale-95'
+                                ? 'border-slate-700/70 bg-slate-800/60 text-white before:absolute before:inset-y-1.5 before:left-0 before:w-0.5 before:rounded-r-sm before:bg-[#FC0D2C]'
+                                : 'border-transparent text-gray-300 hover:border-slate-700/70 hover:bg-slate-800/60 hover:text-white'
                             }`}
                             title={!isSidebarExpanded ? item.name : ''}
                         >
-                            <span className={`relative z-10 shrink-0 transition-all duration-380 ${isActive ? 'text-white' : 'text-gray-200 group-hover:text-white group-hover:scale-110'}`}>
+                            <span className={`relative z-10 shrink-0 transition-colors duration-200 [&>svg]:h-[18px] [&>svg]:w-[18px] ${isActive ? 'text-white' : 'text-gray-300 group-hover:text-white'}`}>
                             {item.icon}
                             </span>
                             <span className={`relative z-10 whitespace-nowrap overflow-hidden transform transition-[max-width,opacity,transform] duration-340 ease-[cubic-bezier(0.16,1,0.3,1)] ${isSidebarExpanded ? 'opacity-100 translate-x-0 max-w-44 delay-100' : 'opacity-0 -translate-x-2 max-w-0 delay-0'} ${!isActive ? 'group-hover:translate-x-0.5' : ''}`}>
@@ -1267,20 +1256,20 @@ const Dashboard = ({ onLogout }) => {
             </ul>
           </nav>
 
-          <div className="p-3 border-t border-gray-800 bg-[#111827]">
+          <div className={`border-t border-gray-800 bg-[#111827] ${isSidebarExpanded ? 'p-2' : 'p-2.5'}`}>
              <button
                onClick={handleLogoutClick}
-                                                             className={`w-full flex items-center ${isSidebarExpanded ? 'space-x-3 px-3' : 'justify-center px-0'} py-2 rounded-lg text-sm font-semibold text-gray-200 hover:bg-red-500/10 hover:text-red-400 transition-all duration-380 ease-[cubic-bezier(0.16,1,0.3,1)]`}
+                                                             className={`flex w-full items-center rounded-lg text-sm font-medium text-gray-300 transition-colors duration-200 hover:bg-red-500/10 hover:text-red-400 ${isSidebarExpanded ? 'h-9 gap-2.5 px-2' : 'h-10 justify-center px-0'}`}
                              title={!isSidebarExpanded ? "Sign Out" : ""}
              >
-               <svg className="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
+               <SignOutIcon />
                                <span className={`whitespace-nowrap overflow-hidden transition-[max-width,opacity] duration-340 ease-[cubic-bezier(0.16,1,0.3,1)] ${isSidebarExpanded ? 'opacity-100 max-w-30 delay-100' : 'opacity-0 max-w-0 delay-0'}`}>Sign Out</span>
              </button>
           </div>
         </aside>
 
         {/* Main Content Area */}
-        <main className={`flex-1 bg-slate-200/50 ml-0 transition-[margin] duration-420 ease-[cubic-bezier(0.16,1,0.3,1)] ${isSidebarHovered ? 'md:ml-60' : 'md:ml-16'} ${isProfilePage ? 'p-2 overflow-hidden h-full' : isFixedLayout ? 'p-2 md:overflow-hidden h-full overflow-y-auto' : 'p-2 overflow-y-auto h-full'}`}>
+        <main className={`flex-1 bg-slate-200/50 ml-0 transition-[margin] duration-420 ease-[cubic-bezier(0.16,1,0.3,1)] ${isSidebarHovered ? 'md:ml-[13.5rem]' : 'md:ml-16'} ${isProfilePage ? 'p-2 overflow-hidden h-full' : isFixedLayout ? 'p-2 md:overflow-hidden h-full overflow-y-auto' : 'p-2 overflow-y-auto h-full'}`}>
            <div className={`w-full ${isFixedLayout || activeMenu === 'Credit Transactions' ? 'md:h-full min-h-full' : ''}`}>
              
                  {isRouteContentLoading ? (
@@ -1290,20 +1279,22 @@ const Dashboard = ({ onLogout }) => {
                  <AnimatePresence mode="wait">
                  <Routes location={location} key={location.pathname}>
                 {/* Public / Common Routes */}
-                <Route index element={<RequirePageAccess userRole={userRole} page="Dashboard"><AnimatedPage><DashboardHome onViewAllProducts={() => handleNavigation('Product Master List', '/product-list')} onNavigate={(menu) => {
-                    if (menu === 'Product Master List') handleNavigation('Product Master List', '/product-list');
-                    else if (menu === 'Dashboard') handleNavigation('Dashboard', '/dashboard');
-                    else if (menu === 'History Logs') handleNavigation('History Logs', '/history');
-                    else if (menu === 'Inventory') handleNavigation('Inventory', '/inventory');
-                    else if (menu === 'Reports') handleNavigation('Reports', '/reports');
+                <Route index element={<RequirePageAccess userRole={userRole} page="Dashboard"><AnimatedPage><DashboardHome onViewAllProducts={() => handleNavigation('/product-list')} onNavigate={(menu) => {
+                    if (menu === 'Product Master List') handleNavigation('/product-list');
+                    else if (menu === 'Dashboard') handleNavigation('/dashboard');
+                    else if (menu === 'History Logs') handleNavigation('/history');
+                    else if (menu === 'Inventory') handleNavigation('/inventory');
+                    else if (menu === 'Reports') handleNavigation('/reports');
+                    else if (menu === 'Credit Transactions') handleNavigation('/credit-transactions');
                 }} /></AnimatedPage></RequirePageAccess>} />
-                <Route path="dashboard" element={<RequirePageAccess userRole={userRole} page="Dashboard"><AnimatedPage><DashboardHome onViewAllProducts={() => handleNavigation('Product Master List', '/product-list')} onNavigate={(menu) => {
+                <Route path="dashboard" element={<RequirePageAccess userRole={userRole} page="Dashboard"><AnimatedPage><DashboardHome onViewAllProducts={() => handleNavigation('/product-list')} onNavigate={(menu) => {
                     // Map menu names to paths
-                     if (menu === 'Product Master List') handleNavigation('Product Master List', '/product-list');
-                     else if (menu === 'Dashboard') handleNavigation('Dashboard', '/dashboard');
-                     else if (menu === 'History Logs') handleNavigation('History Logs', '/history');
-                     else if (menu === 'Inventory') handleNavigation('Inventory', '/inventory');
-                     else if (menu === 'Reports') handleNavigation('Reports', '/reports');
+                     if (menu === 'Product Master List') handleNavigation('/product-list');
+                     else if (menu === 'Dashboard') handleNavigation('/dashboard');
+                     else if (menu === 'History Logs') handleNavigation('/history');
+                     else if (menu === 'Inventory') handleNavigation('/inventory');
+                     else if (menu === 'Reports') handleNavigation('/reports');
+                     else if (menu === 'Credit Transactions') handleNavigation('/credit-transactions');
                 }} /></AnimatedPage></RequirePageAccess>} />
                 
                 <Route path="pos" element={<RequirePageAccess userRole={userRole} page="POS"><AnimatedPage><PointOfSale /></AnimatedPage></RequirePageAccess>} />

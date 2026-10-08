@@ -1,0 +1,1 @@
+export const ANALYTICS_PIE_COLORS = ['#0EA5E9', '#F97316', '#10B981', '#A855F7', '#F43F5E', '#EAB308', '#14B8A6', '#6366F1'];

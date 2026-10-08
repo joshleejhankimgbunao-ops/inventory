@@ -1,7 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import toast from 'react-hot-toast';
 import { showToast } from '../utils/toastHelper';
-import { toPng } from 'html-to-image';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import * as XLSX from 'xlsx';
@@ -11,10 +9,22 @@ import { useAuth } from '../context/AuthContext';
 import StatCard from '../components/StatCard';
 import { listCreditTransactionsApi } from '../services/inventoryApi';
 import { formatCurrency, formatNumber } from '../utils/numberFormat';
-import { getValidSales, isValidCreditCollectionForReporting } from '../../shared/saleLifecycle.mjs';
 import logo from '../assets/logo.png';
-
-const TOP_SELLING_CHART_COLORS = ['#0EA5E9', '#F97316', '#10B981', '#A855F7', '#F43F5E', '#EAB308', '#14B8A6', '#6366F1'];
+import ColoredPiePercentageLabel from '../components/ColoredPiePercentageLabel';
+import { ANALYTICS_PIE_COLORS } from '../utils/analyticsChart';
+import MetricTrendLine from '../components/MetricTrendLine';
+import { getDashboardComparisonPeriod, getMetricTrend, getPreviousSalesReportMetrics } from '../utils/dashboardTrend';
+import { getValidSales, isValidCreditCollectionForReporting } from '../../shared/saleLifecycle.mjs';
+import { subscribeRealtimeEvent } from '../services/realtimeClient';
+import {
+  formatReportExportRangeLabel,
+  getDefaultReportExportRange,
+  getExportPresetRange,
+  getReportExportFilenameRange,
+  isDateWithinReportExportRange,
+  toDateInputValue,
+  validateReportExportRange,
+} from '../utils/reportExportRange';
 
 const loadPdfLogo = (source) => new Promise((resolve, reject) => {
   const image = new Image();
@@ -93,13 +103,13 @@ const EmptyAnalyticsState = ({ title, subtitle, icon }) => (
   </div>
 );
 
-const FinancialStatCard = ({ title, value, hiddenValue, showFinancials, onToggle, icon }) => (
-  <div className="relative overflow-hidden bg-white rounded-xl p-4 shadow-sm border-x border-b border-gray-100 hover:shadow-lg transition-all duration-300 transform hover:-translate-y-1 group">
-    <div className="absolute top-0 left-0 right-0 h-1.5 bg-linear-to-r from-gray-700 to-black" />
+const FinancialStatCard = ({ title, value, hiddenValue, showFinancials, onToggle, icon, subtitle }) => (
+  <div className="relative h-full overflow-hidden rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-lg group">
     <div className="flex items-center justify-between">
-      <div>
-        <h3 className="text-gray-500 text-sm font-semibold uppercase tracking-wider mb-1 group-hover:text-gray-900 transition-colors">{title}</h3>
-        <div className="text-lg font-semibold text-gray-900 tracking-tight">{showFinancials ? value : hiddenValue}</div>
+      <div className="min-w-0">
+        <h3 className="mb-1.5 text-[13px] font-medium normal-case tracking-normal text-gray-500 transition-colors group-hover:text-gray-900">{title}</h3>
+        <div className="text-[21px] font-semibold leading-tight tracking-tight text-gray-900">{showFinancials ? value : hiddenValue}</div>
+        {subtitle && <p className="mt-0.5 text-[11px] font-medium leading-tight text-gray-500">{subtitle}</p>}
       </div>
       <div className="flex items-center gap-1.5">
         <button
@@ -134,18 +144,15 @@ const Reports = () => {
   const [reportType, setReportType] = useState('sales');
   const [exportType, setExportType] = useState('sales');
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [exportFormat, setExportFormat] = useState('pdf');
+  const [exportStartDate, setExportStartDate] = useState('');
+  const [exportEndDate, setExportEndDate] = useState('');
+  const [exportRangeError, setExportRangeError] = useState('');
   const [isExporting, setIsExporting] = useState(false);
   const [showFinancials, setShowFinancials] = useState(true);
-  const [activeTopProductIndex, setActiveTopProductIndex] = useState(null);
   const [creditTransactions, setCreditTransactions] = useState([]);
   const [isCompactPieChart, setIsCompactPieChart] = useState(false);
   const isAdminInventoryOnly = userRole === ROLES.ADMIN;
-  const showInventoryOnlyLayout = isAdminInventoryOnly || reportType === 'inventory';
-
-  const formatMoney = (amount) => {
-    if (!showFinancials) return 'P ••••••';
-    return formatCurrency(amount);
-  };
 
   useEffect(() => {
     if (isAdminInventoryOnly && reportType !== 'inventory') {
@@ -169,6 +176,20 @@ const Reports = () => {
   }, []);
 
   useEffect(() => {
+    if (!showExportMenu) return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape' && !isExporting) {
+        setShowExportMenu(false);
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showExportMenu, isExporting]);
+
+  useEffect(() => {
     let mounted = true;
 
     const loadCreditTransactions = async () => {
@@ -185,9 +206,13 @@ const Reports = () => {
     };
 
     loadCreditTransactions();
+    const unsubscribeSale = subscribeRealtimeEvent('sale.updated', loadCreditTransactions);
+    const unsubscribeCredit = subscribeRealtimeEvent('credit-transactions.updated', loadCreditTransactions);
 
     return () => {
       mounted = false;
+      unsubscribeSale();
+      unsubscribeCredit();
     };
   }, []);
 
@@ -273,6 +298,39 @@ const Reports = () => {
     ));
   }, [creditTransactions, dateRange, customStartDate, customEndDate, specificDate]);
 
+  const availableExportDates = useMemo(() => [
+    ...getValidSales(transactions).map((transaction) => transaction?.date),
+    ...(creditTransactions || [])
+      .filter(isValidCreditCollectionForReporting)
+      .flatMap((creditRow) => (creditRow?.paymentHistory || []).map((payment) => payment?.paymentDate)),
+  ].filter(Boolean), [transactions, creditTransactions]);
+
+  const exportRange = useMemo(() => ({ from: exportStartDate, to: exportEndDate }), [exportStartDate, exportEndDate]);
+
+  const exportTransactions = useMemo(() => getValidSales(transactions).filter((transaction) => (
+    isDateWithinReportExportRange(transaction?.date, exportRange)
+  )), [transactions, exportRange]);
+
+  const exportCreditPaymentEvents = useMemo(() => (
+    (creditTransactions || [])
+      .filter(isValidCreditCollectionForReporting)
+      .flatMap((creditRow) => (creditRow?.paymentHistory || [])
+        .filter((payment) => isDateWithinReportExportRange(payment?.paymentDate, exportRange))
+        .map((payment) => ({ date: payment?.paymentDate, amount: Number(payment?.amount || 0) })))
+  ), [creditTransactions, exportRange]);
+
+  const exportCollectedRevenue = useMemo(() => (
+    exportTransactions
+      .filter((transaction) => String(transaction?.paymentMethod || '').toLowerCase() !== 'credit')
+      .reduce((sum, transaction) => sum + Number(transaction.total || 0), 0)
+    + exportCreditPaymentEvents.reduce((sum, payment) => sum + Number(payment.amount || 0), 0)
+  ), [exportTransactions, exportCreditPaymentEvents]);
+  const exportOrderCount = exportTransactions.length;
+  const exportItemsSold = useMemo(() => exportTransactions.reduce(
+    (sum, transaction) => sum + (transaction.items?.reduce((itemSum, item) => itemSum + Number(item.qty || 0), 0) || 0),
+    0
+  ), [exportTransactions]);
+
   // Actual money received in the selected period: immediate-payment sales on
   // their sale date plus Credit payments on their payment date.
   const totalCollectedRevenue =
@@ -285,6 +343,20 @@ const Reports = () => {
     (sum, transaction) => sum + (transaction.items?.reduce((itemSum, item) => itemSum + (item.qty || 0), 0) || 0),
     0
   );
+  const comparisonPeriod = useMemo(() => getDashboardComparisonPeriod({
+    dateRange,
+    customStartDate,
+    customEndDate,
+    specificDate,
+  }), [dateRange, customStartDate, customEndDate, specificDate]);
+  const previousSalesMetrics = useMemo(() => (
+    comparisonPeriod
+      ? getPreviousSalesReportMetrics(transactions, creditTransactions, comparisonPeriod)
+      : { collectedRevenue: 0, orders: 0, items: 0 }
+  ), [transactions, creditTransactions, comparisonPeriod]);
+  const collectedRevenueTrend = useMemo(() => getMetricTrend(totalCollectedRevenue, previousSalesMetrics.collectedRevenue), [totalCollectedRevenue, previousSalesMetrics.collectedRevenue]);
+  const totalOrdersTrend = useMemo(() => getMetricTrend(totalOrders, previousSalesMetrics.orders), [totalOrders, previousSalesMetrics.orders]);
+  const itemsSoldTrend = useMemo(() => getMetricTrend(totalItemsSold, previousSalesMetrics.items), [totalItemsSold, previousSalesMetrics.items]);
 
   const topProducts = useMemo(() => {
     const inventoryNameByCode = new Map(
@@ -430,108 +502,75 @@ const Reports = () => {
     return Object.values(buckets).sort((a, b) => a.sortValue - b.sortValue);
   }, [filteredTransactions, filteredCreditPaymentEvents, dateRange, customStartDate, customEndDate]);
 
+  const exportTrendData = useMemo(() => {
+    const start = new Date(`${exportStartDate}T00:00:00`);
+    const end = new Date(`${exportEndDate}T23:59:59`);
+    const spanDays = Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())
+      ? 0
+      : Math.ceil((end - start) / (1000 * 60 * 60 * 24));
+    const granularity = spanDays > 730 ? 'year' : spanDays > 90 ? 'month' : 'day';
+    const buckets = {};
+    const getBucket = (rawDate) => {
+      const dateObj = new Date(rawDate);
+      if (granularity === 'year') {
+        return { key: `${dateObj.getFullYear()}`, label: `${dateObj.getFullYear()}`, sortValue: new Date(dateObj.getFullYear(), 0, 1).getTime() };
+      }
+      if (granularity === 'month') {
+        const key = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}`;
+        return { key, label: dateObj.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }), sortValue: new Date(dateObj.getFullYear(), dateObj.getMonth(), 1).getTime() };
+      }
+      const key = toDateInputValue(dateObj);
+      return { key, label: dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }), sortValue: new Date(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate()).getTime() };
+    };
+    const addToBucket = (rawDate, sales, orders) => {
+      const bucket = getBucket(rawDate);
+      if (!buckets[bucket.key]) buckets[bucket.key] = { dateKey: bucket.key, name: bucket.label, sales: 0, orders: 0, sortValue: bucket.sortValue };
+      buckets[bucket.key].sales += Number(sales || 0);
+      buckets[bucket.key].orders += Number(orders || 0);
+    };
+    exportTransactions
+      .filter((transaction) => String(transaction?.paymentMethod || '').toLowerCase() !== 'credit')
+      .forEach((transaction) => addToBucket(transaction.date, transaction.total, 1));
+    exportCreditPaymentEvents.forEach((payment) => addToBucket(payment.date, payment.amount, 0));
+    return Object.values(buckets).sort((a, b) => a.sortValue - b.sortValue);
+  }, [exportTransactions, exportCreditPaymentEvents, exportStartDate, exportEndDate]);
+
   const inventoryValue = inventory.reduce((s, i) => s + ((i.stock || 0) * (i.price || 0)), 0);
   const lowStockCount = inventory.filter((i) => (i.stock || 0) <= 10).length;
   const outOfStockCount = inventory.filter((i) => (i.stock || 0) === 0).length;
 
-  const handleLegacyExportCSV = (mode = exportType) => {
-    if ((mode !== 'inventory' && filteredTransactions.length === 0) || (mode === 'inventory' && inventory.length === 0)) {
-      return showToast('No Data', 'There is no data for the selected period.', 'warning', 'export-empty');
-    }
-
-    if (mode === 'inventory') {
-      let csv = 'Code,Brand,Name,Color,Size,Category,Price,Stock,Status\n';
-      inventory.forEach((item) => {
-        csv += `"${item.code}","${item.brand || ''}","${item.name}","${item.color || ''}","${item.size || ''}","${item.category || ''}","${item.price}","${item.stock}","${item.status}"\n`;
-      });
-      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-      const link = document.createElement('a');
-      link.href = URL.createObjectURL(blob);
-      link.download = `inventory_${new Date().toISOString().split('T')[0]}.csv`;
-      link.click();
-      return showToast('Inventory Exported', 'Inventory CSV saved to your downloads.', 'download', 'export-inv');
-    }
-
-    if (mode === 'combined') {
-      let csv = 'Sales Transactions\n';
-      csv += 'Transaction ID,Date,Items,Total,Cashier\n';
-      filteredTransactions.forEach((t) => {
-        const itemsStr = t.items?.map((i) => `${i.name}${i.qty ? ' x' + i.qty : ''}`).join('; ') || '';
-        csv += `"${t.id}","${t.date}","${itemsStr}","${t.total || 0}","${t.cashier || ''}"\n`;
-      });
-
-      csv += '\nInventory Overview\n';
-      csv += 'Code,Brand,Name,Color,Size,Category,Price,Stock,Status\n';
-      inventory.forEach((item) => {
-        csv += `"${item.code}","${item.brand || ''}","${item.name}","${item.color || ''}","${item.size || ''}","${item.category || ''}","${item.price}","${item.stock}","${item.status}"\n`;
-      });
-
-      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-      const link = document.createElement('a');
-      link.href = URL.createObjectURL(blob);
-      link.download = `combined_report_${new Date().toISOString().split('T')[0]}.csv`;
-      link.click();
-      return showToast('Combined Exported', 'Combined CSV saved to your downloads.', 'download', 'export-combined');
-    }
-
-    let csv = 'Transaction ID,Date,Items,Total,Cashier\n';
-    filteredTransactions.forEach((t) => {
-      const itemsStr = t.items?.map((i) => `${i.name}${i.qty ? ' x' + i.qty : ''}`).join('; ') || '';
-      csv += `"${t.id}","${t.date}","${itemsStr}","${t.total || 0}","${t.cashier || ''}"\n`;
+  const openExportModal = () => {
+    const initialRange = getDefaultReportExportRange({
+      dateRange,
+      customStartDate,
+      customEndDate,
+      specificDate,
+      availableDates: availableExportDates,
     });
-
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = `${mode || 'sales'}_transactions_${new Date().toISOString().split('T')[0]}.csv`;
-    link.click();
-    showToast('CSV Exported', 'CSV file saved to your downloads.', 'download', 'export-csv');
+    setExportStartDate(initialRange.from);
+    setExportEndDate(initialRange.to);
+    setExportRangeError('');
+    setExportType(isAdminInventoryOnly ? 'inventory' : reportType);
+    setShowExportMenu(true);
   };
 
-  const handleLegacyScreenshotPDF = async (mode = exportType) => {
-    const element = document.getElementById('report-container');
-    if (!element) return showToast('Error', 'Report element not found', 'error', 'pdf-element-error');
-
-    const previousReportType = reportType;
-    const targetReportType = mode === 'combined' ? 'sales' : mode;
-    const switchedReportType = !isAdminInventoryOnly && targetReportType !== reportType;
-    if (!isAdminInventoryOnly && targetReportType !== reportType) {
-      setReportType(targetReportType);
-      await new Promise((r) => setTimeout(r, 120));
-    }
-
-    const toastKey = 'export-pdf';
-    showToast('Generating PDF', 'Preparing PDF, this may take a moment...', 'loading', toastKey);
-    try {
-      await new Promise((r) => setTimeout(r, 400));
-      const dataUrl = await toPng(element, { quality: 0.95, backgroundColor: '#ffffff', filter: (node) => !node.classList || !node.classList.contains('pdf-exclude') });
-      const pdf = new jsPDF('p', 'mm', 'a4');
-      const pdfWidth = pdf.internal.pageSize.getWidth();
-      const imgProps = pdf.getImageProperties(dataUrl);
-      const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
-      pdf.addImage(dataUrl, 'PNG', 0, 0, pdfWidth, pdfHeight);
-      pdf.save(`${mode || 'sales'}_report_${new Date().toISOString().split('T')[0]}.pdf`);
-      showToast('PDF Downloaded', 'PDF saved to your downloads.', 'download', toastKey);
-    } catch (error) {
-      showToast('Error', `Error: ${error.message}`, 'error', toastKey);
-    } finally {
-      if (switchedReportType) {
-        setReportType(previousReportType);
-      }
-    }
+  const closeExportModal = () => {
+    if (isExporting) return;
+    setShowExportMenu(false);
+    setExportRangeError('');
   };
 
-  const reportPeriodLabel = () => {
-    if (dateRange === 'today') return 'Today';
-    if (dateRange === 'week') return 'This Week';
-    if (dateRange === 'month') return 'This Month';
-    if (dateRange === 'year') return 'This Year';
-    if (dateRange === 'specific_date') return specificDate || 'Selected Date';
-    if (dateRange === 'custom') return `${customStartDate || 'Start'} to ${customEndDate || 'End'}`;
-    return 'All Time';
+  const applyExportPreset = (preset) => {
+    const range = getExportPresetRange(preset);
+    setExportStartDate(range.from);
+    setExportEndDate(range.to);
+    setExportRangeError('');
   };
 
-  const salesDetailRows = () => filteredTransactions.map((transaction) => ([
+  const exportPeriodLabel = () => formatReportExportRangeLabel(exportRange);
+  const exportFilenameRange = () => getReportExportFilenameRange(exportRange);
+
+  const salesDetailRows = () => exportTransactions.map((transaction) => ([
     transaction.id || '-',
     transaction.date ? new Date(transaction.date) : '',
     transaction.customerName || transaction.customer || '-',
@@ -546,7 +585,7 @@ const Reports = () => {
   ]));
 
   const handleExportExcel = (mode = exportType) => {
-    const day = new Date().toISOString().split('T')[0];
+    const filenameRange = exportFilenameRange();
     const workbook = XLSX.utils.book_new();
     const generated = new Date();
     const salesRows = salesDetailRows();
@@ -571,8 +610,8 @@ const Reports = () => {
 
     if (mode === 'sales' || mode === 'combined') {
       appendSheet('Sales Summary', [
-        ['Company', 'Tableria La Confianza Co., Inc.'], ['Reporting Period', reportPeriodLabel()], ['Generated', generated],
-        ['Collected Revenue', Number(totalCollectedRevenue)], ['Total Orders', Number(totalOrders)], ['Items Sold', Number(totalItemsSold)],
+        ['Company', 'Tableria La Confianza Co., Inc.'], ['Reporting Period', exportPeriodLabel()], ['Generated', generated],
+        ['Collected Revenue', Number(exportCollectedRevenue)], ['Total Orders', Number(exportOrderCount)], ['Items Sold', Number(exportItemsSold)],
       ], ['Transaction ID', 'Date', 'Customer', 'Items', 'Quantity', 'Payment Method', 'Amount'], salesRows, [6]);
       const salesData = XLSX.utils.aoa_to_sheet([['Transaction ID', 'Date', 'Customer', 'Items', 'Quantity', 'Payment Method', 'Amount'], ...salesRows]);
       salesData['!cols'] = [{ wch: 20 }, { wch: 14 }, { wch: 22 }, { wch: 42 }, { wch: 10 }, { wch: 16 }, { wch: 16 }];
@@ -591,7 +630,7 @@ const Reports = () => {
       inventoryData['!freeze'] = { xSplit: 0, ySplit: 1 };
       XLSX.utils.book_append_sheet(workbook, inventoryData, 'Inventory Data');
     }
-    XLSX.writeFile(workbook, `${mode}_report_${day}.xlsx`);
+    XLSX.writeFile(workbook, `${mode}_report_${filenameRange}.xlsx`);
   };
 
   const handleDownloadPDF = async (mode = exportType) => {
@@ -606,7 +645,7 @@ const Reports = () => {
     const margin = 14;
     const pageWidth = pdf.internal.pageSize.getWidth();
     const printableWidth = pageWidth - (margin * 2);
-    const day = new Date().toISOString().split('T')[0];
+    const filenameRange = exportFilenameRange();
     const formatPdfCurrency = (value) => Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     let tableY = 14;
     const addHeader = (title, includePeriod = false) => {
@@ -631,7 +670,7 @@ const Reports = () => {
       pdf.setFontSize(8);
       let metadataY = headerY + 16;
       if (includePeriod) {
-        pdf.text(`Reporting Period: ${reportPeriodLabel()}`, contentX, metadataY);
+        pdf.text(`Reporting Period: ${exportPeriodLabel()}`, contentX, metadataY);
         metadataY += 5;
       }
       pdf.text(`Generated: ${new Date().toLocaleString()}`, contentX, metadataY);
@@ -655,9 +694,9 @@ const Reports = () => {
     };
     const addSalesTables = () => {
       addSection('SALES SUMMARY');
-      addTable(['Collected Revenue (PHP)', 'Total Orders', 'Items Sold'], [[formatPdfCurrency(totalCollectedRevenue), String(totalOrders), String(totalItemsSold)]], { columnStyles: { 0: { cellWidth: printableWidth / 3, halign: 'right' }, 1: { cellWidth: printableWidth / 3, halign: 'center' }, 2: { cellWidth: printableWidth / 3, halign: 'center' } } });
+      addTable(['Collected Revenue (PHP)', 'Total Orders', 'Items Sold'], [[formatPdfCurrency(exportCollectedRevenue), String(exportOrderCount), String(exportItemsSold)]], { columnStyles: { 0: { cellWidth: printableWidth / 3, halign: 'right' }, 1: { cellWidth: printableWidth / 3, halign: 'center' }, 2: { cellWidth: printableWidth / 3, halign: 'center' } } });
       addSection('COLLECTIONS ANALYTICS');
-      addTable(['Date', 'Collected Revenue (PHP)', 'Orders'], trendData.map((item) => [item.name, formatPdfCurrency(item.sales), String(item.orders)]), { columnStyles: { 0: { cellWidth: 53, halign: 'left' }, 1: { cellWidth: 88, halign: 'right' }, 2: { cellWidth: 41, halign: 'center' } } });
+      addTable(['Date', 'Collected Revenue (PHP)', 'Orders'], exportTrendData.map((item) => [item.name, formatPdfCurrency(item.sales), String(item.orders)]), { columnStyles: { 0: { cellWidth: 53, halign: 'left' }, 1: { cellWidth: 88, halign: 'right' }, 2: { cellWidth: 41, halign: 'center' } } });
       addSection('SALES DETAILS');
       addTable(['Transaction ID', 'Date', 'Items', 'Payment', 'Amount (PHP)'], salesDetailRows().map((row) => [row[0], row[1] ? new Date(row[1]).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '-', row[3], row[5], formatPdfCurrency(row[6])]), { columnStyles: { 0: { cellWidth: 33, halign: 'left' }, 1: { cellWidth: 27, halign: 'left' }, 2: { cellWidth: 66, halign: 'left' }, 3: { cellWidth: 25, halign: 'center' }, 4: { cellWidth: 31, halign: 'right' } } });
     };
@@ -673,15 +712,25 @@ const Reports = () => {
     if (mode === 'inventory' || mode === 'combined') addInventoryTables();
     const pages = pdf.getNumberOfPages();
     for (let page = 1; page <= pages; page += 1) { pdf.setPage(page); pdf.setFontSize(8); pdf.setTextColor(107, 114, 128); pdf.text(`Page ${page} of ${pages}`, pageWidth - margin - 22, pdf.internal.pageSize.getHeight() - 8); }
-    pdf.save(`${mode}_report_${day}.pdf`);
+    pdf.save(`${mode}_report_${filenameRange}.pdf`);
   };
 
-  const runExport = async (format) => {
-    const mode = isAdminInventoryOnly ? 'inventory' : exportType;
-    if ((mode === 'sales' && filteredTransactions.length === 0) || (mode === 'inventory' && inventory.length === 0)) {
-      showToast('No Data', 'There is no data available for this export.', 'warning', 'export-empty');
+  const runExport = async (format = exportFormat) => {
+    const rangeError = validateReportExportRange(exportRange);
+    if (rangeError) {
+      setExportRangeError(rangeError);
       return;
     }
+    const mode = isAdminInventoryOnly ? 'inventory' : exportType;
+    const hasSalesData = exportTransactions.length > 0 || exportCreditPaymentEvents.length > 0;
+    const hasInventoryData = inventory.length > 0;
+    if ((mode === 'sales' && !hasSalesData)
+      || (mode === 'inventory' && !hasInventoryData)
+      || (mode === 'combined' && !hasSalesData && !hasInventoryData)) {
+      showToast('No Data', 'There is no data available for the selected export range.', 'warning', 'export-empty');
+      return;
+    }
+    setExportRangeError('');
     setIsExporting(true);
     try {
       if (format === 'pdf') await handleDownloadPDF(mode);
@@ -703,7 +752,7 @@ const Reports = () => {
           <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
             
             <div className="shrink-0">
-              <p className="text-3xl md:text-4xl font-bold text-gray-900 leading-tight">Reports</p>
+              <p className="text-3xl md:text-4xl font-semibold tracking-tight text-gray-900 leading-tight">Reports</p>
               <p className="text-gray-500 font-medium text-[11px] md:text-xs mt-1">
                 {isAdminInventoryOnly ? 'View inventory status' : 'View sales, collections, and inventory performance'}
               </p>
@@ -711,9 +760,9 @@ const Reports = () => {
 
             <div className="flex flex-col items-start sm:items-end gap-2 w-full sm:w-auto">
               {!isAdminInventoryOnly ? (
-                <div className="inline-flex rounded-lg bg-gray-100 p-1 self-start sm:self-end shrink-0">
-                  <button type="button" onClick={() => setReportType('sales')} className={`px-3 py-1 rounded-md text-xs font-semibold ${reportType === 'sales' ? 'bg-gray-900 text-white' : 'text-gray-700'}`}>Sales</button>
-                  <button type="button" onClick={() => setReportType('inventory')} className={`px-3 py-1 rounded-md text-xs font-semibold ${reportType === 'inventory' ? 'bg-gray-900 text-white' : 'text-gray-700'}`}>Inventory</button>
+                <div className="analytics-tabs inline-flex rounded-lg bg-gray-100 p-1 self-start sm:self-end shrink-0">
+                  <button type="button" onClick={() => { setReportType('sales'); setShowExportMenu(false); }} className={`analytics-tab rounded-md border border-transparent px-3 py-1 text-xs font-semibold transition-colors ${reportType === 'sales' ? 'analytics-tab-active bg-gray-900 text-white' : 'analytics-tab-inactive text-gray-700'}`}>Sales</button>
+                  <button type="button" onClick={() => { setReportType('inventory'); setShowExportMenu(false); }} className={`analytics-tab rounded-md border border-transparent px-3 py-1 text-xs font-semibold transition-colors ${reportType === 'inventory' ? 'analytics-tab-active bg-gray-900 text-white' : 'analytics-tab-inactive text-gray-700'}`}>Inventory</button>
                 </div>
               ) : (
                 <div className="inline-flex items-center rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-semibold text-gray-700 self-start sm:self-end shrink-0">
@@ -749,60 +798,21 @@ const Reports = () => {
                   )}
                 </div>
 
-                <div className="pdf-exclude relative group shrink-0">
+                <div className="pdf-exclude shrink-0">
                   <button
                     type="button"
-                    onClick={() => setShowExportMenu((prev) => !prev)}
-                    className="inline-flex items-center justify-center h-8 w-8 rounded-lg bg-gray-900 text-white hover:opacity-90 transition-opacity"
+                    onClick={openExportModal}
+                    className="inline-flex h-8 items-center justify-center rounded-lg bg-gray-900 px-2.5 text-xs font-medium text-white transition-colors hover:bg-gray-800 active:bg-gray-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-500/40 focus-visible:ring-offset-1 dark:focus-visible:ring-offset-slate-900"
                     aria-label="Export"
                   >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 16V4m0 12l-4-4m4 4l4-4M4 20h16" />
-                    </svg>
+                    <span>Export</span>
                   </button>
-                  {!showExportMenu && (
-                    <div className="pointer-events-none absolute right-0 top-full mt-2 z-20 rounded-md bg-gray-900/95 px-2.5 py-1.5 text-[10px] font-semibold text-white shadow-lg opacity-0 translate-y-1 transition-all duration-200 group-hover:opacity-100 group-hover:translate-y-0 whitespace-nowrap">
-                      Export
-                    </div>
-                  )}
-    
-                  {showExportMenu && (
-                    <div className="absolute right-0 top-full mt-2 z-30 w-52 rounded-lg border border-gray-200 bg-white shadow-xl p-3 space-y-3">
-                      <p className="text-[10px] font-semibold tracking-wider text-gray-900">Export Report</p>
-                      {!isAdminInventoryOnly && (
-                        <label className="block text-[10px] font-semibold text-gray-500">Report
-                          <select value={exportType} disabled={isExporting} onChange={(e) => setExportType(e.target.value)} className="mt-1 w-full px-2 py-1.5 rounded-md text-xs font-semibold border border-gray-200 bg-white text-gray-700 disabled:opacity-60">
-                            <option value="sales">Sales</option><option value="inventory">Inventory</option><option value="combined">Combined</option>
-                          </select>
-                        </label>
-                      )}
-                      <p className="text-[10px] font-semibold text-gray-500">Format</p>
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          type="button"
-                          disabled={isExporting}
-                          onClick={() => runExport('pdf')}
-                          className="px-2 py-1.5 rounded-md text-[10px] font-semibold bg-gray-900 text-white hover:opacity-90 disabled:opacity-60"
-                        >
-                          {isExporting ? 'Generating...' : 'PDF'}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={isExporting}
-                          onClick={() => runExport('excel')}
-                          className="px-2 py-1.5 rounded-md text-[10px] font-semibold bg-gray-100 text-gray-800 hover:bg-gray-200 disabled:opacity-60"
-                        >
-                          Excel
-                        </button>
-                      </div>
-                    </div>
-                  )}
                 </div>
               </div>
             </div>
           </div>
         </div>
-        <div className={`shrink-0 grid gap-3 ${reportType === 'inventory' ? 'grid-cols-2 lg:grid-cols-4' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'}`}>
+        <div className={`grid auto-rows-fr shrink-0 gap-3 ${reportType === 'inventory' ? 'grid-cols-2 lg:grid-cols-4' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'}`}>
           {reportType === 'sales' ? (
             <>
               <FinancialStatCard
@@ -811,6 +821,7 @@ const Reports = () => {
                 hiddenValue="P ••••••"
                 showFinancials={showFinancials}
                 onToggle={() => setShowFinancials((prev) => !prev)}
+                subtitle={comparisonPeriod ? <MetricTrendLine trend={collectedRevenueTrend} label={comparisonPeriod.label} formatDelta={formatCurrency} /> : null}
                 icon={(
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -821,25 +832,31 @@ const Reports = () => {
               <StatCard
                 title="Total Orders"
                 value={totalOrders}
+                subtitle={comparisonPeriod ? <MetricTrendLine trend={totalOrdersTrend} label={comparisonPeriod.label} formatDelta={formatNumber} unit=" orders" /> : null}
+                subtitleClassName="whitespace-nowrap"
                 icon={(
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10m-13 9h16a2 2 0 002-2V7a2 2 0 00-2-2H4a2 2 0 00-2 2v11a2 2 0 002 2z" />
                   </svg>
                 )}
-                titleClassName="text-sm"
-                valueClassName="text-lg"
+                metricHierarchy
+                titleClassName="text-[13px]"
+                valueClassName="text-[21px] leading-tight"
               />
 
               <StatCard
                 title="Items Sold"
                 value={totalItemsSold}
+                subtitle={comparisonPeriod ? <MetricTrendLine trend={itemsSoldTrend} label={comparisonPeriod.label} formatDelta={formatNumber} unit=" items" /> : null}
+                subtitleClassName="whitespace-nowrap"
                 icon={(
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-1.2 6.4a1 1 0 00.98 1.2H19M9 21a1 1 0 100-2 1 1 0 000 2zm8 0a1 1 0 100-2 1 1 0 000 2z" />
                   </svg>
                 )}
-                titleClassName="text-sm"
-                valueClassName="text-lg"
+                metricHierarchy
+                titleClassName="text-[13px]"
+                valueClassName="text-[21px] leading-tight"
               />
             </>
           ) : (
@@ -848,24 +865,27 @@ const Reports = () => {
                 title="Total Products"
                 value={inventory.length}
                 icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" /></svg>}
-                titleClassName="text-sm"
-                valueClassName="text-lg"
+                metricHierarchy
+                titleClassName="text-[13px]"
+                valueClassName="text-[21px] leading-tight"
               />
 
               <StatCard
                 title="Low Stock Items"
                 value={lowStockCount}
                 icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>}
-                titleClassName="text-sm"
-                valueClassName="text-lg"
+                metricHierarchy
+                titleClassName="text-[13px]"
+                valueClassName="text-[21px] leading-tight"
               />
 
               <StatCard
                 title="Out of Stock"
                 value={outOfStockCount}
                 icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" /></svg>}
-                titleClassName="text-sm"
-                valueClassName="text-lg"
+                metricHierarchy
+                titleClassName="text-[13px]"
+                valueClassName="text-[21px] leading-tight"
               />
 
               <FinancialStatCard
@@ -880,9 +900,8 @@ const Reports = () => {
           )}
         </div>
 
-        <div className={`grid grid-cols-1 gap-4 lg:grid-cols-10 ${reportType === 'sales' ? 'lg:min-h-0 lg:flex-1' : ''}`}>
-            <div className={`relative flex min-h-[320px] min-w-0 flex-col overflow-hidden rounded-xl border border-gray-100 bg-white p-4 shadow-sm ${reportType === 'sales' ? 'h-full lg:col-span-5' : reportType === 'inventory' ? 'lg:col-span-10' : 'lg:col-span-7'}`}>
-              <div className="absolute top-0 left-0 right-0 h-1.5 bg-linear-to-r from-gray-700 to-black" />
+        <div className="grid grid-cols-1 gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-10">
+            <div className={`analytics-chart relative flex min-w-0 flex-col overflow-hidden rounded-xl border border-gray-100 bg-white p-4 shadow-sm ${reportType === 'sales' ? 'min-h-[320px] h-full lg:col-span-5' : reportType === 'inventory' ? 'reports-inventory-analytics-card min-h-[300px] lg:min-h-0 lg:h-full lg:col-span-10' : 'min-h-[320px] lg:col-span-7'}`}>
               <div className="flex items-center gap-2 mb-3">
                 <div className="p-1.5 bg-gray-100 rounded-lg text-gray-900"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" /></svg></div>
                 <h3 className="text-lg font-semibold text-gray-800">{reportType === 'sales' ? 'Collections Analytics' : 'Top Selling Products'}</h3>
@@ -890,9 +909,10 @@ const Reports = () => {
 
               {reportType === 'inventory' ? (
                 topProductsPieData.length > 0 ? (
-                  <div className="flex-1 min-h-[310px] w-full pb-1 sm:min-h-[260px]">
-                    <ResponsiveContainer width="100%" height="100%" debounce={300}>
-                      <PieChart>
+                  <div className="flex min-h-[280px] min-w-0 flex-1 items-center justify-center lg:min-h-0">
+                    <div className="reports-inventory-analytics-chart h-[clamp(280px,54vh,520px)] max-h-full min-h-0 w-full">
+                      <ResponsiveContainer width="100%" height="100%" debounce={300}>
+                        <PieChart>
                         <ChartTooltip
                           content={(tooltipProps) => (
                             <TopSellingProductsTooltip
@@ -907,48 +927,33 @@ const Reports = () => {
                           layout={isCompactPieChart ? 'horizontal' : 'vertical'}
                           verticalAlign={isCompactPieChart ? 'bottom' : 'middle'}
                           align={isCompactPieChart ? 'center' : 'right'}
-                          formatter={(value) => <span style={{ color: '#111827' }}>{value}</span>}
+                          formatter={(value) => (
+                            <span className="whitespace-nowrap font-medium tracking-normal" style={{ color: '#111827' }} title={String(value)}>
+                              {value}
+                            </span>
+                          )}
                           wrapperStyle={isCompactPieChart
-                            ? { fontSize: '10px', fontWeight: 400, letterSpacing: '0.02em', lineHeight: '1.35', paddingTop: 4 }
-                            : { fontSize: '11px', fontWeight: 400, letterSpacing: '0.03em', right: 110, lineHeight: '1.35' }}
+                            ? { fontSize: '10px', fontWeight: 400, lineHeight: '1.55', paddingTop: 6 }
+                            : { fontSize: '12px', fontWeight: 400, right: 48, lineHeight: '1.65' }}
                         />
                         <Pie
                           data={topProductsPieData}
                           dataKey="value"
                           nameKey="name"
                           isAnimationActive={false}
-                          cx={isCompactPieChart ? '50%' : '36%'}
+                          cx={isCompactPieChart ? '50%' : '38%'}
                           cy={isCompactPieChart ? '42%' : '50%'}
-                          outerRadius={isCompactPieChart ? '54%' : '68%'}
-                          label={({ index, x, y, textAnchor, dominantBaseline, payload }) => {
-                            if (index !== activeTopProductIndex) {
-                              return null;
-                            }
-
-                            return (
-                              <text
-                                x={x}
-                                y={y}
-                                fill="#111827"
-                                textAnchor={textAnchor}
-                                dominantBaseline={dominantBaseline}
-                                fontSize={11}
-                                fontWeight={700}
-                              >
-                                {`${Number(payload?.percentage || 0).toFixed(0)}%`}
-                              </text>
-                            );
-                          }}
+                          outerRadius={isCompactPieChart ? '58%' : '82%'}
+                          label={(props) => <ColoredPiePercentageLabel {...props} compact={isCompactPieChart} />}
                           labelLine={false}
-                          onMouseEnter={(_entry, index) => setActiveTopProductIndex(index)}
-                          onMouseLeave={() => setActiveTopProductIndex(null)}
                         >
                           {topProductsPieData.map((entry, index) => (
-                            <Cell key={`reports-cell-${entry.name}`} fill={TOP_SELLING_CHART_COLORS[index % TOP_SELLING_CHART_COLORS.length]} />
+                            <Cell key={`reports-cell-${entry.name}`} fill={ANALYTICS_PIE_COLORS[index % ANALYTICS_PIE_COLORS.length]} />
                           ))}
                         </Pie>
-                      </PieChart>
-                    </ResponsiveContainer>
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
                 ) : (
                   <div className="flex-1">
@@ -1043,8 +1048,7 @@ const Reports = () => {
 
 
           {reportType === 'sales' && (
-            <div className="relative flex min-h-[320px] min-w-0 flex-col overflow-hidden rounded-xl border border-gray-100 bg-white p-4 shadow-sm lg:col-span-5">
-              <div className="absolute top-0 left-0 right-0 h-1.5 bg-linear-to-r from-gray-700 to-black" />
+            <div className="analytics-chart relative flex min-h-[320px] min-w-0 flex-col overflow-hidden rounded-xl border border-gray-100 bg-white p-4 shadow-sm lg:col-span-5">
               <div className="mb-3 flex items-center gap-2">
                 <div className="rounded-lg bg-gray-100 p-1.5 text-gray-900">
                   <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1081,7 +1085,7 @@ const Reports = () => {
                         labelLine={false}
                       >
                         {salesByCategory.map((entry, index) => (
-                          <Cell key={`reports-category-${entry.name}`} fill={TOP_SELLING_CHART_COLORS[index % TOP_SELLING_CHART_COLORS.length]} />
+                          <Cell key={`reports-category-${entry.name}`} fill={ANALYTICS_PIE_COLORS[index % ANALYTICS_PIE_COLORS.length]} />
                         ))}
                       </Pie>
                       <Legend
@@ -1119,6 +1123,69 @@ const Reports = () => {
         </div>
       </div>
     </div>
+    {showExportMenu && (
+      <div
+        className="pdf-exclude fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-[2px]"
+        role="presentation"
+        onMouseDown={(event) => { if (event.target === event.currentTarget) closeExportModal(); }}
+      >
+        <div role="dialog" aria-modal="true" aria-labelledby="export-report-title" className="max-h-[calc(100vh-2rem)] w-full max-w-md overflow-y-auto rounded-2xl border border-slate-200/80 bg-slate-50 shadow-[0_20px_50px_-24px_rgba(15,23,42,0.35)] dark:border-slate-700/80 dark:bg-[#24262a] dark:shadow-[0_20px_50px_-24px_rgba(0,0,0,0.6)]">
+          <div className="border-b border-slate-200/70 px-5 py-4 dark:border-slate-700/70">
+            <h2 id="export-report-title" className="text-base font-semibold text-slate-900 dark:text-slate-100">Export Report</h2>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Choose a date range for this file without changing the report view.</p>
+          </div>
+          <div className="space-y-4 px-5 py-4">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {!isAdminInventoryOnly && (
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-300">Report
+                  <select value={exportType} disabled={isExporting} onChange={(event) => setExportType(event.target.value)} className="mt-1.5 h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition-colors focus:border-slate-400 focus:ring-2 focus:ring-slate-300/40 disabled:opacity-60 dark:border-slate-600/80 dark:bg-[#2d3035] dark:text-slate-100 dark:focus:border-slate-500 dark:focus:ring-slate-500/25">
+                    <option value="sales">Sales</option>
+                    <option value="inventory">Inventory</option>
+                    <option value="combined">Combined</option>
+                  </select>
+                </label>
+              )}
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-300">Format
+                <select value={exportFormat} disabled={isExporting} onChange={(event) => setExportFormat(event.target.value)} className="mt-1.5 h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition-colors focus:border-slate-400 focus:ring-2 focus:ring-slate-300/40 disabled:opacity-60 dark:border-slate-600/80 dark:bg-[#2d3035] dark:text-slate-100 dark:focus:border-slate-500 dark:focus:ring-slate-500/25">
+                  <option value="pdf">PDF</option>
+                  <option value="excel">Excel</option>
+                </select>
+              </label>
+            </div>
+
+            <div>
+              <p className="text-xs font-medium text-slate-600 dark:text-slate-300">Export Range</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {[
+                  ['week', 'This Week'],
+                  ['month', 'This Month'],
+                  ['year', 'This Year'],
+                ].map(([value, label]) => (
+                  <button key={value} type="button" disabled={isExporting} onClick={() => applyExportPreset(value)} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-medium text-slate-600 transition-colors hover:border-slate-300 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-600/80 dark:bg-[#2d3035] dark:text-slate-300 dark:hover:bg-[#373a40]">
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-300">From
+                  <input type="date" value={exportStartDate} max={toDateInputValue(new Date())} disabled={isExporting} onChange={(event) => { setExportStartDate(event.target.value); setExportRangeError(''); }} className="mt-1.5 h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition-colors focus:border-slate-400 focus:ring-2 focus:ring-slate-300/40 disabled:opacity-60 dark:border-slate-600/80 dark:bg-[#2d3035] dark:text-slate-100 dark:[color-scheme:dark] dark:focus:border-slate-500 dark:focus:ring-slate-500/25" />
+                </label>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-300">To
+                  <input type="date" value={exportEndDate} max={toDateInputValue(new Date())} disabled={isExporting} onChange={(event) => { setExportEndDate(event.target.value); setExportRangeError(''); }} className="mt-1.5 h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition-colors focus:border-slate-400 focus:ring-2 focus:ring-slate-300/40 disabled:opacity-60 dark:border-slate-600/80 dark:bg-[#2d3035] dark:text-slate-100 dark:[color-scheme:dark] dark:focus:border-slate-500 dark:focus:ring-slate-500/25" />
+                </label>
+              </div>
+              {exportRangeError && <p role="alert" className="mt-2 text-xs font-medium text-rose-600 dark:text-rose-300">{exportRangeError}</p>}
+            </div>
+          </div>
+          <div className="flex flex-col-reverse gap-2 border-t border-slate-200/70 px-5 py-3 sm:flex-row sm:justify-end dark:border-slate-700/70">
+            <button type="button" onClick={closeExportModal} disabled={isExporting} className="h-9 rounded-lg border border-slate-300 bg-white px-4 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400/40 disabled:opacity-50 dark:border-slate-600 dark:bg-[#2d3035] dark:text-slate-200 dark:hover:bg-[#373a40]">Cancel</button>
+            <button type="button" onClick={() => runExport()} disabled={isExporting} className="h-9 rounded-lg bg-slate-900 px-4 text-xs font-semibold text-white transition-colors hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500/50 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white">
+              {isExporting ? 'Exporting...' : 'Export'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
     </div>
   );
 };
