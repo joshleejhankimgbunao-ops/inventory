@@ -4,17 +4,27 @@ import IdentifierChip from '../components/IdentifierChip';
 import ArchiveIcon from '../components/ArchiveIcon';
 import ToolbarDropdown from '../components/ToolbarDropdown';
 import ReceiptPreviewModal from '../components/ReceiptPreviewModal';
+import TableActionButton from '../components/TableActionButton';
+import TransactionReferenceModal from '../components/TransactionReferenceModal';
 import { useLocation } from 'react-router-dom';
 import { showToast } from '../utils/toastHelper';
 import { showPageLoadError } from '../utils/pageLoadError';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
-import { getCreditTransactionByIdApi, getSaleHistoryViewApi, listCreditTransactionsApi, voidSaleApi } from '../services/inventoryApi';
+import { getCreditTransactionByIdApi, getSaleHistoryViewApi, getSaleSupportingDocumentApi, getSaleVoidProofApi, listCreditTransactionsApi, voidSaleApi } from '../services/inventoryApi';
 import { printReceipt } from '../services/receiptPrinter';
 import { formatMoney as formatMoneyValue } from '../utils/numberFormat';
 import { getActorDisplayName, getActorRoleLabel } from '../utils/actorDisplay';
 import { createClientRequestId } from '../utils/clientRequestId';
 import { canOfferSaleVoid } from '../utils/saleVoid';
+
+const MAX_VOID_PROOF_SIZE = 5 * 1024 * 1024;
+const VOID_PROOF_TYPES = new Map([
+    ['.jpg', 'image/jpeg'],
+    ['.jpeg', 'image/jpeg'],
+    ['.png', 'image/png'],
+    ['.pdf', 'application/pdf'],
+]);
 
 const History = () => {
     const location = useLocation();
@@ -25,16 +35,12 @@ const History = () => {
         setTransactions, 
         processedInventory,
         inventoryLogs, 
-        setInventoryLogs,
-        handleResetHistory,
         isTransactionsLoading,
         isInventoryLogsLoading,
     } = useInventory();
 
     const currentUser = currentUserName;
     const adminName = appSettings.adminDisplayName;
-    const onResetHistory = handleResetHistory;
-
     const [creditTransactions, setCreditTransactions] = useState([]);
     const [isCreditLoading, setIsCreditLoading] = useState(false);
 
@@ -68,7 +74,7 @@ const History = () => {
     const [activeTab, setActiveTab] = useState('sales');
     const [searchTerm, setSearchTerm] = useState('');
     const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
-    const [showArchived, setShowArchived] = useState(false);
+    const [salesRecordView, setSalesRecordView] = useState('ALL');
     const [filterAction, setFilterAction] = useState('ALL'); // For Inventory Logs: ALL, ADD, DEDUCT, UPDATE, DELETE
     const [processedByFilter, setProcessedByFilter] = useState('ALL'); // NEW: Filter by user
     const [inventoryProcessedByFilter, setInventoryProcessedByFilter] = useState('ALL');
@@ -267,7 +273,7 @@ const History = () => {
     
     // Pagination
     const [currentPage, setCurrentPage] = useState(1);
-    const itemsPerPage = 15;
+    const [itemsPerPage, setItemsPerPage] = useState(10);
 
     const handleProductFilterChange = (value) => {
         setProductFilter(value);
@@ -334,18 +340,17 @@ const History = () => {
                 end.setHours(23, 59, 59, 999);
                 matchesDate = tDate >= start && tDate <= end;
             }
-            // Archive Filter
-            if (activeTab === 'sales') {
-               if (showArchived) {
-                   if (!trx.isArchived) return false;
-               } else {
-                   if (trx.isArchived) return false;
-               }
-            }
+            const isArchived = Boolean(trx.isArchived);
+            const isVoided = String(trx.status || '').trim().toUpperCase() === 'VOIDED';
+            const matchesRecordView = salesRecordView === 'ARCHIVED'
+                ? isArchived
+                : salesRecordView === 'VOIDED'
+                    ? !isArchived && isVoided
+                    : !isArchived;
             
-            return matchesSearch && matchesDate && matchesProduct && matchesCategory;
+            return matchesSearch && matchesDate && matchesProduct && matchesCategory && matchesRecordView;
         });
-    }, [transactions, debouncedSearchTerm, dateRange, specificDate, customStartDate, customEndDate, showArchived, activeTab, processedByFilter, userRole, productFilter, categoryFilter]);
+    }, [transactions, debouncedSearchTerm, dateRange, specificDate, customStartDate, customEndDate, salesRecordView, processedByFilter, userRole, productFilter, categoryFilter]);
 
     const salesSummary = useMemo(() => {
         const summary = {
@@ -470,7 +475,7 @@ const History = () => {
     // Reset pagination
     useEffect(() => {
         setCurrentPage(1);
-    }, [activeTab, debouncedSearchTerm, filterAction, processedByFilter, inventoryProcessedByFilter, sortOrder, dateRange, specificDate, customStartDate, customEndDate, productFilter, categoryFilter, creditStatusFilter, creditCustomerFilter, creditProcessedByFilter]);
+    }, [activeTab, debouncedSearchTerm, filterAction, salesRecordView, processedByFilter, inventoryProcessedByFilter, sortOrder, dateRange, specificDate, customStartDate, customEndDate, productFilter, categoryFilter, creditStatusFilter, creditCustomerFilter, creditProcessedByFilter]);
 
     useEffect(() => {
         if (!historyListRef.current) return;
@@ -487,6 +492,10 @@ const History = () => {
     const totalPages = Math.ceil(currentList.length / itemsPerPage);
     const indexOfLastItem = currentPage * itemsPerPage;
     const indexOfFirstItem = indexOfLastItem - itemsPerPage;
+
+    useEffect(() => {
+        setCurrentPage((previous) => Math.min(previous, Math.max(totalPages, 1)));
+    }, [totalPages]);
     
     const sortedItems = useMemo(() => {
         const withMeta = currentList.map((item, index) => {
@@ -531,6 +540,8 @@ const History = () => {
     // State for Reprinting Receipt (lifted from SalesHistory)
     const [selectedTransaction, setSelectedTransaction] = useState(null);
     const [selectedSaleDetails, setSelectedSaleDetails] = useState(null);
+    const [isEditingSaleReference, setIsEditingSaleReference] = useState(false);
+    const [documentPreview, setDocumentPreview] = useState(null);
     const [showReceipt, setShowReceipt] = useState(false);
     const [printStatus, setPrintStatus] = useState('idle');
     const printRequestInFlightRef = useRef(false);
@@ -538,9 +549,12 @@ const History = () => {
     const [isCreditDetailsOpen, setIsCreditDetailsOpen] = useState(false);
     const [isVoidModalOpen, setIsVoidModalOpen] = useState(false);
     const [voidReason, setVoidReason] = useState('');
+    const [voidProofFile, setVoidProofFile] = useState(null);
+    const [voidProofPreview, setVoidProofPreview] = useState(null);
     const [isVoidSubmitting, setIsVoidSubmitting] = useState(false);
     const voidRequestIdRef = useRef('');
     const voidRequestInFlightRef = useRef(false);
+    const voidProofInputRef = useRef(null);
 
     // Archive Modal State
     const [isArchiveModalOpen, setIsArchiveModalOpen] = useState(false);
@@ -620,27 +634,16 @@ const History = () => {
     const isRegularSale = (transaction) => String(transaction?.saleType || '').toLowerCase() !== 'special-order'
         && !transaction?.specialOrderNumber;
 
-    const loadCurrentSale = async (transaction) => (
-        transaction?.sourceId && isRegularSale(transaction)
-            ? getSaleHistoryViewApi(transaction.sourceId)
-            : transaction
-    );
-
     const handleViewReceipt = async (transaction) => {
         try {
-            setSelectedTransaction(await loadCurrentSale(transaction));
+            const current = transaction?.sourceId && isRegularSale(transaction)
+                ? await getSaleHistoryViewApi(transaction.sourceId)
+                : transaction;
+            setSelectedTransaction(current);
             setShowReceipt(true);
             setAutoReceiptMode(null);
         } catch (error) {
             showToast('Unable to Open', error.message || 'Unable to load the current Sale record.', 'error', 'sale-preview-current');
-        }
-    };
-
-    const handleViewSaleDetails = async (transaction) => {
-        try {
-            setSelectedSaleDetails(await loadCurrentSale(transaction));
-        } catch (error) {
-            showToast('Unable to Open', error.message || 'Unable to load the current Sale record.', 'error', 'sale-details-current');
         }
     };
 
@@ -652,6 +655,7 @@ const History = () => {
     const openVoidModal = () => {
         if (!canVoidSale(selectedSaleDetails)) return;
         setVoidReason('');
+        setVoidProofFile(null);
         voidRequestIdRef.current = createClientRequestId('sale-void');
         setIsVoidModalOpen(true);
     };
@@ -660,7 +664,24 @@ const History = () => {
         if (voidRequestInFlightRef.current) return;
         setIsVoidModalOpen(false);
         setVoidReason('');
+        setVoidProofFile(null);
         voidRequestIdRef.current = '';
+    };
+
+    const handleVoidProofSelection = (event) => {
+        const file = event.target.files?.[0] || null;
+        event.target.value = '';
+        if (!file) return;
+        const extension = `.${String(file.name || '').split('.').pop() || ''}`.toLowerCase();
+        if (!VOID_PROOF_TYPES.has(extension) || VOID_PROOF_TYPES.get(extension) !== String(file.type || '').toLowerCase()) {
+            showToast('Invalid Supporting Proof', 'Choose a JPG, JPEG, PNG, or PDF file.', 'error', 'sale-void-proof-type');
+            return;
+        }
+        if (file.size > MAX_VOID_PROOF_SIZE) {
+            showToast('Supporting Proof Too Large', 'Supporting Proof must be 5 MB or smaller.', 'error', 'sale-void-proof-size');
+            return;
+        }
+        setVoidProofFile(file);
     };
 
     const confirmVoidSale = async () => {
@@ -676,6 +697,7 @@ const History = () => {
             const result = await voidSaleApi(selectedSaleDetails.sourceId, {
                 reason,
                 requestId: voidRequestIdRef.current || createClientRequestId('sale-void'),
+                proofFile: voidProofFile,
             });
             const updated = result.sale;
             setTransactions((previous) => previous.map((transaction) => (
@@ -685,6 +707,7 @@ const History = () => {
             setSelectedTransaction((previous) => previous?.sourceId === updated.sourceId ? updated : previous);
             setIsVoidModalOpen(false);
             setVoidReason('');
+            setVoidProofFile(null);
             voidRequestIdRef.current = '';
             showToast(result.replayed ? 'Sale Already Voided' : 'Sale Voided', `${updated.id} is recorded as voided.`, 'success', 'sale-void-success');
         } catch (error) {
@@ -692,6 +715,38 @@ const History = () => {
         } finally {
             voidRequestInFlightRef.current = false;
             setIsVoidSubmitting(false);
+        }
+    };
+
+    useEffect(() => () => {
+        if (documentPreview?.url) URL.revokeObjectURL(documentPreview.url);
+    }, [documentPreview]);
+
+    useEffect(() => () => {
+        if (voidProofPreview?.url) URL.revokeObjectURL(voidProofPreview.url);
+    }, [voidProofPreview]);
+
+    const viewSaleDocument = async () => {
+        if (!selectedSaleDetails?.sourceId) return;
+        try {
+            const blob = await getSaleSupportingDocumentApi(selectedSaleDetails.sourceId);
+            setDocumentPreview({ url: URL.createObjectURL(blob), name: selectedSaleDetails.transactionReference?.supportingDocument?.originalName || 'Supporting Document' });
+        } catch (error) {
+            showToast('Document Unavailable', error.message || 'Unable to load the supporting document.', 'error', 'sale-document-view');
+        }
+    };
+
+    const viewSaleVoidProof = async () => {
+        if (!selectedSaleDetails?.sourceId || !selectedSaleDetails.voidInfo?.supportingProof) return;
+        try {
+            const blob = await getSaleVoidProofApi(selectedSaleDetails.sourceId);
+            setVoidProofPreview({
+                url: URL.createObjectURL(blob),
+                name: selectedSaleDetails.voidInfo.supportingProof.originalName || 'Supporting Proof',
+                mimeType: selectedSaleDetails.voidInfo.supportingProof.mimeType || blob.type,
+            });
+        } catch (error) {
+            showToast('Proof Unavailable', error.message || 'Unable to load the Supporting Proof.', 'error', 'sale-void-proof-view');
         }
     };
 
@@ -793,7 +848,7 @@ const History = () => {
                 <div className="p-4 flex flex-col gap-5 md:shrink-0">
                     <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                         <div>
-                            <p className="text-3xl md:text-4xl font-bold text-gray-900 leading-tight">History Logs</p>
+                            <p className="text-3xl md:text-4xl font-semibold tracking-tight text-gray-900 leading-tight">History Logs</p>
                             <p className="text-gray-500 dark:text-gray-400 text-[11px] md:text-xs font-medium mt-1">Review past transactions and inventory movements</p>
                         </div>
 
@@ -803,7 +858,7 @@ const History = () => {
                                 value={activeTab}
                                 onChange={setActiveTab}
                                 ariaLabel="Select history log type"
-                                className="w-full sm:w-48"
+                                className="w-full sm:w-40 [&_[role=option]]:whitespace-nowrap"
                                 options={[
                                     { value: 'sales', label: 'Sales Transactions' },
                                     { value: 'credit', label: 'Credit Transactions' },
@@ -838,7 +893,7 @@ const History = () => {
                             </div>
                         </div>
 
-                        {/* Combined Filter & Sort Button + Archived Toggle */}
+                        {/* Filter & Sort */}
                         <div className="relative z-30 w-full sm:w-auto flex items-center gap-2">
                             <button
                                 onClick={() => setIsFilterPanelOpen(!isFilterPanelOpen)}
@@ -848,24 +903,6 @@ const History = () => {
                                 <span>Filter & Sort</span>
                                 <svg className={`w-3 h-3 transition-transform ${isFilterPanelOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
                             </button>
-
-                            {activeTab === 'sales' && (
-                                <button
-                                    type="button"
-                                    onClick={() => setShowArchived(!showArchived)}
-                                    className={`group flex items-center rounded-lg border px-2.5 py-2 transition-all duration-300 ${showArchived ? 'border-gray-300 bg-gray-100 text-gray-700 dark:border-gray-500 dark:bg-gray-700 dark:text-gray-200' : 'border-orange-200 bg-orange-50 text-orange-600 dark:border-orange-800 dark:bg-orange-900/20 dark:text-orange-400'}`}
-                                    title={showArchived ? 'Back to Active Logs' : 'View Archive'}
-                                >
-                                    {showArchived ? (
-                                        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7 7-7M3 12h13a5 5 0 010 10h-1"></path></svg>
-                                    ) : (
-                                        <ArchiveIcon className="w-4 h-4 shrink-0" />
-                                    )}
-                                    <span className={`ml-0 max-w-0 overflow-hidden whitespace-nowrap text-xs font-semibold opacity-0 transition-all duration-300 group-hover:ml-2 group-hover:opacity-100 ${showArchived ? 'group-hover:max-w-40' : 'group-hover:max-w-28'}`}>
-                                        {showArchived ? 'Back to Active Logs' : 'View Archive'}
-                                    </span>
-                                </button>
-                            )}
 
                             {/* Filter Panel */}
                             {isFilterPanelOpen && (
@@ -918,6 +955,29 @@ const History = () => {
                                             </button>
                                         ))}
                                     </div>
+
+                                    {activeTab === 'sales' && (
+                                        <>
+                                            <div className="border-t border-gray-100 mx-3" />
+                                            <div className="px-3 pt-2 pb-1">
+                                                <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Record View</div>
+                                            </div>
+                                            <div className="px-3 pb-2">
+                                                <select
+                                                    value={salesRecordView}
+                                                    onChange={(event) => {
+                                                        setSalesRecordView(event.target.value);
+                                                        setCurrentPage(1);
+                                                    }}
+                                                    className="w-full rounded-lg border-2 border-gray-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 focus:border-gray-900 focus:outline-none"
+                                                >
+                                                    <option value="ALL">All</option>
+                                                    <option value="VOIDED">Voided</option>
+                                                    <option value="ARCHIVED">Archived</option>
+                                                </select>
+                                            </div>
+                                        </>
+                                    )}
 
                                     {/* Staff Filter (Sales tab, Admin only) */}
                                     {activeTab === 'sales' && isAdminOrAbove() && (
@@ -1096,18 +1156,18 @@ const History = () => {
                         )}
                 </div>
                 {/* Content Area */}
-                <div ref={historyListRef} className="w-full pb-32 pt-0 overflow-x-hidden md:flex-1 md:overflow-y-auto md:max-h-[calc(100vh-220px)] md:pb-28">
+                <div ref={historyListRef} className="w-full overflow-x-auto overscroll-x-contain pb-32 pt-0 md:flex-1 md:overflow-y-auto md:max-h-[calc(100vh-220px)] md:pb-28">
                         {activeTab === 'sales' ? (
-                            <table className="main-data-table w-full text-left border-separate border-spacing-0 table-fixed min-w-[800px]">
+                            <table className="main-data-table w-full text-left border-separate border-spacing-0 table-fixed min-w-[940px] md:min-w-0">
                                <thead className="sticky top-0 z-10 shadow-sm">
                                     <tr className="bg-gray-900 dark:bg-gray-700 text-white uppercase tracking-wider">
-                                        <th className="py-3 px-3 w-[13%] text-center text-[11px] font-semibold border border-gray-700">Transaction ID</th>
-                                        <th className="py-3 px-3 w-[17%] text-center text-[11px] font-semibold border border-gray-700">Date & Time</th>
-                                        <th className="py-3 px-3 w-[14%] text-center text-[11px] font-semibold border border-gray-700">Processed By</th>
-                                        <th className="py-3 px-3 w-[13%] text-center text-[11px] font-semibold border border-gray-700">Items</th>
-                                        <th className="py-3 px-3 w-[16%] text-center text-[11px] font-semibold border border-gray-700">Total Amount</th>
-                                        <th className="py-3 px-3 w-[13%] text-center text-[11px] font-semibold border border-gray-700">Payment Method</th>
-                                        <th className="py-3 px-3 w-[14%] text-center text-[11px] font-semibold border border-gray-700">Action</th>
+                                        <th className="w-[130px] py-3 px-3 text-center text-[11px] font-semibold border border-gray-700 md:w-[13%]">Transaction ID</th>
+                                        <th className="w-[185px] py-3 px-3 text-center text-[11px] font-semibold border border-gray-700 md:w-[17%]">Date & Time</th>
+                                        <th className="w-[145px] py-3 px-3 text-center text-[11px] font-semibold border border-gray-700 md:w-[14%]">Processed By</th>
+                                        <th className="w-[120px] py-3 px-3 text-center text-[11px] font-semibold border border-gray-700 md:w-[13%]">Items</th>
+                                        <th className="w-[130px] py-3 px-3 text-center text-[11px] font-semibold border border-gray-700 md:w-[16%]">Total Amount</th>
+                                        <th className="w-[130px] py-3 px-3 text-center text-[11px] font-semibold border border-gray-700 md:w-[13%]">Payment Method</th>
+                                        <th className="w-[100px] py-3 px-3 text-center text-[11px] font-semibold border border-gray-700 md:w-[14%]">Action</th>
                                     </tr>
                                 </thead>
                                 <tbody className="text-sm">
@@ -1137,18 +1197,20 @@ const History = () => {
                                     ) : (
                                         currentItems.map((trx) => (
                                             <tr key={trx.id} className="border-b border-gray-200 hover:bg-gray-50 transition-colors duration-200 group">
-                                                <td className="py-2 px-2 text-center border border-gray-200">
+                                                <td className="py-2 px-3 text-center border border-gray-200">
                                                     <div className="flex flex-col items-center gap-1">
                                                         <IdentifierChip>{trx.id}</IdentifierChip>
                                                         {String(trx.status || '').toLowerCase() === 'voided' && (
-                                                            <span className="inline-flex rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-rose-700 dark:border-rose-900/70 dark:bg-rose-950/40 dark:text-rose-300">Voided</span>
+                                                            <span className="inline-flex rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-rose-700 dark:border-rose-900/70 dark:bg-rose-950/40 dark:text-rose-300">
+                                                                Voided
+                                                            </span>
                                                         )}
                                                     </div>
                                                 </td>
-                                                <td className="py-2 px-2 text-gray-800 font-medium text-xs text-center border border-gray-200">{formatExact(trx.date)}</td>
-                                                <td className="py-2 px-2 text-center border border-gray-200">
+                                                <td className="whitespace-nowrap py-2 px-3 text-gray-800 font-medium text-xs text-center border border-gray-200">{formatExact(trx.date)}</td>
+                                                <td className="py-2 px-3 text-center border border-gray-200">
                                                     <div className="flex flex-col items-center">
-                                                        <span className="text-gray-900 font-semibold text-xs leading-tight">
+                                                        <span className="whitespace-nowrap text-gray-900 font-semibold text-xs leading-tight">
                                                             {getProcessorDisplayName(trx)}
                                                         </span>
                                                         <span className="text-[10px] font-medium text-gray-400 leading-tight">
@@ -1156,7 +1218,7 @@ const History = () => {
                                                         </span>
                                                     </div>
                                                 </td>
-                                                <td className="py-2 px-2 text-gray-600 font-medium text-xs text-center border border-gray-200">
+                                                <td className="py-2 px-3 text-gray-600 font-medium text-xs text-center border border-gray-200">
                                                     <div className="flex flex-col items-center leading-tight">
                                                         <span>{trx.items.length} items</span>
                                                         <span className="text-[10px] font-semibold text-gray-800">
@@ -1170,32 +1232,26 @@ const History = () => {
                                                     </div>
                                                 </td>
                                                 <td className="py-2 px-3 font-semibold text-black text-sm text-center border border-gray-200 tabular-nums">₱{formatMoney(trx.total)}</td>
-                                                <td className="py-2 px-2 text-center border border-gray-200">
-                                                    <span className="inline-flex rounded-full border border-gray-300 bg-white px-2 py-0.5 text-[10px] font-semibold text-gray-700">
+                                                <td className="py-2 px-3 text-center border border-gray-200">
+                                                    <span className="inline-flex whitespace-nowrap rounded-full border border-gray-300 bg-white px-2 py-0.5 text-[10px] font-semibold text-gray-700">
                                                         {trx.paymentMethod || 'Cash'}
                                                     </span>
                                                 </td>
-                                                <td className="py-2 px-2 text-center border border-gray-200">
-                                                    <div className="flex items-center justify-center gap-1">
-                                                        <button 
+                                                <td className="py-2 px-3 text-center border border-gray-200">
+                                                    <div className="flex flex-nowrap items-center justify-center gap-1 whitespace-nowrap">
+                                                        <TableActionButton
                                                             onClick={() => handleViewReceipt(trx)}
-                                                            className="group/btn inline-flex items-center rounded-lg bg-white dark:bg-gray-800 text-black dark:text-white border border-black dark:border-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 transition-all px-2 py-1.5"
+                                                            label={isRegularSale(trx) ? 'View Order Confirmation' : 'View Receipt'}
+                                                            aria-label={isRegularSale(trx) ? `View Order Confirmation for ${trx.id}` : `View Receipt for ${trx.id}`}
                                                         >
                                                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
-                                                            <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 text-[10px] font-semibold group-hover/btn:ml-1 group-hover/btn:max-w-40 group-hover/btn:opacity-100">{isRegularSale(trx) ? 'View Order Confirmation' : 'View Receipt'}</span>
-                                                        </button>
-                                                        {isRegularSale(trx) && (
-                                                            <button type="button" onClick={() => handleViewSaleDetails(trx)} className="rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-[10px] font-semibold text-gray-700 transition-colors hover:bg-gray-100 dark:border-gray-500 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700" aria-label={`View sale details for ${trx.id}`}>Details</button>
-                                                        )}
+                                                        </TableActionButton>
+                                                        <TableActionButton onClick={() => setSelectedSaleDetails(trx)} label="Sale Details" aria-label={`View sale details for ${trx.id}`}><svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M8 4h8l3 3v13H5V4h3Zm2 7h4m-4 4h6" /></svg></TableActionButton>
                                                         {onArchiveTransaction && (
-                                                            <button 
+                                                            <TableActionButton
                                                                 onClick={() => toggleArchive(trx)}
-                                                                className={`group/btn inline-flex items-center rounded-lg transition-all px-2 py-1.5 ${
-                                                                    trx.isArchived 
-                                                                    ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/40' 
-                                                                    : 'bg-orange-50 dark:bg-orange-900/20 text-orange-600 dark:text-orange-400 hover:bg-orange-100 dark:hover:bg-orange-900/40'
-                                                                }`}
-                                                                title={trx.isArchived ? 'Restore' : 'Archive'}
+                                                                variant={trx.isArchived ? 'positive' : 'destructive'}
+                                                                label={trx.isArchived ? 'Restore' : 'Archive'}
                                                                 aria-label={`${trx.isArchived ? 'Restore' : 'Archive'} transaction ${trx.id}`}
                                                             >
                                                                 {trx.isArchived ? (
@@ -1203,10 +1259,7 @@ const History = () => {
                                                                 ) : (
                                                                     <ArchiveIcon />
                                                                 )}
-                                                                <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 text-[10px] font-semibold group-hover/btn:ml-1 group-hover/btn:max-w-20 group-hover/btn:opacity-100">
-                                                                    {trx.isArchived ? "Restore" : "Archive"}
-                                                                </span>
-                                                            </button>
+                                                            </TableActionButton>
                                                         )}
                                                     </div>
                                                 </td>
@@ -1275,13 +1328,12 @@ const History = () => {
                                                 </td>
                                                 <td className="py-2 px-2 text-center border border-gray-200">
                                                     <div className="flex items-center justify-center gap-1">
-                                                        <button
+                                                        <TableActionButton
                                                             onClick={() => handleViewCreditDetails(credit)}
-                                                            className="group/btn inline-flex items-center rounded-lg bg-white text-black border border-black hover:bg-gray-100 transition-all px-2 py-1.5"
+                                                            label="View Details"
                                                         >
                                                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
-                                                            <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 text-[10px] font-semibold group-hover/btn:ml-1 group-hover/btn:max-w-20 group-hover/btn:opacity-100">View Details</span>
-                                                        </button>
+                                                        </TableActionButton>
                                                     </div>
                                                 </td>
                                             </tr>
@@ -1290,14 +1342,14 @@ const History = () => {
                                 </tbody>
                             </table>
                         ) : (
-                            <table className="main-data-table w-full text-left border-separate border-spacing-0 table-fixed min-w-[700px]">
+                            <table className="main-data-table w-full text-left border-separate border-spacing-0 table-fixed min-w-[800px] md:min-w-0">
                                 <thead className="sticky top-0 z-10 shadow-sm">
                                     <tr className="bg-gray-900 dark:bg-gray-700 text-white uppercase tracking-wider">
-                                        <th className="py-3 px-3 w-[18%] text-center text-[11px] font-semibold border border-gray-700">Date & Time</th>
-                                        <th className="py-3 px-3 w-[15%] text-center text-[11px] font-semibold border border-gray-700">Action</th>
-                                        <th className="py-3 px-3 w-[20%] text-center text-[11px] font-semibold border border-gray-700">SKU</th>
-                                        <th className="py-3 px-3 w-[27%] text-center text-[11px] font-semibold border border-gray-700">Details</th>
-                                        <th className="py-3 px-3 w-[20%] text-center text-[11px] font-semibold border border-gray-700">User</th>
+                                        <th className="w-[180px] py-3 px-3 text-center text-[11px] font-semibold border border-gray-700 md:w-[18%]">Date & Time</th>
+                                        <th className="w-[110px] py-3 px-3 text-center text-[11px] font-semibold border border-gray-700 md:w-[15%]">Action</th>
+                                        <th className="w-[130px] py-3 px-3 text-center text-[11px] font-semibold border border-gray-700 md:w-[20%]">SKU</th>
+                                        <th className="w-[240px] py-3 px-3 text-center text-[11px] font-semibold border border-gray-700 md:w-[27%]">Details</th>
+                                        <th className="w-[140px] py-3 px-3 text-center text-[11px] font-semibold border border-gray-700 md:w-[20%]">User</th>
                                     </tr>
                                 </thead>
                                 <tbody className="text-sm">
@@ -1327,9 +1379,9 @@ const History = () => {
                                     ) : (
                                         currentItems.map((log, index) => (
                                             <tr key={index} className="border-b border-gray-200 hover:bg-gray-50 transition-colors duration-200 group">
-                                                <td className="py-2 px-2 text-gray-800 font-medium text-xs text-center whitespace-nowrap border border-gray-200">{formatExact(log.date)}</td>
-                                                <td className="py-2 px-2 text-center border border-gray-200">
-                                                    <span className={`px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide border ${
+                                                <td className="py-2 px-3 text-gray-800 font-medium text-xs text-center whitespace-nowrap border border-gray-200">{formatExact(log.date)}</td>
+                                                <td className="py-2 px-3 text-center border border-gray-200">
+                                                    <span className={`inline-flex whitespace-nowrap px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide border ${
                                                         log.action === 'ADD' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' :
                                                         log.action === 'DEDUCT' ? 'bg-amber-50 text-amber-700 border-amber-100' :
                                                         log.action === 'UPDATE' ? 'bg-blue-50 text-blue-700 border-blue-100' :
@@ -1340,9 +1392,9 @@ const History = () => {
                                                         {log.action}
                                                     </span>
                                                 </td>
-                                                <td className="py-2 px-2 font-mono font-semibold text-black text-xs text-center border border-gray-200">{log.code || '-'}</td>
-                                                <td className="py-2 px-2 text-gray-800 font-medium text-xs text-center border border-gray-200">{log.details}</td>
-                                                <td className="py-2 px-2 font-medium text-gray-800 text-xs text-center border border-gray-200">{getActorDisplayName(log.userRef, log.user)}</td>
+                                                <td className="py-2 px-3 font-mono font-semibold text-black text-xs text-center border border-gray-200">{log.code || '-'}</td>
+                                                <td className="py-2 px-3 text-gray-800 font-medium text-xs text-center border border-gray-200">{log.details}</td>
+                                                <td className="py-2 px-3 font-medium text-gray-800 text-xs text-center border border-gray-200">{getActorDisplayName(log.userRef, log.user)}</td>
                                             </tr>
                                         ))
                                     )}
@@ -1357,7 +1409,7 @@ const History = () => {
                         <div className="text-xs text-gray-500 dark:text-gray-400 font-medium">
                             Showing <span className="font-semibold text-gray-900 dark:text-white">{displayStart}</span> to <span className="font-semibold text-gray-900 dark:text-white">{displayEnd}</span> of <span className="font-semibold text-gray-900 dark:text-white">{currentList.length}</span> results
                         </div>
-                        <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} />
+                        <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} pageSize={itemsPerPage} onPageSizeChange={(pageSize) => { setItemsPerPage(pageSize); setCurrentPage(1); }} />
                     </div>
                 </div>
 
@@ -1496,7 +1548,7 @@ const History = () => {
 
             {selectedSaleDetails && (
                 <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-                    <div role="dialog" aria-modal="true" aria-label="Sale details" className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-800">
+                    <div role="dialog" aria-modal="true" aria-label="Sale details" className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-[#202225]">
                         <div className="flex items-start justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-700">
                             <div>
                                 <div className="flex items-center gap-2">
@@ -1514,32 +1566,97 @@ const History = () => {
                                 <div><p className="text-slate-500 dark:text-slate-400">Processed By</p><p className="mt-1 font-medium text-slate-900 dark:text-slate-100">{getProcessorDisplayName(selectedSaleDetails)}</p></div>
                                 <div><p className="text-slate-500 dark:text-slate-400">Total</p><p className="mt-1 font-semibold text-slate-900 dark:text-slate-100">₱{formatMoney(selectedSaleDetails.total)}</p></div>
                             </div>
+                            <div className="border-t border-slate-200 pt-3 dark:border-slate-700">
+                                <div className="flex items-center justify-between gap-2"><h4 className="text-xs font-semibold text-slate-900 dark:text-slate-100">Transaction Reference</h4>{selectedSaleDetails.sourceId && String(selectedSaleDetails.status || '').toLowerCase() !== 'voided' && <button type="button" onClick={() => setIsEditingSaleReference(true)} className="text-xs font-medium text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white">{selectedSaleDetails.transactionReference?.referenceNumber || selectedSaleDetails.transactionReference?.supportingDocument ? 'Edit Reference' : 'Add Reference'}</button>}</div>
+                                {selectedSaleDetails.transactionReference?.referenceNumber && <p className="mt-2 text-xs text-slate-700 dark:text-slate-200"><span className="text-slate-500 dark:text-slate-400">Reference No.</span> {selectedSaleDetails.transactionReference.referenceNumber}</p>}
+                                {selectedSaleDetails.transactionReference?.supportingDocument && <button type="button" onClick={viewSaleDocument} className="mt-2 text-xs font-medium text-slate-700 underline underline-offset-2 hover:text-slate-900 dark:text-slate-200">View Supporting Document</button>}
+                                {!selectedSaleDetails.sourceId && <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">Reference details can be added after this sale syncs.</p>}
+                                {String(selectedSaleDetails.status || '').toLowerCase() === 'voided' && <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">Reference metadata is preserved and read-only after voiding.</p>}
+                            </div>
                             <div className="border-t border-slate-200 pt-3 dark:border-slate-700"><h4 className="text-xs font-semibold text-slate-900 dark:text-slate-100">Items</h4>{(selectedSaleDetails.items || []).map((item, index) => <div key={`${item.code || item.name}-${index}`} className="flex justify-between gap-3 border-b border-slate-100 py-2 text-xs text-slate-700 dark:border-slate-700 dark:text-slate-200"><span>{item.name} × {item.qty}</span><span className="shrink-0">₱{formatMoney(item.subtotal ?? item.qty * item.price)}</span></div>)}</div>
                             {String(selectedSaleDetails.status || '').toLowerCase() === 'voided' && (
                                 <div className="rounded-xl border border-rose-200 bg-rose-50/70 p-3 text-xs dark:border-rose-900/60 dark:bg-rose-950/20">
                                     <h4 className="font-semibold text-rose-800 dark:text-rose-200">Void Record</h4>
                                     <dl className="mt-2 space-y-1.5 text-slate-600 dark:text-slate-300">
                                         <div className="flex justify-between gap-3"><dt className="text-slate-500 dark:text-slate-400">Voided At</dt><dd className="text-right">{formatExact(selectedSaleDetails.voidInfo?.voidedAt)}</dd></div>
+                                        <div className="flex justify-between gap-3"><dt className="text-slate-500 dark:text-slate-400">Voided By</dt><dd className="text-right">{selectedSaleDetails.voidInfo?.voidedByName || '-'}</dd></div>
                                         <div className="flex items-start justify-between gap-3"><dt className="shrink-0 text-slate-500 dark:text-slate-400">Reason</dt><dd className="break-words text-right">{selectedSaleDetails.voidInfo?.reason || '-'}</dd></div>
+                                        {selectedSaleDetails.voidInfo?.supportingProof && (
+                                            <div className="flex items-start justify-between gap-3">
+                                                <dt className="shrink-0 text-slate-500 dark:text-slate-400">Supporting Proof</dt>
+                                                <dd className="min-w-0 text-right">
+                                                    <p className="truncate" title={selectedSaleDetails.voidInfo.supportingProof.originalName}>{selectedSaleDetails.voidInfo.supportingProof.originalName}</p>
+                                                    <button type="button" onClick={viewSaleVoidProof} className="mt-1 font-medium text-rose-700 underline underline-offset-2 hover:text-rose-900 dark:text-rose-300 dark:hover:text-rose-200">View Proof</button>
+                                                </dd>
+                                            </div>
+                                        )}
                                     </dl>
                                 </div>
                             )}
                         </div>
-                        {canVoidSale(selectedSaleDetails) && <div className="border-t border-slate-200 px-5 py-3 dark:border-slate-700"><button type="button" onClick={openVoidModal} className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300 dark:border-rose-900/70 dark:bg-slate-800 dark:text-rose-300 dark:hover:bg-rose-950/30">Void Transaction</button></div>}
+                        {canVoidSale(selectedSaleDetails) && (
+                            <div className="border-t border-slate-200 px-5 py-3 dark:border-slate-700">
+                                <button type="button" onClick={openVoidModal} className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-700 transition-colors hover:bg-rose-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300 dark:border-rose-900/70 dark:bg-[#202225] dark:text-rose-300 dark:hover:bg-rose-950/30">
+                                    Void Transaction
+                                </button>
+                            </div>
+                        )}
                     </div>
                 </div>
             )}
+            {isEditingSaleReference && selectedSaleDetails?.sourceId && String(selectedSaleDetails.status || '').toLowerCase() !== 'voided' && (
+                <TransactionReferenceModal saleId={selectedSaleDetails.sourceId} initialReference={selectedSaleDetails.transactionReference} saveLabel="Save Reference" onSkip={() => setIsEditingSaleReference(false)} onSaved={(updated) => {
+                    setSelectedSaleDetails((previous) => ({ ...previous, transactionReference: updated.transactionReference }));
+                    setTransactions((previous) => previous.map((transaction) => transaction.sourceId === updated.sourceId ? { ...transaction, transactionReference: updated.transactionReference } : transaction));
+                    setIsEditingSaleReference(false);
+                }} />
+            )}
             {isVoidModalOpen && selectedSaleDetails && (
-                <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
-                    <div role="dialog" aria-modal="true" aria-labelledby="void-sale-title" className="w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-xl dark:border-slate-700 dark:bg-slate-800">
-                        <div className="border-b border-slate-200 px-5 py-4 dark:border-slate-700"><h3 id="void-sale-title" className="text-base font-semibold text-slate-900 dark:text-slate-100">Void Transaction</h3><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{selectedSaleDetails.id}</p></div>
-                        <div className="space-y-4 px-5 py-4">
-                            <p className="text-sm leading-5 text-slate-700 dark:text-slate-200">This permanently voids the Sale and restores the exact sold quantities to inventory.</p>
-                            <label className="block"><span className="text-xs font-medium text-slate-600 dark:text-slate-300">Reason for voiding</span><textarea value={voidReason} onChange={(event) => setVoidReason(event.target.value)} maxLength={500} rows={4} disabled={isVoidSubmitting} placeholder="Enter the reason for voiding this Sale" className="mt-1.5 w-full resize-none rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-200 disabled:opacity-70 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-slate-400 dark:focus:ring-slate-700" /></label>
-                            <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-4 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200">Safe boundary: Credit Transactions and Special Orders cannot be voided here.</p>
+                <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-[2px]">
+                    <div role="dialog" aria-modal="true" aria-labelledby="void-sale-title" className="w-full max-w-md overflow-hidden rounded-2xl border border-slate-200/80 bg-slate-50 shadow-[0_20px_50px_-24px_rgba(15,23,42,0.35)] dark:border-slate-700/80 dark:bg-[#24262a] dark:shadow-[0_20px_50px_-24px_rgba(0,0,0,0.6)]">
+                        <div className="border-b border-slate-200/70 px-5 py-4 dark:border-slate-700/70">
+                            <h3 id="void-sale-title" className="text-base font-semibold text-slate-900 dark:text-slate-100">Void Transaction</h3>
+                            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{selectedSaleDetails.id}</p>
                         </div>
-                        <div className="flex justify-end gap-2 border-t border-slate-200 px-5 py-3 dark:border-slate-700"><button type="button" onClick={closeVoidModal} disabled={isVoidSubmitting} className="rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700">Cancel</button><button type="button" onClick={confirmVoidSale} disabled={!voidReason.trim() || isVoidSubmitting} className="rounded-lg border border-rose-700 bg-rose-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-rose-800 disabled:cursor-not-allowed disabled:border-rose-300 disabled:bg-rose-300 dark:border-rose-800 dark:bg-rose-800 dark:hover:bg-rose-700 dark:disabled:border-rose-950 dark:disabled:bg-rose-950/60 dark:disabled:text-rose-400">{isVoidSubmitting ? 'Voiding...' : 'Void Transaction'}</button></div>
+                        <div className="space-y-3 px-5 py-4">
+                            <p className="text-sm leading-5 text-slate-700 dark:text-slate-200">This permanently voids the Sale and restores the exact sold quantities to inventory.</p>
+                            <label className="block">
+                                <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Reason for voiding</span>
+                                <textarea value={voidReason} onChange={(event) => setVoidReason(event.target.value)} maxLength={500} rows={4} disabled={isVoidSubmitting} placeholder="Enter the reason for voiding this Sale" className="mt-1.5 w-full resize-none rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition-colors focus:border-slate-400 focus:ring-2 focus:ring-slate-300/40 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:opacity-70 dark:border-slate-600/80 dark:bg-[#2d3035] dark:text-slate-100 dark:focus:border-slate-500 dark:focus:ring-slate-500/25 dark:disabled:bg-[#292c30]" />
+                            </label>
+                            <div>
+                                <div className="flex items-center justify-between gap-3">
+                                    <div>
+                                        <p className="text-xs font-medium text-slate-600 dark:text-slate-300">Supporting Proof <span className="font-normal text-slate-400">(Optional)</span></p>
+                                        <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">JPG, PNG, or PDF up to 5 MB.</p>
+                                    </div>
+                                    <input ref={voidProofInputRef} type="file" accept=".jpg,.jpeg,.png,.pdf,image/jpeg,image/png,application/pdf" onChange={handleVoidProofSelection} disabled={isVoidSubmitting} className="sr-only" />
+                                    <button type="button" onClick={() => voidProofInputRef.current?.click()} disabled={isVoidSubmitting} className="shrink-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400/40 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-[#2d3035] dark:text-slate-200 dark:hover:bg-[#373a40]">
+                                        {voidProofFile ? 'Replace' : 'Choose File'}
+                                    </button>
+                                </div>
+                                {voidProofFile && (
+                                    <div className="mt-2 flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 dark:border-slate-600/80 dark:bg-[#2d3035]">
+                                        <span className="min-w-0 truncate text-xs text-slate-700 dark:text-slate-200" title={voidProofFile.name}>{voidProofFile.name}</span>
+                                        <button type="button" onClick={() => setVoidProofFile(null)} disabled={isVoidSubmitting} className="shrink-0 text-xs font-medium text-slate-500 hover:text-rose-700 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-400 dark:hover:text-rose-300">Remove</button>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                        <div className="flex justify-end gap-2 border-t border-slate-200/70 px-5 py-3 dark:border-slate-700/70">
+                            <button type="button" onClick={closeVoidModal} disabled={isVoidSubmitting} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400/40 disabled:opacity-50 dark:border-slate-600 dark:bg-[#2d3035] dark:text-slate-200 dark:hover:bg-[#373a40]">Cancel</button>
+                            <button type="button" onClick={confirmVoidSale} disabled={!voidReason.trim() || isVoidSubmitting} className="rounded-lg border border-rose-700 bg-rose-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-rose-800 disabled:cursor-not-allowed disabled:border-rose-300 disabled:bg-rose-300 dark:border-rose-800 dark:bg-rose-800 dark:hover:bg-rose-700 dark:disabled:border-rose-950 dark:disabled:bg-rose-950/60 dark:disabled:text-rose-400">{isVoidSubmitting ? 'Voiding...' : 'Void Transaction'}</button>
+                        </div>
                     </div>
+                </div>
+            )}
+            {documentPreview && <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/75 p-4" role="dialog" aria-modal="true" aria-label="Supporting Document preview"><img src={documentPreview.url} alt={documentPreview.name} className="max-h-[85vh] max-w-full rounded-lg object-contain" /><button type="button" onClick={() => setDocumentPreview(null)} className="absolute right-5 top-5 rounded-lg bg-white px-3 py-2 text-xs font-medium text-slate-900">Close</button></div>}
+            {voidProofPreview && (
+                <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/75 p-4" role="dialog" aria-modal="true" aria-label="Supporting Proof preview">
+                    {voidProofPreview.mimeType === 'application/pdf'
+                        ? <iframe src={voidProofPreview.url} title={voidProofPreview.name} className="h-[85vh] w-full max-w-4xl rounded-lg bg-white" />
+                        : <img src={voidProofPreview.url} alt={voidProofPreview.name} className="max-h-[85vh] max-w-full rounded-lg object-contain" />}
+                    <button type="button" onClick={() => setVoidProofPreview(null)} className="absolute right-5 top-5 rounded-lg bg-white px-3 py-2 text-xs font-medium text-slate-900">Close</button>
                 </div>
             )}
             {showReceipt && selectedTransaction && (

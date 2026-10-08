@@ -204,6 +204,9 @@ const buildReceiptLines = (payload = {}) => {
   lines.push('');
   lines.push(separator);
   appendField(lines, receipt.documentType === 'order-confirmation' ? 'Transaction ID' : 'Receipt No', receipt.id);
+  if (receipt.transactionReference) {
+    appendField(lines, 'Transaction Ref', receipt.transactionReference);
+  }
   if (receipt.specialOrderNumber) {
     appendField(lines, 'Special Order', receipt.specialOrderNumber);
   }

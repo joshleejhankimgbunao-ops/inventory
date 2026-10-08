@@ -210,6 +210,42 @@ test('original receipts omit reprint labels and reprints include one centered la
   assert.ok(reprintLines.every((line) => line.length <= 30));
 });
 
+test('POS order confirmation prints its distinct heading and optional transaction reference within 30 columns', () => {
+  const lines = buildReceiptLines({
+    store: { name: 'Tableria La Confianza' },
+    receipt: {
+      id: 'TRX-ABC12345', documentType: 'order-confirmation', transactionReference: 'REF-123',
+      date: '2026-10-04', cashier: 'Cashier', paymentMethod: 'Cash',
+      items: [{ label: 'Item', qty: 1, unitPrice: 100, subtotal: 100 }],
+      netAmount: 89.29, vatAmount: 10.71, grossAmount: 100, total: 100, cash: 100, change: 0,
+    },
+  });
+  const output = lines.join('\n');
+  assert.match(output, /ORDER CONFIRMATION/);
+  assert.match(output, /Transaction Ref:\s+REF-123/);
+  assert.match(output, /Transaction ID:\s+TRX-ABC12345/);
+  assert.ok(lines.every((line) => line.length <= 30));
+});
+
+test('Sales History order confirmation print-again avoids receipt and reprint terminology', () => {
+  const receipt = {
+    id: 'TRX-HISTORY-001', documentType: 'order-confirmation', isReprint: true,
+    date: '2026-10-04', cashier: 'Cashier', paymentMethod: 'Credit',
+    customerName: 'Regular Customer',
+    items: [{ label: 'Saved Item', qty: 1, unitPrice: 100, subtotal: 100 }],
+    netAmount: 89.29, vatAmount: 10.71, grossAmount: 100, total: 100,
+  };
+  const withoutReference = buildReceiptLines({ store: { name: 'Tableria La Confianza' }, receipt }).join('\n');
+  const withReference = buildReceiptLines({ store: { name: 'Tableria La Confianza' }, receipt: { ...receipt, transactionReference: 'REF-123' } }).join('\n');
+
+  assert.match(withoutReference, /ORDER CONFIRMATION/);
+  assert.match(withoutReference, /Transaction ID:\s+TRX-HISTORY-001/);
+  assert.match(withoutReference, /For transaction reference\s+only\./);
+  assert.doesNotMatch(withoutReference, /Receipt No|REPRINT|Please keep this receipt|Transaction Ref:/i);
+  assert.match(withReference, /Transaction Ref:\s+REF-123/);
+  assert.doesNotMatch(withReference, /REPRINT|Receipt No/i);
+});
+
 test('voided Order Confirmation prints visible void status, date, and reason without becoming a receipt', () => {
   const lines = buildReceiptLines({
     store: { name: 'Tableria La Confianza' },

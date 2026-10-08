@@ -71,3 +71,25 @@ test('special-order-linked history sale remains a printable transaction without 
   assert.equal(transaction.items[0].name, 'Special Order Snapshot');
   assert.equal(transaction.total, 200);
 });
+
+test('sale receipts prefer the persisted actor full name over display name', () => {
+  const transaction = mapSaleToTransactionContract({
+    _id: '68a01234567890abcdef9012',
+    createdAt: new Date('2026-08-30T08:00:00.000Z'),
+    cashierName: 'Legacy Snapshot',
+    cashier: {
+      _id: '68a01234567890abcdef3456',
+      name: 'Joshlee Bunao',
+      displayName: 'Superadmin',
+      username: 'owner',
+      role: 'superadmin',
+    },
+    paymentMethod: 'cash',
+    totalAmount: 100,
+    items: [{ name: 'Receipt Item', code: 'REC-001', quantity: 1, unitPrice: 100, subtotal: 100 }],
+  });
+
+  assert.equal(transaction.cashier, 'Joshlee Bunao');
+  assert.equal(transaction.cashierUser.name, 'Joshlee Bunao');
+  assert.equal(transaction.cashierUser.displayName, 'Superadmin');
+});

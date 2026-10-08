@@ -53,6 +53,7 @@ const normalizeReceiptTransaction = (transaction = {}, settings = {}, { isReprin
         reason: String(transaction.voidInfo.reason || '').trim(),
         voidedAt: transaction.voidInfo.voidedAt ? String(transaction.voidInfo.voidedAt) : '',
       } : null,
+      transactionReference: String(transaction?.transactionReference?.referenceNumber || '').trim(),
       paymentStatus: String(transaction?.paymentStatus || '').trim(),
       customerName: String(transaction?.customerName || '').trim(),
       specialOrderNumber: String(transaction?.specialOrderNumber || '').trim(),

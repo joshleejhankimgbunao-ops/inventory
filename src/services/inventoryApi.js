@@ -20,6 +20,8 @@ export const mapApiProductToUi = (product) => ({
   status: toStatus(Number(product.stock || 0)),
   manualAlternatives: Array.isArray(product.manualAlternatives) ? product.manualAlternatives : [],
   excludedAlternatives: Array.isArray(product.excludedAlternatives) ? product.excludedAlternatives : [],
+  manualBudgetOptions: Array.isArray(product.manualBudgetOptions) ? product.manualBudgetOptions : [],
+  excludedBudgetOptions: Array.isArray(product.excludedBudgetOptions) ? product.excludedBudgetOptions : [],
   isActive: product.isActive,
   isArchived: product.isActive === false,
   updatedAt: product.updatedAt || null,
@@ -81,8 +83,16 @@ export const updateProductStockApi = async (productId, stock, options = {}) => {
   });
 };
 
-export const removeProductRecommendationApi = async (productId, alternativeCode) => {
-  const updated = await apiRequest(`/api/products/${productId}/recommendations/${encodeURIComponent(alternativeCode)}`, {
+export const addProductRecommendationApi = async (productId, recommendation) => {
+  const updated = await apiRequest(`/api/products/${productId}/recommendations`, {
+    method: 'POST',
+    body: JSON.stringify(recommendation),
+  });
+  return mapApiProductToUi(updated);
+};
+
+export const removeProductRecommendationApi = async (productId, alternativeCode, type = 'alternative') => {
+  const updated = await apiRequest(`/api/products/${productId}/recommendations/${encodeURIComponent(alternativeCode)}?type=${encodeURIComponent(type)}`, {
     method: 'DELETE',
   });
   return mapApiProductToUi(updated);
@@ -104,6 +114,7 @@ export const createSaleApi = async (items, paymentMethod = 'cash', clientRequest
     ...(options.notes ? { notes: options.notes } : {}),
     ...(options.vatMode ? { vatMode: String(options.vatMode).trim() } : {}),
     ...(options.cashTendered !== undefined ? { cashTendered: String(options.cashTendered).trim() } : {}),
+    ...(options.transactionReferenceNumber ? { transactionReferenceNumber: String(options.transactionReferenceNumber).trim() } : {}),
   };
 
   return apiRequest('/api/sales', {
@@ -121,7 +132,6 @@ const mapHistorySale = (sale) => {
     other: 'Other',
     credit: 'Credit',
   };
-
   return {
     ...sale,
     paymentMethod: paymentMethodLabels[String(sale?.paymentMethod || '').trim().toLowerCase()]
@@ -131,16 +141,43 @@ const mapHistorySale = (sale) => {
 
 export const listSalesHistoryViewApi = async (includeArchived = true) => {
   const sales = await apiRequest(`/api/sales/history-view?includeArchived=${includeArchived ? 'true' : 'false'}`);
-  return Array.isArray(sales) ? sales.map(mapHistorySale) : [];
+
+  return Array.isArray(sales)
+    ? sales.map(mapHistorySale)
+    : [];
 };
 
 export const getSaleHistoryViewApi = async (saleId) => mapHistorySale(await apiRequest(
   `/api/sales/${encodeURIComponent(saleId)}/history-view`
 ));
 
-export const voidSaleApi = async (saleId, { reason, requestId }) => apiRequest(
-  `/api/sales/${encodeURIComponent(saleId)}/void`,
-  { method: 'POST', body: JSON.stringify({ reason, requestId }) }
+export const voidSaleApi = async (saleId, { reason, requestId, proofFile } = {}) => {
+  const formData = new FormData();
+  formData.append('reason', String(reason || '').trim());
+  formData.append('requestId', String(requestId || '').trim());
+  if (proofFile) formData.append('proof', proofFile);
+  return apiRequest(`/api/sales/${encodeURIComponent(saleId)}/void`, {
+    method: 'POST',
+    body: formData,
+  });
+};
+
+export const getSaleVoidProofApi = async (saleId) => apiBlobRequest(
+  `/api/sales/${encodeURIComponent(saleId)}/void-proof`
+);
+
+export const updateSaleTransactionReferenceApi = async (saleId, { referenceNumber, documentFile } = {}) => {
+  const formData = new FormData();
+  formData.append('referenceNumber', String(referenceNumber || '').trim());
+  if (documentFile) formData.append('document', documentFile);
+  return apiRequest(`/api/sales/${encodeURIComponent(saleId)}/transaction-reference`, {
+    method: 'PATCH',
+    body: formData,
+  });
+};
+
+export const getSaleSupportingDocumentApi = async (saleId) => apiBlobRequest(
+  `/api/sales/${encodeURIComponent(saleId)}/supporting-document`
 );
 
 export const listActivityLogsApi = async (limit = 100) => {
