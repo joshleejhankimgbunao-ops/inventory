@@ -23,12 +23,47 @@ class R2StorageError extends Error {
   }
 }
 
-const normalizeKey = (key) => String(key || '').replace(/^\/+/, '');
+const normalizeBucketName = (value) => String(value || '').trim().replace(/^\/+|\/+$/g, '');
+
+const normalizeEndpoint = (value, bucketName) => {
+  const endpoint = String(value || '').trim();
+  if (!endpoint || !bucketName) return endpoint;
+
+  try {
+    const parsed = new URL(endpoint);
+    const pathSegments = parsed.pathname.split('/').filter(Boolean);
+    if (pathSegments.length === 1 && decodeURIComponent(pathSegments[0]) === bucketName) {
+      parsed.pathname = '/';
+    }
+    return parsed.toString().replace(/\/$/, '');
+  } catch {
+    return endpoint;
+  }
+};
+
+const normalizeKey = (key, bucketName = '') => {
+  let normalized = String(key || '').replace(/^\/+/, '');
+  const bucketPrefix = bucketName ? `${bucketName}/` : '';
+
+  while (bucketPrefix && normalized.startsWith(bucketPrefix)) {
+    normalized = normalized.slice(bucketPrefix.length);
+  }
+
+  return normalized;
+};
+
+const isObjectNotFoundError = (error) => {
+  const cause = error?.cause || error;
+  const code = String(cause?.name || cause?.Code || cause?.code || '');
+  const status = Number(cause?.$metadata?.httpStatusCode || cause?.statusCode || error?.status || 0);
+  return status === 404 || ['NoSuchKey', 'NotFound', 'NoSuchObject'].includes(code);
+};
 
 const getR2Configuration = (environment = process.env) => {
+  const bucketName = normalizeBucketName(environment.R2_BUCKET_NAME);
   const config = {
-    endpoint: String(environment.R2_ENDPOINT || '').trim(),
-    bucketName: String(environment.R2_BUCKET_NAME || '').trim(),
+    endpoint: normalizeEndpoint(environment.R2_ENDPOINT, bucketName),
+    bucketName,
     accessKeyId: String(environment.R2_ACCESS_KEY_ID || '').trim(),
     secretAccessKey: String(environment.R2_SECRET_ACCESS_KEY || '').trim(),
   };
@@ -78,6 +113,28 @@ const createR2StorageService = ({ environment = process.env, client = null } = {
     }
   };
 
+  const listObjects = async (prefix) => {
+    const objects = [];
+    let continuationToken;
+
+    do {
+      const result = await send(new ListObjectsV2Command({
+        Bucket: config.bucketName,
+        Prefix: prefix,
+        ContinuationToken: continuationToken,
+      }));
+      objects.push(...(result.Contents || []).map((item) => ({
+        key: item.Key,
+        lastModified: item.LastModified || null,
+        size: Number(item.Size || 0),
+        etag: item.ETag || '',
+      })));
+      continuationToken = result.IsTruncated ? result.NextContinuationToken : undefined;
+    } while (continuationToken);
+
+    return objects;
+  };
+
   return {
     isConfigured: () => config.configured,
     getConfiguration: () => ({
@@ -86,7 +143,7 @@ const createR2StorageService = ({ environment = process.env, client = null } = {
       secretAccessKey: config.secretAccessKey ? '[configured]' : '',
     }),
     putObject: async ({ key, body, contentType = 'application/octet-stream', metadata = {} } = {}) => {
-      const normalizedKey = normalizeKey(key);
+      const normalizedKey = normalizeKey(key, config.bucketName);
       if (!normalizedKey) {
         throw new R2StorageError('Cloud storage object key is required.', { code: 'R2_INVALID_KEY', status: 400 });
       }
@@ -100,51 +157,44 @@ const createR2StorageService = ({ environment = process.env, client = null } = {
       return { key: normalizedKey, etag: result.ETag || '', versionId: result.VersionId || '' };
     },
     getObject: async (key) => {
-      const normalizedKey = normalizeKey(key);
+      const normalizedKey = normalizeKey(key, config.bucketName);
       if (!normalizedKey) {
         throw new R2StorageError('Cloud storage object key is required.', { code: 'R2_INVALID_KEY', status: 400 });
       }
-      return send(new GetObjectCommand({ Bucket: config.bucketName, Key: normalizedKey }));
+      try {
+        return await send(new GetObjectCommand({ Bucket: config.bucketName, Key: normalizedKey }));
+      } catch (error) {
+        if (!isObjectNotFoundError(error)) throw error;
+        return send(new GetObjectCommand({
+          Bucket: config.bucketName,
+          Key: `${config.bucketName}/${normalizedKey}`,
+        }));
+      }
     },
     deleteObject: async (key) => {
-      const normalizedKey = normalizeKey(key);
+      const normalizedKey = normalizeKey(key, config.bucketName);
       if (!normalizedKey) return false;
       await send(new DeleteObjectCommand({ Bucket: config.bucketName, Key: normalizedKey }));
       return true;
     },
     listObjectsByPrefix: async (prefix) => {
-      const normalizedPrefix = normalizeKey(prefix);
-      const objects = [];
-      let continuationToken;
+      const normalizedPrefix = normalizeKey(prefix, config.bucketName);
+      const objects = await listObjects(normalizedPrefix);
+      if (objects.length > 0 || !normalizedPrefix) return objects;
 
-      do {
-        const result = await send(new ListObjectsV2Command({
-          Bucket: config.bucketName,
-          Prefix: normalizedPrefix,
-          ContinuationToken: continuationToken,
-        }));
-        objects.push(...(result.Contents || []).map((item) => ({
-          key: item.Key,
-          lastModified: item.LastModified || null,
-          size: Number(item.Size || 0),
-          etag: item.ETag || '',
-        })));
-        continuationToken = result.IsTruncated ? result.NextContinuationToken : undefined;
-      } while (continuationToken);
-
-      return objects;
+      const legacyBucketPrefix = `${config.bucketName}/`;
+      const legacyObjects = await listObjects(`${legacyBucketPrefix}${normalizedPrefix}`);
+      return legacyObjects.map((object) => ({
+        ...object,
+        key: String(object.key || '').startsWith(legacyBucketPrefix)
+          ? String(object.key).slice(legacyBucketPrefix.length)
+          : object.key,
+      }));
     },
   };
 };
 
 const r2Storage = createR2StorageService();
-
-const isObjectNotFoundError = (error) => {
-  const cause = error?.cause || error;
-  const code = String(cause?.name || cause?.Code || cause?.code || '');
-  const status = Number(cause?.$metadata?.httpStatusCode || cause?.statusCode || error?.status || 0);
-  return status === 404 || ['NoSuchKey', 'NotFound', 'NoSuchObject'].includes(code);
-};
 
 module.exports = {
   REQUIRED_R2_ENVIRONMENT_VARIABLES,

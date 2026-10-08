@@ -94,6 +94,84 @@ test('R2 service sends private object operations to the configured bucket', asyn
   assert.equal(service.getConfiguration().secretAccessKey, '[configured]');
 });
 
+test('R2 configuration removes an accidental bucket path and new keys never repeat the bucket name', async () => {
+  const commands = [];
+  const service = createR2StorageService({
+    environment: {
+      ...configuredEnvironment,
+      R2_ENDPOINT: 'https://example.r2.cloudflarestorage.com/tlc-system-storage/',
+    },
+    client: {
+      send: async (command) => {
+        commands.push(command.input);
+        return { ETag: 'etag' };
+      },
+    },
+  });
+
+  await service.putObject({
+    key: 'tlc-system-storage/sale-void-proofs/example.jpg',
+    body: validJpeg,
+    contentType: 'image/jpeg',
+  });
+
+  assert.equal(service.getConfiguration().endpoint, 'https://example.r2.cloudflarestorage.com');
+  assert.equal(commands[0].Bucket, 'tlc-system-storage');
+  assert.equal(commands[0].Key, 'sale-void-proofs/example.jpg');
+});
+
+test('R2 reads and lists legacy bucket-prefixed objects without creating new nested keys', async () => {
+  const commands = [];
+  const service = createR2StorageService({
+    environment: configuredEnvironment,
+    client: {
+      send: async (command) => {
+        commands.push(command.input);
+        const { Key, Prefix } = command.input;
+        if (Key === 'sale-void-proofs/legacy.jpg') {
+          const error = new Error('Not found.');
+          error.name = 'NoSuchKey';
+          error.$metadata = { httpStatusCode: 404 };
+          throw error;
+        }
+        if (Key === 'tlc-system-storage/sale-void-proofs/legacy.jpg') {
+          return { Body: Buffer.from('legacy') };
+        }
+        if (Prefix === 'database-backups/automatic/') {
+          return { Contents: [], IsTruncated: false };
+        }
+        if (Prefix === 'tlc-system-storage/database-backups/automatic/') {
+          return {
+            Contents: [{
+              Key: 'tlc-system-storage/database-backups/automatic/automatic-inventory-backup-2026-10-08_120000.json',
+              Size: 10,
+            }],
+            IsTruncated: false,
+          };
+        }
+        return {};
+      },
+    },
+  });
+
+  const storedObject = await service.getObject('sale-void-proofs/legacy.jpg');
+  const backups = await service.listObjectsByPrefix('database-backups/automatic/');
+
+  assert.deepEqual(storedObject.Body, Buffer.from('legacy'));
+  assert.deepEqual(commands.slice(0, 2).map(({ Key }) => Key), [
+    'sale-void-proofs/legacy.jpg',
+    'tlc-system-storage/sale-void-proofs/legacy.jpg',
+  ]);
+  assert.deepEqual(commands.slice(2).map(({ Prefix }) => Prefix), [
+    'database-backups/automatic/',
+    'tlc-system-storage/database-backups/automatic/',
+  ]);
+  assert.equal(
+    backups[0].key,
+    'database-backups/automatic/automatic-inventory-backup-2026-10-08_120000.json'
+  );
+});
+
 test('payment proof is persisted to R2 before the Paid-state operation', async () => {
   const events = [];
   const r2Operations = [];
