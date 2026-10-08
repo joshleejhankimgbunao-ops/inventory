@@ -322,6 +322,7 @@ const runAutomaticBackup = async ({
   writeLog,
   applyRetention = applyAutomaticBackupRetention,
 } = {}) => {
+  if (!settings?.automaticBackupEnabled) return;
   if (backupInFlight) return;
 
   backupInFlight = true;

@@ -103,7 +103,7 @@ test('automatic backups are uploaded to the R2 automatic-backup prefix', async (
 test('automatic backup upload failure records the existing Failed status', async () => {
   const states = [];
   const settings = {
-    automaticBackupEnabled: false,
+    automaticBackupEnabled: true,
     automaticBackupIntervalDays: 1,
     automaticBackupTime: '23:00',
   };
@@ -117,7 +117,10 @@ test('automatic backup upload failure records the existing Failed status', async
       storeBackup: async () => {
         throw new Error('R2 upload unavailable.');
       },
-      saveState: async (_settings, patch) => states.push(patch),
+      saveState: async (_settings, patch) => {
+        states.push(patch);
+        settings.automaticBackupEnabled = false;
+      },
       writeLog: async () => assert.fail('a failed upload must not log completion'),
     });
   } finally {
@@ -127,6 +130,30 @@ test('automatic backup upload failure records the existing Failed status', async
   assert.equal(states.length, 1);
   assert.equal(states[0].lastAutomaticBackupStatus, 'failed');
   assert.equal(states[0].lastAutomaticBackupError, 'R2 upload unavailable.');
+});
+
+test('disabled automatic backup never generates a scheduled backup', async () => {
+  let generateCalls = 0;
+  let storeCalls = 0;
+
+  await runAutomaticBackup({
+    settings: {
+      automaticBackupEnabled: false,
+      automaticBackupIntervalDays: 1,
+      automaticBackupTime: '23:00',
+    },
+    generateBackup: async () => {
+      generateCalls += 1;
+      return { schemaVersion: 2 };
+    },
+    storeBackup: async () => {
+      storeCalls += 1;
+      return { storage: 'r2', fileName: 'must-not-exist.json' };
+    },
+  });
+
+  assert.equal(generateCalls, 0);
+  assert.equal(storeCalls, 0);
 });
 
 test('R2 retention keeps the latest 30 automatic backups and never touches payment proofs', async () => {

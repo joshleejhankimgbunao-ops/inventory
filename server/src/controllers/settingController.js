@@ -12,6 +12,7 @@ const {
   reloadAutomaticBackupScheduler,
 } = require('../services/automaticBackupService');
 const { isObjectNotFoundError } = require('../services/r2StorageService');
+const { normalizeHumanReadable } = require('../../../shared/textNormalization.cjs');
 
 const EMAIL_RULE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const BACKUP_TIME_RULE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
@@ -250,8 +251,8 @@ const updateSettings = async (req, res, next) => {
       return res.status(403).json({ message: 'Only Super Admin can change automatic backup settings.' });
     }
 
-    if ('storeName' in payload) payload.storeName = normalizeString(payload.storeName);
-    if ('storeAddress' in payload) payload.storeAddress = normalizeString(payload.storeAddress);
+    if ('storeName' in payload) payload.storeName = normalizeHumanReadable(payload.storeName);
+    if ('storeAddress' in payload) payload.storeAddress = normalizeHumanReadable(payload.storeAddress);
     if ('contactPhone' in payload) payload.contactPhone = normalizeString(payload.contactPhone);
     if ('contactPhoneSecondary' in payload) payload.contactPhoneSecondary = normalizeString(payload.contactPhoneSecondary);
     if ('storePrimaryEmail' in payload) payload.storePrimaryEmail = normalizeEmail(payload.storePrimaryEmail);
@@ -259,8 +260,8 @@ const updateSettings = async (req, res, next) => {
     if ('storeMapLink' in payload) payload.storeMapLink = normalizeString(payload.storeMapLink);
     if ('currency' in payload && typeof payload.currency === 'string') payload.currency = payload.currency.trim().toUpperCase();
     if ('adminUser' in payload && typeof payload.adminUser === 'string') payload.adminUser = payload.adminUser.trim().toLowerCase();
-    if ('adminDisplayName' in payload) payload.adminDisplayName = normalizeString(payload.adminDisplayName);
-    if ('adminFullName' in payload) payload.adminFullName = normalizeString(payload.adminFullName);
+    if ('adminDisplayName' in payload) payload.adminDisplayName = normalizeHumanReadable(payload.adminDisplayName);
+    if ('adminFullName' in payload) payload.adminFullName = normalizeHumanReadable(payload.adminFullName);
     if ('adminContactNumber' in payload && typeof payload.adminContactNumber === 'string') payload.adminContactNumber = payload.adminContactNumber.replace(/\D/g, '').slice(0, 11);
     if ('avatar' in payload) payload.avatar = normalizeString(payload.avatar);
 

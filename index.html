@@ -8,6 +8,15 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <title>Tableria La Confianza</title>
+    <script>
+      (function () {
+        try {
+          document.documentElement.classList.toggle('dark', localStorage.getItem('tlc-theme-preference') === 'dark');
+        } catch (_) {
+          // Keep the default light theme when browser storage is unavailable.
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

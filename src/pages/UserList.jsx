@@ -2,12 +2,15 @@ import React, { useMemo, useRef, useState } from 'react';
 import Pagination from '../components/Pagination';
 import ArchiveIcon from '../components/ArchiveIcon';
 import EditIcon from '../components/EditIcon';
+import TableActionButton from '../components/TableActionButton';
 import { showToast } from '../utils/toastHelper';
 import { getPageLoadError, showPageLoadError } from '../utils/pageLoadError';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
 import { ROLES, roleNames } from '../constants/roles';
 import { listUsersApi, registerApi, updateUserByUsernameApi } from '../services/authApi';
+import { normalizeHumanReadable } from '../utils/textNormalization';
+import { formatUserLastLogin } from '../utils/userLastLogin';
 
 const PASSWORD_RULE = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{8,}$/;
 const EMAIL_RULE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -77,7 +80,7 @@ const UserList = () => {
 
     // Pagination
     const [currentPage, setCurrentPage] = useState(1);
-    const itemsPerPage = 15;
+    const [itemsPerPage, setItemsPerPage] = useState(10);
 
     React.useEffect(() => {
         const timeoutId = window.setTimeout(() => {
@@ -204,7 +207,7 @@ const UserList = () => {
             role: user.role || ROLES.CASHIER,
             isPrimarySuperAdmin: Boolean(user.isPrimarySuperAdmin),
             status: user.isActive === false ? 'Inactive' : 'Active',
-            lastLogin: user.lastLogin ? new Date(user.lastLogin).toLocaleString() : 'Never',
+            lastLogin: formatUserLastLogin(user.lastLogin),
             isArchived: user.isActive === false,
         }));
     };
@@ -506,8 +509,8 @@ const UserList = () => {
                 let response;
                 try {
                     response = await registerApi({
-                        name: formData.name,
-                        displayName: normalizedDisplayName,
+                        name: normalizeHumanReadable(formData.name),
+                        displayName: normalizeHumanReadable(normalizedDisplayName),
                         username: formData.username,
                         email: normalizedEmail,
                         phone: formData.phone,
@@ -601,8 +604,8 @@ const UserList = () => {
                 try {
                     const normalizedDisplayName = (formData.displayName || '').trim() || formData.name.trim();
                     const response = await updateUserByUsernameApi(selectedUser.username, {
-                        name: formData.name,
-                        displayName: normalizedDisplayName,
+                        name: normalizeHumanReadable(formData.name),
+                        displayName: normalizeHumanReadable(normalizedDisplayName),
                         username: formData.username,
                         email: normalizedEmail,
                         phone: formData.phone,
@@ -625,6 +628,7 @@ const UserList = () => {
                             applyAuthenticatedSession({
                                 role: updatedUser.role,
                                 name: updatedUser.displayName || updatedUser.name,
+                                fullName: updatedUser.name,
                                 avatar: updatedUser.avatarUrl || '',
                                 username: updatedUser.username,
                                 userId: updatedUserId,
@@ -666,8 +670,8 @@ const UserList = () => {
 
                         return {
                             ...user,
-                            name: formData.name,
-                            displayName: (formData.displayName || '').trim() || formData.name,
+                            name: normalizeHumanReadable(formData.name),
+                            displayName: normalizeHumanReadable(formData.displayName) || normalizeHumanReadable(formData.name),
                             username: formData.username,
                             email: normalizedEmail,
                             phone: formData.phone || '',
@@ -770,7 +774,7 @@ const UserList = () => {
                 {/* Header Area */}
                 <div className="relative z-20 p-4 sm:p-5 flex items-center justify-between md:shrink-0">
                     <div>
-                        <p className="text-3xl md:text-4xl font-bold text-gray-900 dark:text-white leading-tight">User Management</p>
+                        <p className="text-3xl md:text-4xl font-semibold tracking-tight text-gray-900 leading-tight">User Management</p>
                         <p className="text-gray-500 dark:text-gray-400 text-[11px] md:text-xs font-medium mt-0.5">Manage system access and roles</p>
                     </div>
                 </div>
@@ -850,7 +854,7 @@ const UserList = () => {
                                 <th className="w-60 px-6 py-3 text-[11px] font-semibold text-center border border-gray-700">Name</th>
                                 <th className="w-57.5 px-6 py-3 text-[11px] font-semibold text-left border border-gray-700">Contact Info</th>
                                 <th className="w-40 px-6 py-3 text-[11px] font-semibold text-center border border-gray-700">Role</th>
-                                <th className="w-30 px-6 py-3 text-[11px] font-semibold text-center border border-gray-700">Status</th>
+                                <th className="w-30 whitespace-nowrap px-6 py-3 text-[11px] font-semibold text-center border border-gray-700">Account Status</th>
                                 <th className="w-45 px-6 py-3 text-[11px] font-semibold text-center border border-gray-700">Last Login</th>
                                 <th className="w-42.5 px-6 py-3 text-[11px] font-semibold text-center border border-gray-700">Actions</th>
                             </tr>
@@ -973,38 +977,36 @@ const UserList = () => {
                                             <div className="flex items-center justify-center gap-2">
                                                 {(!user.isPrimarySuperAdmin && (user.role !== ROLES.SUPER_ADMIN || isPrimarySuperAdmin) && !showArchived) && (
                                                     <>
-                                                        <button 
+                                                        <TableActionButton
                                                             onClick={() => handleOpenEdit(user)}
                                                             disabled={!isBrowserOnline}
-                                                            title="Edit"
+                                                            label={isBrowserOnline ? 'Edit' : 'Editing requires a connection'}
                                                             aria-label={`Edit ${user.name}`}
-                                                            className="group/btn inline-flex shrink-0 items-center rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-gray-600 transition-all hover:bg-gray-100 hover:text-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
                                                         >
                                                             <EditIcon />
-                                                            <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap text-[10px] font-semibold opacity-0 transition-all duration-200 group-hover/btn:ml-1 group-hover/btn:max-w-12 group-hover/btn:opacity-100">Edit</span>
-                                                        </button>
-                                                        <button
+                                                        </TableActionButton>
+                                                        <TableActionButton
                                                             onClick={() => toggleArchive(user)}
                                                             disabled={!isBrowserOnline}
-                                                            className="group/btn inline-flex items-center rounded-lg transition-all bg-orange-50 dark:bg-orange-900/20 text-orange-600 dark:text-orange-400 hover:bg-orange-100 dark:hover:bg-orange-900/40 px-2 py-1.5 disabled:cursor-not-allowed disabled:opacity-50"
-                                                            title="Archive"
+                                                            variant="destructive"
+                                                            label={isBrowserOnline ? 'Archive' : 'Archiving requires a connection'}
                                                             aria-label={`Archive ${user.name}`}
                                                         >
                                                             <ArchiveIcon />
-                                                            <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 text-[10px] font-semibold group-hover/btn:ml-1 group-hover/btn:max-w-20 group-hover/btn:opacity-100">Archive</span>
-                                                        </button>
+                                                        </TableActionButton>
                                                 </>
                                             )}
                                                 {(!user.isPrimarySuperAdmin && user.role !== ROLES.SUPER_ADMIN && showArchived) && (
                                                     <>
-                                                        <button
+                                                        <TableActionButton
                                                             onClick={() => toggleArchive(user)}
                                                             disabled={!isBrowserOnline}
-                                                            className="group/btn inline-flex items-center rounded-lg transition-all bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 px-2 py-1.5 disabled:cursor-not-allowed disabled:opacity-50"
+                                                            variant="positive"
+                                                            label={isBrowserOnline ? 'Restore' : 'Restoring requires a connection'}
+                                                            aria-label={`Restore ${user.name}`}
                                                         >
                                                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-                                                            <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 text-[10px] font-semibold group-hover/btn:ml-1 group-hover/btn:max-w-20 group-hover/btn:opacity-100">Restore</span>
-                                                        </button>
+                                                        </TableActionButton>
                                                     </>
                                                 )}
                                             </div>
@@ -1021,7 +1023,7 @@ const UserList = () => {
                         <div className="text-xs text-gray-500 dark:text-gray-400 font-medium">
                             Showing <span className="font-semibold text-gray-900 dark:text-white">{currentFilteredUsers.length === 0 ? 0 : indexOfFirstItem + 1}</span> to <span className="font-semibold text-gray-900 dark:text-white">{Math.min(indexOfLastItem, currentFilteredUsers.length)}</span> of <span className="font-semibold text-gray-900 dark:text-white">{currentFilteredUsers.length}</span> {showArchived ? 'archived users' : 'active users'}
                         </div>
-                        <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} />
+                        <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} pageSize={itemsPerPage} onPageSizeChange={(pageSize) => { setItemsPerPage(pageSize); setCurrentPage(1); }} />
                 </div>
             </div>
             </div>
@@ -1073,6 +1075,7 @@ const UserList = () => {
                                                 setFormData({...formData, name: val});
                                             }
                                         }}
+                                        onBlur={e => setFormData((prev) => ({ ...prev, name: normalizeHumanReadable(e.target.value) }))}
                                         className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
                                         placeholder="John Doe"
                                     />
@@ -1091,6 +1094,7 @@ const UserList = () => {
                                             setFieldErrors(prev => ({ ...prev, displayName: '' }));
                                             setFormData({ ...formData, displayName: e.target.value });
                                         }}
+                                        onBlur={e => setFormData((prev) => ({ ...prev, displayName: normalizeHumanReadable(e.target.value) }))}
                                         className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
                                         placeholder="Name shown in dashboard and logs"
                                     />

@@ -186,6 +186,7 @@ const Login = ({ onLogin }) => {
         applyAuthenticatedSession({
           role: backendRole,
           name: backendName,
+          fullName: backendFullName,
           avatar: resolvedAvatar,
           username: response.user.username || '',
           userId: String(response.user.id || ''),
@@ -254,33 +255,33 @@ const Login = ({ onLogin }) => {
   }, [needsPin, isLoading]);
    
   return (
-    <div className="relative flex min-h-screen items-center justify-center bg-gradient-to-br from-[#111827] via-slate-900 to-[#0f1419] p-4 overflow-hidden">
+    <div className="login-page relative flex min-h-screen items-center justify-center bg-gradient-to-br from-[#111827] via-slate-900 to-[#0f1419] p-4 overflow-hidden">
       {/* Header Date Time Display */}
       <div className="absolute top-6 left-0 right-0 z-20 flex justify-center">
-         <div className="bg-white/10 backdrop-blur-md border border-white/10 px-6 py-2 rounded-full shadow-lg">
+         <div className="login-date-pill bg-white/10 backdrop-blur-md border border-white/10 px-6 py-2 rounded-full shadow-lg">
             <DateTimeDisplay className="text-center" dateClassName="text-white font-medium" timeClassName="text-gray-300 font-normal" oneLine={true} />
          </div>
       </div>
 
       {/* Background Decor */}
-      <div className="absolute top-0 left-0 w-full h-full overflow-hidden z-0 pointer-events-none">
+      <div className="login-page-decor absolute top-0 left-0 w-full h-full overflow-hidden z-0 pointer-events-none">
         <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-100/10 rounded-full mix-blend-overlay filter blur-3xl opacity-30 animate-blob"></div>
         <div className="absolute top-[-10%] right-[-10%] w-[40%] h-[40%] bg-indigo-100/10 rounded-full mix-blend-overlay filter blur-3xl opacity-30 animate-blob animation-delay-2000"></div>
         <div className="absolute bottom-[-10%] left-[20%] w-[40%] h-[40%] bg-purple-100/10 rounded-full mix-blend-overlay filter blur-3xl opacity-30 animate-blob animation-delay-4000"></div>
       </div>
 
-      <div className={`flex w-full max-w-4xl overflow-hidden rounded-2xl bg-white shadow-2xl z-10 transition-transform duration-300 ${errorShake ? 'animate-shake' : ''}`}>
-        <div className="w-full p-6 md:w-[40%] flex flex-col justify-center relative">
+      <div className={`login-card flex w-full max-w-4xl overflow-hidden rounded-2xl bg-white shadow-2xl z-10 transition-transform duration-300 ${errorShake ? 'animate-shake' : ''}`}>
+        <div className="login-panel w-full p-6 md:w-[40%] flex flex-col justify-center relative">
           
           <div className="mb-4 text-center mt-6">
             <div className="mx-auto mb-2 h-14 w-14 hover:scale-105 transition-transform duration-500 cursor-pointer">
                 <img src={logo} alt="Logo" className="h-full w-full object-contain drop-shadow-sm rounded-full" />
             </div>
-            <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Welcome Back</h2>
-            <p className="text-xs font-medium text-gray-500 mt-1 mb-3">Inventory & Point of Sale Management System</p>
+            <h2 className="login-title text-2xl font-semibold text-gray-900 tracking-tight">Welcome Back</h2>
+            <p className="login-subtitle text-xs font-medium text-gray-500 mt-1 mb-3">Inventory & Point of Sale Management System</p>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-3" autoComplete="off">
+          <form onSubmit={handleSubmit} className="space-y-3" autoComplete="on">
             {!showForgot && (
               <>
             {!needsPin && (
@@ -291,19 +292,19 @@ const Login = ({ onLogin }) => {
                 id="username"
                 ref={usernameInputRef}
                 value={email}
-                autoComplete="off"
+                autoComplete="username"
                 onChange={(e) => setEmail(e.target.value)}
-                className="peer block w-full border border-gray-400 bg-transparent py-2 pl-10 pr-4 text-sm font-medium text-gray-900 rounded-md focus:border-gray-900 focus:outline-none focus:ring-0 placeholder-transparent"
-                placeholder="Username"
+                className="login-input peer block w-full border border-gray-400 bg-transparent py-2 pl-10 pr-4 text-sm font-medium text-gray-900 rounded-md focus:border-gray-900 focus:outline-none focus:ring-0 placeholder-transparent"
+                placeholder=" "
                 required
               />
               <label 
                 htmlFor="username" 
-                className="absolute left-10 top-0 z-10 origin-[0] -translate-y-1/2 scale-75 transform bg-white px-1 text-xs text-gray-400 duration-300 peer-placeholder-shown:top-1/2 peer-placeholder-shown:-translate-y-1/2 peer-placeholder-shown:scale-100 peer-focus:top-0 peer-focus:-translate-y-1/2 peer-focus:scale-75 peer-focus:text-gray-900"
+                className="login-input-label absolute left-10 top-0 z-10 origin-[0] -translate-y-1/2 scale-75 transform bg-white px-1 text-xs text-gray-400 duration-300 peer-placeholder-shown:top-1/2 peer-placeholder-shown:-translate-y-1/2 peer-placeholder-shown:scale-100 peer-focus:top-0 peer-focus:-translate-y-1/2 peer-focus:scale-75 peer-focus:text-gray-900"
               >
                 Username or Employee ID
               </label>
-              <div className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 peer-focus:text-gray-900 transition-colors">
+              <div className="login-input-icon absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 peer-focus:text-gray-900 transition-colors">
                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="h-5 w-5">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z" />
                 </svg>
@@ -315,19 +316,19 @@ const Login = ({ onLogin }) => {
                 type={showPassword ? 'text' : 'password'}
                 id="password"
                 value={password}
-                autoComplete="new-password"
+                autoComplete="current-password"
                 onChange={(e) => setPassword(e.target.value)}
-                className="peer block w-full border border-gray-400 bg-transparent py-2 pl-10 pr-10 text-sm font-medium text-gray-900 rounded-md focus:border-gray-900 focus:outline-none focus:ring-0 placeholder-transparent"
-                placeholder="Password"
+                className="login-input peer block w-full border border-gray-400 bg-transparent py-2 pl-10 pr-10 text-sm font-medium text-gray-900 rounded-md focus:border-gray-900 focus:outline-none focus:ring-0 placeholder-transparent"
+                placeholder=" "
                 required
               />
               <label 
                 htmlFor="password" 
-                className="absolute left-10 top-0 z-10 origin-[0] -translate-y-1/2 scale-75 transform bg-white px-1 text-xs text-gray-400 duration-300 peer-placeholder-shown:top-1/2 peer-placeholder-shown:-translate-y-1/2 peer-placeholder-shown:scale-100 peer-focus:top-0 peer-focus:-translate-y-1/2 peer-focus:scale-75 peer-focus:text-gray-900"
+                className="login-input-label absolute left-10 top-0 z-10 origin-[0] -translate-y-1/2 scale-75 transform bg-white px-1 text-xs text-gray-400 duration-300 peer-placeholder-shown:top-1/2 peer-placeholder-shown:-translate-y-1/2 peer-placeholder-shown:scale-100 peer-focus:top-0 peer-focus:-translate-y-1/2 peer-focus:scale-75 peer-focus:text-gray-900"
               >
                 Password
               </label>
-              <div className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 peer-focus:text-gray-900 transition-colors">
+              <div className="login-input-icon absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 peer-focus:text-gray-900 transition-colors">
                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="h-5 w-5">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z" />
                 </svg>
@@ -335,7 +336,7 @@ const Login = ({ onLogin }) => {
               <button 
                 type="button" 
                 onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-900 transition-colors cursor-pointer outline-none"
+                className="login-password-toggle absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-900 transition-colors cursor-pointer outline-none"
               >
                 {showPassword ? <EyeOffIcon /> : <EyeIcon />}
               </button>
@@ -409,7 +410,7 @@ const Login = ({ onLogin }) => {
                     }
                   }}
                   ref={el => inputsRef.current[i] = el}
-                  className="w-10 h-10 text-center border border-gray-400 rounded-md text-base font-semibold text-gray-900 bg-white focus:border-gray-900 focus:outline-none"
+                  className="login-pin-input w-10 h-10 text-center border border-gray-400 rounded-md text-base font-semibold text-gray-900 bg-white focus:border-gray-900 focus:outline-none"
                   required
                 />
               ))}
@@ -420,7 +421,7 @@ const Login = ({ onLogin }) => {
               <div className="mb-4 text-right text-xs">
                 <button
                   type="button"
-                  className="group relative text-gray-500 hover:underline hover:text-black"
+                  className="login-forgot-link group relative text-gray-500 hover:underline hover:text-black"
                   onClick={() => { setForgotType(needsPin ? 'pin' : 'password'); setShowForgot(true); }}
                 >
                   {needsPin ? 'Forgot PIN?' : 'Forgot password?'}
@@ -434,7 +435,7 @@ const Login = ({ onLogin }) => {
               <button
                 type="submit"
                 disabled={needsPin || isLoading || cooldown}
-                className={`w-full h-10 rounded-xl text-sm font-semibold tracking-wide mt-2 flex items-center justify-center gap-2 relative overflow-hidden ${(needsPin && !isLoading) ? 'bg-transparent text-black shadow-none cursor-default' : 'bg-[#111827] text-white shadow-lg transition-all duration-300'} ${(!needsPin && !isLoading) ? 'hover:opacity-90 transform active:scale-95 hover:-translate-y-0.5' : ''}`}
+                className={`login-primary-action w-full h-10 rounded-xl text-sm font-semibold tracking-wide mt-2 flex items-center justify-center gap-2 relative overflow-hidden ${(needsPin && !isLoading) ? 'bg-transparent text-black shadow-none cursor-default' : 'bg-[#111827] text-white shadow-lg transition-all duration-300'} ${(!needsPin && !isLoading) ? 'hover:opacity-90 transform active:scale-95 hover:-translate-y-0.5' : ''}`}
               >
                 {isLoading ? (
                     <>
@@ -486,16 +487,16 @@ const Login = ({ onLogin }) => {
 
           {/* forgot password/pin panel */}
           {showForgot && (
-            <div className="mb-6 rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
-              <div className="h-1.5 bg-linear-to-r from-gray-700 to-black"></div>
+            <div className="login-reset-panel mb-6 rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+              <div className="login-reset-accent h-px bg-linear-to-r from-gray-700 to-black"></div>
               <div className="p-4">
                 <div className="flex items-start gap-2 mb-3">
-                  <div className="p-1.5 rounded-lg bg-gray-100 text-gray-900 shrink-0">
+                  <div className="login-reset-icon p-1.5 rounded-lg bg-gray-100 text-gray-900 shrink-0">
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8"></path></svg>
                   </div>
                   <div>
-                    <h2 className="text-sm font-semibold text-gray-900">Reset {forgotType === 'password' ? 'Password' : 'PIN'}</h2>
-                    <p className="text-xs text-gray-600 mt-0.5">
+                    <h2 className="login-reset-title text-sm font-semibold text-gray-900">Reset {forgotType === 'password' ? 'Password' : 'PIN'}</h2>
+                    <p className="login-reset-description text-xs text-gray-600 mt-0.5">
                       {forgotType === 'password'
                         ? 'Enter your registered account email. A reset link will be sent to that same email.'
                         : 'Enter your registered account email. PIN reset instructions will be sent to that same email.'}
@@ -512,21 +513,21 @@ const Login = ({ onLogin }) => {
                     placeholder="Enter registered email"
                     value={forgotEmail}
                     onChange={e => setForgotEmail(e.target.value)}
-                    className="w-full pl-10 pr-3 py-2.5 text-sm rounded-lg border border-gray-300 focus:border-gray-900 focus:ring-2 focus:ring-gray-200 outline-none"
+                    className="login-reset-input w-full pl-10 pr-3 py-2.5 text-sm rounded-lg border border-gray-300 focus:border-gray-900 focus:ring-2 focus:ring-gray-200 outline-none"
                   />
                 </div>
 
                 <div className="flex justify-between items-center gap-2">
                   <button
                     type="button"
-                    className="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-600 hover:bg-gray-200 transition-colors"
+                    className="login-reset-secondary px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-600 transition-colors"
                     onClick={handleForgotBack}
                   >
                     {forgotType === 'pin' ? 'Back to PIN' : 'Back to Sign In'}
                   </button>
                   <button
                     type="button"
-                    className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-gray-900 hover:opacity-90 transition-opacity disabled:opacity-60 disabled:cursor-not-allowed"
+                    className="login-reset-primary px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-gray-900 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                     disabled={isLoading}
                     onClick={handleForgotSubmit}
                   >
@@ -537,13 +538,13 @@ const Login = ({ onLogin }) => {
             </div>
           )}
 
-          <div className="mt-8 pt-6 border-t border-gray-100">
+          <div className="login-contact-area mt-8 pt-6 border-t border-gray-100">
             <div className="flex justify-center space-x-8">
               <a
                 href={mapLink}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="group relative flex h-10 w-10 items-center justify-center rounded-full bg-blue-50 text-blue-600 shadow-sm transition-all duration-300 hover:bg-blue-100 hover:scale-110"
+                className="login-contact-action group relative flex h-10 w-10 items-center justify-center rounded-full bg-blue-50 text-blue-600 shadow-sm transition-colors duration-200 hover:bg-blue-100"
               >
                 <div className="pointer-events-none absolute bottom-full left-1/2 mb-2 w-max -translate-x-1/2 rounded bg-gray-900 px-2 py-1 text-[10px] font-medium text-white opacity-0 shadow-md shadow-indigo-500/20 transition-all duration-300 group-hover:opacity-100 group-hover:translate-y-0 translate-y-1">
                   View Location
@@ -557,7 +558,7 @@ const Login = ({ onLogin }) => {
 
               <div 
                 onClick={() => toggleTooltip('email')}
-                className="group relative flex h-10 w-10 cursor-pointer items-center justify-center rounded-full bg-red-50 text-red-600 shadow-sm transition-all duration-300 hover:bg-red-100 hover:scale-110"
+                className="login-contact-action group relative flex h-10 w-10 cursor-pointer items-center justify-center rounded-full bg-red-50 text-red-600 shadow-sm transition-colors duration-200 hover:bg-red-100"
               >
                 <div className={`absolute bottom-full left-1/2 mb-2 w-max -translate-x-1/2 rounded bg-gray-900 px-2 py-1.5 text-center text-[10px] font-medium text-white shadow-md shadow-indigo-500/20 transition-all duration-300 ${activeTooltip === 'email' ? 'opacity-100 translate-y-0 z-10' : 'opacity-0 translate-y-1 pointer-events-none group-hover:opacity-100 group-hover:translate-y-0 group-hover:pointer-events-auto'}`}>
                   <p>{email1}</p>
@@ -571,7 +572,7 @@ const Login = ({ onLogin }) => {
 
               <div 
                 onClick={() => toggleTooltip('phone')}
-                className="group relative flex h-10 w-10 cursor-pointer items-center justify-center rounded-full bg-green-50 text-green-600 shadow-sm transition-all duration-300 hover:bg-green-100 hover:scale-110"
+                className="login-contact-action group relative flex h-10 w-10 cursor-pointer items-center justify-center rounded-full bg-green-50 text-green-600 shadow-sm transition-colors duration-200 hover:bg-green-100"
               >
                 <div className={`absolute bottom-full left-1/2 mb-2 w-max -translate-x-1/2 rounded bg-gray-900 px-2 py-1.5 text-center text-[10px] font-medium text-white shadow-md shadow-indigo-500/20 transition-all duration-300 ${activeTooltip === 'phone' ? 'opacity-100 translate-y-0 z-10' : 'opacity-0 translate-y-1 pointer-events-none group-hover:opacity-100 group-hover:translate-y-0 group-hover:pointer-events-auto'}`}>
                   {tel && <p>Tel: {tel}</p>}
@@ -585,12 +586,12 @@ const Login = ({ onLogin }) => {
             </div>
           </div>
         </div>
-        <div className="hidden md:w-[60%] md:block relative overflow-hidden group">
+        <div className="login-image-panel hidden md:w-[60%] md:block relative overflow-hidden group">
           {/* Overlay Effect for "Cinematic" look */}
-          <div className="absolute inset-0 bg-gradient-to-t from-gray-900/10 via-transparent to-transparent z-10 pointer-events-none"></div>
+          <div className="login-image-overlay absolute inset-0 bg-gradient-to-t from-gray-900/10 via-transparent to-transparent z-10 pointer-events-none"></div>
           
           {/* Smooth Fade Transition from Form */}
-          <div className="absolute top-0 left-0 h-full w-16 bg-gradient-to-r from-white via-white/50 to-transparent z-20 pointer-events-none"></div>
+          <div className="login-image-fade absolute top-0 left-0 h-full w-12 bg-gradient-to-r from-white/85 via-white/25 to-transparent z-20 pointer-events-none"></div>
 
           {images.map((img, index) => (
             <div
@@ -612,7 +613,7 @@ const Login = ({ onLogin }) => {
       </div>
 
       {/* Footer */}
-      <div className="absolute bottom-4 w-full text-center z-0 pointer-events-none">
+      <div className="login-footer absolute bottom-4 w-full text-center z-0 pointer-events-none">
         <div className="flex flex-col items-center justify-center space-y-1 opacity-60">
              <p className="text-[10px] font-semibold text-gray-100 tracking-[0.2em] ">
                 &copy; 2026 Tableria La Confianza Co., Inc.

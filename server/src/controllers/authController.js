@@ -6,6 +6,7 @@ const { sendResetEmail, sendAccountCredentialsEmail } = require('../services/ema
 const { writeActivityLog } = require('../services/logService');
 const { revokeRealtimeSession } = require('../services/realtimeService');
 const { getJwtSecret } = require('../config/security');
+const { normalizeHumanReadable } = require('../../../shared/textNormalization.cjs');
 
 const RESET_RESPONSE_MESSAGE = 'If the account exists, a reset link has been sent.';
 
@@ -222,10 +223,10 @@ const updateMyProfile = async (req, res, next) => {
     }
 
     const nextName = typeof req.body?.name === 'string' && req.body.name.trim()
-      ? req.body.name.trim()
+      ? normalizeHumanReadable(req.body.name)
       : user.name;
     const nextDisplayName = req.body?.displayName !== undefined
-      ? normalizeTrimmed(req.body.displayName)
+      ? normalizeHumanReadable(req.body.displayName)
       : user.displayName;
     const nextUsername = req.body?.username ? normalizeValue(req.body.username) : user.username;
     const nextEmail = req.body?.email ? normalizeValue(req.body.email) : user.email;
@@ -404,10 +405,10 @@ const updateUserByUsername = async (req, res, next) => {
     }
 
     const nextName = typeof req.body?.name === 'string' && req.body.name.trim()
-      ? req.body.name.trim()
+      ? normalizeHumanReadable(req.body.name)
       : user.name;
     const nextDisplayName = req.body?.displayName !== undefined
-      ? normalizeTrimmed(req.body.displayName)
+      ? normalizeHumanReadable(req.body.displayName)
       : user.displayName;
 
     user.name = nextName;
@@ -672,8 +673,8 @@ const register = async (req, res, next) => {
     }
 
     const user = await User.create({
-      name: String(name).trim(),
-      displayName: normalizeTrimmed(displayName) || String(name).trim(),
+      name: normalizeHumanReadable(name),
+      displayName: normalizeHumanReadable(displayName) || normalizeHumanReadable(name),
       username: normalizedUsername,
       email: normalizedEmail,
       phone: normalizedPhone,

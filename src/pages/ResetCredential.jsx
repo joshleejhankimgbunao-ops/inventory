@@ -138,17 +138,17 @@ const ResetCredential = ({ mode }) => {
   };
 
   return (
-    <div className="min-h-screen bg-[#111827] p-4 flex items-center justify-center">
-      <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl border border-gray-200">
-        <div className="px-6 pt-6 pb-4 border-b border-gray-100 text-center">
+    <div className="auth-reset-page min-h-screen bg-[#111827] p-4 flex items-center justify-center">
+      <div className="auth-reset-card w-full max-w-md rounded-2xl bg-white shadow-2xl border border-gray-200">
+        <div className="auth-reset-header px-6 pt-6 pb-4 border-b border-gray-100 text-center">
           <div className="mx-auto mb-2 h-12 w-12">
             <img src={logo} alt="Logo" className="h-full w-full object-contain rounded-full" />
           </div>
-          <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">{labels.title}</h2>
-          <p className="text-xs text-gray-600 mt-1">{labels.subtitle}</p>
+          <h2 className="auth-reset-title text-2xl font-semibold text-gray-900 tracking-tight">{labels.title}</h2>
+          <p className="auth-reset-description text-xs text-gray-600 mt-1">{labels.subtitle}</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 space-y-4" autoComplete="off">
+        <form onSubmit={handleSubmit} className="auth-reset-form p-6 space-y-4" autoComplete="off">
           {!token && (
             <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
               Invalid reset token. Please request a new reset link.
@@ -174,7 +174,7 @@ const ResetCredential = ({ mode }) => {
                   const validatedPin = getValidatedPinInput(nextValue);
                   setValue(validatedPin === null ? '' : validatedPin);
                 }}
-                className={`w-full rounded-lg border px-3 py-2 text-sm focus:ring-2 outline-none ${
+                className={`auth-reset-input w-full rounded-lg border px-3 py-2 text-sm focus:ring-2 outline-none ${
                   !isPinMode && value
                     ? (isPasswordValid ? 'border-green-300 focus:border-green-500 focus:ring-green-100' : 'border-rose-300 focus:border-rose-500 focus:ring-rose-100')
                     : 'border-gray-300 focus:border-gray-900 focus:ring-gray-200'
@@ -185,7 +185,7 @@ const ResetCredential = ({ mode }) => {
                 <button
                   type="button"
                   onClick={() => setShowNewPassword((visible) => !visible)}
-                  className="absolute inset-y-0 right-0 flex items-center px-3 text-gray-400 hover:text-gray-600 focus:outline-none"
+                  className="auth-reset-eye absolute inset-y-0 right-0 flex items-center px-3 text-gray-400 hover:text-gray-600 focus:outline-none"
                   aria-label={showNewPassword ? 'Hide new password' : 'Show new password'}
                 >
                   {showNewPassword ? <EyeOffIcon /> : <EyeIcon />}
@@ -231,7 +231,7 @@ const ResetCredential = ({ mode }) => {
                   const validatedPin = getValidatedPinInput(nextValue);
                   setConfirmValue(validatedPin === null ? '' : validatedPin);
                 }}
-                className={`w-full rounded-lg border px-3 py-2 text-sm focus:ring-2 outline-none ${
+                className={`auth-reset-input w-full rounded-lg border px-3 py-2 text-sm focus:ring-2 outline-none ${
                   passwordsDoNotMatch
                     ? 'border-rose-300 focus:border-rose-500 focus:ring-rose-100'
                     : 'border-gray-300 focus:border-gray-900 focus:ring-gray-200'
@@ -242,7 +242,7 @@ const ResetCredential = ({ mode }) => {
                 <button
                   type="button"
                   onClick={() => setShowConfirmPassword((visible) => !visible)}
-                  className="absolute inset-y-0 right-0 flex items-center px-3 text-gray-400 hover:text-gray-600 focus:outline-none"
+                  className="auth-reset-eye absolute inset-y-0 right-0 flex items-center px-3 text-gray-400 hover:text-gray-600 focus:outline-none"
                   aria-label={showConfirmPassword ? 'Hide confirm password' : 'Show confirm password'}
                 >
                   {showConfirmPassword ? <EyeOffIcon /> : <EyeIcon />}
@@ -255,13 +255,13 @@ const ResetCredential = ({ mode }) => {
           <button
             type="submit"
             disabled={isSubmitting || !canSubmit}
-            className="w-full h-10 rounded-xl bg-[#111827] text-white text-sm font-semibold disabled:opacity-60 disabled:cursor-not-allowed"
+            className="auth-reset-submit w-full h-10 rounded-xl bg-[#111827] text-white text-sm font-semibold disabled:opacity-60 disabled:cursor-not-allowed"
           >
             {isSubmitting ? 'Saving...' : labels.submit}
           </button>
 
           <div className="text-center pt-1">
-            <Link to="/login" className="text-xs text-gray-600 hover:text-gray-900 hover:underline">
+            <Link to="/login" className="auth-reset-back text-xs text-gray-600 hover:text-gray-900 hover:underline">
               Back to login
             </Link>
           </div>

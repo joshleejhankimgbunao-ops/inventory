@@ -1,11 +1,11 @@
 import React, { useState, useRef } from 'react';
-import { toast } from 'react-hot-toast';
 import { useLocation } from 'react-router-dom';
 import { showToast } from '../utils/toastHelper';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
 import { meApi, updateMyProfileApi, verifyCurrentPasswordApi, verifyCurrentPinApi } from '../services/authApi';
 import { getPasswordChecks, isValidPassword } from '../utils/passwordPolicy';
+import { normalizeHumanReadable } from '../utils/textNormalization';
 
 const normalizePhoneDigits = (value) => (value || '').replace(/\D/g, '').slice(0, 11);
 const PROFILE_CACHE_KEY = 'profile.cache.v1';
@@ -111,6 +111,7 @@ const Profile = () => {
         currentUserAvatar,
         currentAuthUsername,
         setCurrentUserName,
+        setCurrentUserFullName,
         setCurrentUserAvatar,
         mustChangeCredentials,
         setMustChangeCredentials,
@@ -578,8 +579,8 @@ const Profile = () => {
         let response;
         try {
             response = await updateMyProfileApi({
-                name: profileData.fullName.trim(),
-                displayName: nextDisplayName,
+                name: normalizeHumanReadable(profileData.fullName),
+                displayName: normalizeHumanReadable(nextDisplayName),
                 username: profileData.adminUser,
                 email: normalizedEmail,
                 phone: normalizedContactNumber,
@@ -609,6 +610,7 @@ const Profile = () => {
         );
 
         sessionStorage.setItem('userName', canonicalDisplayName);
+        sessionStorage.setItem('userFullName', updatedUser.name);
         sessionStorage.setItem('authUsername', updatedUser.username);
         if (updatedAvatar) {
             sessionStorage.setItem('userAvatar', updatedAvatar);
@@ -616,6 +618,7 @@ const Profile = () => {
             sessionStorage.removeItem('userAvatar');
         }
         setCurrentUserName(canonicalDisplayName);
+        setCurrentUserFullName(updatedUser.name);
         setCurrentUserAvatar(updatedAvatar || null);
         syncUserIdentityReferences(updatedUser);
 
@@ -710,8 +713,6 @@ const Profile = () => {
             
             const scaleFactor = size / 256; // Ratio between output and UI
             
-            // Visual Width/Height of image
-            const visualW = img.width * (256 / img.width) * zoom; // This is wrong if aspect ratio differs.
             // Let's assume object-cover logic:
             const aspect = img.width / img.height;
             let drawW, drawH;
@@ -907,7 +908,7 @@ const Profile = () => {
             
             {/* Header */}
             <div className="mb-4">
-                <p className="text-3xl md:text-4xl font-bold text-gray-900 leading-tight">My Profile</p>
+                <p className="text-3xl md:text-4xl font-semibold tracking-tight text-gray-900 leading-tight">My Profile</p>
                 <p className="text-gray-500 font-medium text-[11px] md:text-xs mt-1">Manage your personal information and security.</p>
             </div>
 
@@ -1028,7 +1029,7 @@ const Profile = () => {
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                     <div>
                                         <label className="block text-xs font-semibold text-gray-900 uppercase tracking-wide mb-2">Full Name</label>
-                                        <div className="flex items-center bg-gray-50 border border-gray-200 rounded-xl focus-within:ring-2 focus-within:ring-gray-900 focus-within:border-transparent transition-all">
+                                        <div className="flex items-center bg-gray-50 border border-gray-200 rounded-xl focus-within:border-slate-800 transition-colors">
                                             <div className="pl-3 pr-2 flex items-center pointer-events-none">
                                                 <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
                                             </div>
@@ -1036,6 +1037,7 @@ const Profile = () => {
                                                 type="text"
                                                 value={profileData.fullName || ''}
                                                 onChange={(e) => setProfileData({ ...profileData, fullName: e.target.value })}
+                                                onBlur={(e) => setProfileData((prev) => ({ ...prev, fullName: normalizeHumanReadable(e.target.value) }))}
                                                 className="w-full pr-4 py-2.5 bg-transparent rounded-xl text-sm text-gray-900 focus:ring-0 focus:outline-none border-0"
                                             />
                                         </div>
@@ -1044,7 +1046,7 @@ const Profile = () => {
 
                                     <div>
                                         <label className="block text-xs font-semibold text-gray-900 uppercase tracking-wide mb-2">Display Name</label>
-                                        <div className="flex items-center bg-gray-50 border border-gray-200 rounded-xl focus-within:ring-2 focus-within:ring-gray-900 focus-within:border-transparent transition-all">
+                                        <div className="flex items-center bg-gray-50 border border-gray-200 rounded-xl focus-within:border-slate-800 transition-colors">
                                             <div className="pl-3 pr-2 flex items-center pointer-events-none">
                                                 <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 11c1.657 0 3-1.343 3-3S13.657 5 12 5s-3 1.343-3 3 1.343 3 3 3zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"></path></svg>
                                             </div>
@@ -1052,6 +1054,7 @@ const Profile = () => {
                                                 type="text"
                                                 value={profileData.adminDisplayName || ''}
                                                 onChange={(e) => setProfileData({ ...profileData, adminDisplayName: e.target.value })}
+                                                onBlur={(e) => setProfileData((prev) => ({ ...prev, adminDisplayName: normalizeHumanReadable(e.target.value) }))}
                                                 disabled={userRole !== ROLES.SUPER_ADMIN}
                                                 className={`w-full pr-4 py-2.5 bg-transparent rounded-xl text-sm text-gray-900 focus:ring-0 focus:outline-none border-0 ${userRole !== ROLES.SUPER_ADMIN ? 'cursor-not-allowed text-gray-500' : ''}`}
                                             />
@@ -1065,7 +1068,7 @@ const Profile = () => {
 
                                     <div>
                                         <label className="block text-xs font-semibold text-gray-900 uppercase tracking-wide mb-2">Email Address</label>
-                                        <div className="flex items-center bg-gray-50 border border-gray-200 rounded-xl focus-within:ring-2 focus-within:ring-gray-900 focus-within:border-transparent transition-all">
+                                        <div className="flex items-center bg-gray-50 border border-gray-200 rounded-xl focus-within:border-slate-800 transition-colors">
                                             <div className="pl-3 pr-2 flex items-center pointer-events-none">
                                                 <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
                                             </div>
@@ -1081,7 +1084,7 @@ const Profile = () => {
 
                                     <div>
                                         <label className="block text-xs font-semibold text-gray-900 uppercase tracking-wide mb-2">Contact Number</label>
-                                        <div className="flex items-center bg-gray-50 border border-gray-200 rounded-xl focus-within:ring-2 focus-within:ring-gray-900 focus-within:border-transparent transition-all">
+                                        <div className="flex items-center bg-gray-50 border border-gray-200 rounded-xl focus-within:border-slate-800 transition-colors">
                                             <div className="pl-3 pr-2 flex items-center pointer-events-none">
                                                 <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 5a2 2 0 012-2h2.28a2 2 0 011.894 1.368l.69 2.071a2 2 0 01-.457 2.043l-1.35 1.35a16 16 0 006.586 6.586l1.35-1.35a2 2 0 012.043-.457l2.071.69A2 2 0 0121 18.72V21a2 2 0 01-2 2h-1C9.716 23 1 14.284 1 4V3a2 2 0 012-2z"></path></svg>
                                             </div>
@@ -1165,7 +1168,7 @@ const Profile = () => {
                                                     type="text"
                                                     value={profileData.adminUser}
                                                     onChange={(e) => setProfileData({ ...profileData, adminUser: e.target.value })}
-                                                    className="w-full pl-10 pr-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm text-gray-900 focus:ring-2 focus:ring-gray-900 focus:border-transparent outline-none transition-all"
+                                                    className="w-full pl-10 pr-4 py-2.5 bg-gray-100 border border-gray-200 rounded-xl text-sm text-gray-700 focus:border-slate-800 outline-none transition-colors"
                                                 />
                                             </div>
                                             <p className="text-[10px] text-gray-500 mt-1">This is your login username and cannot be changed later.</p>
@@ -1188,10 +1191,10 @@ const Profile = () => {
                                                     }}
                                                     onBlur={handleCurrentPasswordBlur}
                                                     placeholder="Enter current password"
-                                                    className={`w-full pl-10 pr-10 py-2.5 bg-white border rounded-xl text-sm text-gray-900 focus:ring-2 outline-none ${
+                                                    className={`w-full pl-10 pr-10 py-2.5 bg-gray-50 border rounded-xl text-sm text-gray-900 focus:border-slate-800 outline-none transition-colors ${
                                                         passwordVerifyState === 'valid'
-                                                            ? 'border-green-300 focus:ring-green-200'
-                                                            : 'border-gray-200 focus:ring-gray-900'
+                                                            ? 'border-green-300'
+                                                            : 'border-gray-200'
                                                     }`}
                                                 />
                                                 <button
@@ -1229,12 +1232,12 @@ const Profile = () => {
                                                     onChange={(e) => setProfileData({ ...profileData, adminPassword: e.target.value })}
                                                     disabled={!canEnterNewPassword}
                                                     placeholder={canEnterNewPassword ? 'Enter new password' : 'Verify current password first'}
-                                                    className={`w-full pl-10 pr-10 py-2.5 bg-white border rounded-xl text-sm text-gray-900 focus:ring-2 outline-none ${
+                                                    className={`w-full pl-10 pr-10 py-2.5 bg-gray-50 border rounded-xl text-sm text-gray-900 focus:border-slate-800 outline-none transition-colors disabled:bg-gray-100 disabled:text-gray-500 ${
                                                         profileData.adminPassword
                                                             ? allPasswordChecksMet
-                                                                ? 'border-green-300 focus:ring-green-200'
-                                                                : 'border-red-300 focus:ring-red-200'
-                                                            : 'border-gray-200 focus:ring-gray-900'
+                                                                ? 'border-green-300'
+                                                                : 'border-red-300'
+                                                            : 'border-gray-200'
                                                     } ${!canEnterNewPassword ? 'opacity-60 cursor-not-allowed' : ''}`}
                                                 />
                                                 <button
@@ -1294,13 +1297,13 @@ const Profile = () => {
                                                     onChange={(e) => setConfirmPassword(e.target.value)}
                                                     disabled={!canEnterNewPassword}
                                                     placeholder={canEnterNewPassword ? 'Confirm new password' : 'Verify current password first'}
-                                                    className={`w-full pl-10 pr-10 py-2.5 bg-white border ${
+                                                    className={`w-full pl-10 pr-10 py-2.5 bg-gray-50 border ${
                                                         confirmPassword
                                                             ? profileData.adminPassword === confirmPassword
-                                                                ? 'border-green-300 focus:ring-green-200'
-                                                                : 'border-red-300 focus:ring-red-200'
-                                                            : 'border-gray-200 focus:ring-gray-900'
-                                                    } rounded-xl text-sm text-gray-900 focus:ring-2 outline-none ${!canEnterNewPassword ? 'opacity-60 cursor-not-allowed' : ''}`}
+                                                                ? 'border-green-300'
+                                                                : 'border-red-300'
+                                                            : 'border-gray-200'
+                                                    } rounded-xl text-sm text-gray-900 focus:border-slate-800 outline-none transition-colors disabled:bg-gray-100 disabled:text-gray-500 ${!canEnterNewPassword ? 'opacity-60 cursor-not-allowed' : ''}`}
                                                 />
                                             </div>
                                             <p className="text-[10px] text-gray-500 mt-1">Re-type the new password exactly as above.</p>
@@ -1335,9 +1338,9 @@ const Profile = () => {
                                     maxLength={6}
                                     className={`w-full pl-10 pr-10 py-2.5 bg-gray-50 border ${
                                         pinVerifyState === 'valid'
-                                            ? 'border-green-300 focus:ring-green-200'
-                                            : 'border-gray-200 focus:ring-gray-900'
-                                    } rounded-xl text-sm font-semibold text-gray-900 focus:ring-2 outline-none`}
+                                            ? 'border-green-300'
+                                            : 'border-gray-200'
+                                    } rounded-xl text-sm font-semibold text-gray-900 focus:border-slate-800 outline-none transition-colors`}
                                 />
                                 <button
                                     type="button"
@@ -1373,7 +1376,7 @@ const Profile = () => {
                                     disabled={!canEnterNewPin}
                                     placeholder={canEnterNewPin ? 'Enter new PIN' : 'Verify current PIN first'}
                                     maxLength={6}
-                                    className={`w-full pl-10 pr-10 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-semibold text-gray-900 focus:ring-2 focus:ring-gray-900 outline-none ${!canEnterNewPin ? 'opacity-60 cursor-not-allowed' : ''}`}
+                                    className={`w-full pl-10 pr-10 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-semibold text-gray-900 focus:border-slate-800 outline-none transition-colors disabled:bg-gray-100 disabled:text-gray-500 ${!canEnterNewPin ? 'opacity-60 cursor-not-allowed' : ''}`}
                                 />
                                 <button
                                     type="button"
@@ -1406,10 +1409,10 @@ const Profile = () => {
                                     className={`w-full pl-10 pr-10 py-2.5 bg-gray-50 border ${
                                         confirmPin
                                             ? newPin === confirmPin
-                                                ? 'border-green-300 focus:ring-green-200'
-                                                : 'border-red-300 focus:ring-red-200'
-                                            : 'border-gray-200 focus:ring-gray-900'
-                                    } rounded-xl text-sm font-semibold text-gray-900 focus:ring-2 outline-none ${!canEnterNewPin ? 'opacity-60 cursor-not-allowed' : ''}`}
+                                                ? 'border-green-300'
+                                                : 'border-red-300'
+                                            : 'border-gray-200'
+                                    } rounded-xl text-sm font-semibold text-gray-900 focus:border-slate-800 outline-none transition-colors disabled:bg-gray-100 disabled:text-gray-500 ${!canEnterNewPin ? 'opacity-60 cursor-not-allowed' : ''}`}
                                 />
                             </div>
                             <p className="text-[10px] text-gray-500 mt-1">Re-type the new PIN for verification.</p>

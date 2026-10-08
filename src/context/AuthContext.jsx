@@ -1,9 +1,14 @@
-import React, { createContext, useState, useEffect, useContext } from 'react';
+import React, { createContext, useState, useEffect, useContext, useCallback, useRef } from 'react';
 import { ROLES, roleNames, canAccess } from '../constants/roles';
 import { getSettingsApi, updateSettingsApi } from '../services/settingsApi';
 import { meApi, updateMyPreferencesApi } from '../services/authApi';
 import { getAuthToken } from '../services/apiClient';
 import { subscribeRealtimeEvent } from '../services/realtimeClient';
+import {
+    applyThemePreference,
+    persistThemePreference,
+    readStoredThemePreference,
+} from '../utils/themePreference';
 
 const DEFAULT_APP_SETTINGS = {
     storeName: 'Tableria La Confianza Co., Inc.',
@@ -36,6 +41,7 @@ const DEFAULT_APP_SETTINGS = {
 };
 
 const DEFAULT_USER_PREFERENCES = {
+    darkMode: false,
     autoPrintReceipts: false,
 };
 
@@ -51,6 +57,7 @@ const mergeSettings = (incoming = {}) => ({
 const mergeUserPreferences = (incoming = {}) => ({
     ...DEFAULT_USER_PREFERENCES,
     ...(incoming || {}),
+    darkMode: Boolean(incoming?.darkMode),
     autoPrintReceipts: Boolean(incoming?.autoPrintReceipts),
 });
 
@@ -63,6 +70,8 @@ const AUTH_FALLBACK = {
     updateUserPreferences: async () => DEFAULT_USER_PREFERENCES,
     currentUserName: 'User',
     setCurrentUserName: () => {},
+    currentUserFullName: 'User',
+    setCurrentUserFullName: () => {},
     currentUserAvatar: null,
     setCurrentUserAvatar: () => {},
     currentAuthUsername: '',
@@ -87,6 +96,8 @@ const AUTH_FALLBACK = {
 
 const AuthContext = createContext(AUTH_FALLBACK);
 
+// This module intentionally exports the context hook alongside its provider.
+// eslint-disable-next-line react-refresh/only-export-components
 export const useAuth = () => {
     const context = useContext(AuthContext);
     if (!context) {
@@ -111,6 +122,7 @@ export const AuthProvider = ({ children }) => {
     const [userPreferences, setUserPreferences] = useState(DEFAULT_USER_PREFERENCES);
     const [isSettingsLoading, setIsSettingsLoading] = useState(true);
     const [isSessionHydrating, setIsSessionHydrating] = useState(true);
+    const [hasHydratedUserPreferences, setHasHydratedUserPreferences] = useState(false);
 
     useEffect(() => {
         let isMounted = true;
@@ -195,6 +207,10 @@ export const AuthProvider = ({ children }) => {
         const storedName = String(sessionStorage.getItem('userName') || '').trim();
         return storedName || (userRole === ROLES.CASHIER ? 'Cashier' : 'User');
     });
+    const [currentUserFullName, setCurrentUserFullName] = useState(() => {
+        const storedFullName = String(sessionStorage.getItem('userFullName') || '').trim();
+        return storedFullName || String(sessionStorage.getItem('userName') || '').trim() || 'User';
+    });
 
     // Preserve a usable fallback while the authenticated user is loading.
     useEffect(() => {
@@ -253,20 +269,46 @@ export const AuthProvider = ({ children }) => {
         }
     };
 
-    // 5. Dark Mode Effect
-    const [isDarkMode, setIsDarkMode] = useState(Boolean(DEFAULT_APP_SETTINGS.darkMode));
+    // 5. Theme preference: use the authenticated user's preference after hydration,
+    // with local storage only as the early-render cache that prevents a light flash.
+    const [isDarkModeState, setIsDarkModeState] = useState(() => readStoredThemePreference());
+    const isDarkModeRef = useRef(isDarkModeState);
+
+    const setThemeState = useCallback((nextDarkMode, { persist = true } = {}) => {
+        const normalizedDarkMode = Boolean(nextDarkMode);
+        isDarkModeRef.current = normalizedDarkMode;
+        setIsDarkModeState(normalizedDarkMode);
+        applyThemePreference(normalizedDarkMode);
+        if (persist) {
+            persistThemePreference(normalizedDarkMode);
+        }
+    }, []);
 
     useEffect(() => {
-        setIsDarkMode(Boolean(appSettings.darkMode));
-    }, [appSettings.darkMode]);
-    
+        applyThemePreference(isDarkModeState);
+    }, [isDarkModeState]);
+
     useEffect(() => {
-        if (isDarkMode) {
-            document.documentElement.classList.add('dark');
-        } else {
-            document.documentElement.classList.remove('dark');
-        }
-    }, [isDarkMode]);
+        if (!hasHydratedUserPreferences) return;
+        setThemeState(userPreferences.darkMode);
+    }, [hasHydratedUserPreferences, setThemeState, userPreferences.darkMode]);
+
+    const setIsDarkMode = (nextValue) => {
+        const previousDarkMode = isDarkModeRef.current;
+        const nextDarkMode = typeof nextValue === 'function'
+            ? Boolean(nextValue(previousDarkMode))
+            : Boolean(nextValue);
+
+        if (nextDarkMode === previousDarkMode) return;
+
+        setThemeState(nextDarkMode);
+        void updateUserPreferences({ darkMode: nextDarkMode }).catch(() => {
+            // Keep the UI, cache, and root class aligned with the reverted backend preference.
+            if (isDarkModeRef.current === nextDarkMode) {
+                setThemeState(previousDarkMode);
+            }
+        });
+    };
 
     // 6. Role helper exports
     const isSuperAdmin = () => userRole === ROLES.SUPER_ADMIN;
@@ -316,6 +358,7 @@ export const AuthProvider = ({ children }) => {
                 const backendAvatar = user.avatarUrl || user.avatar || '';
                 const mustRotateCredentials = Boolean(user.mustChangeCredentials);
                 setUserPreferences(mergeUserPreferences(user.preferences));
+                setHasHydratedUserPreferences(true);
 
                 if (username) {
                     sessionStorage.setItem('authUsername', username);
@@ -335,6 +378,8 @@ export const AuthProvider = ({ children }) => {
 
                 sessionStorage.setItem('userName', canonicalName);
                 setCurrentUserName(canonicalName);
+                sessionStorage.setItem('userFullName', backendName || canonicalName);
+                setCurrentUserFullName(backendName || canonicalName);
 
                 if (backendAvatar) {
                     sessionStorage.setItem('userAvatar', backendAvatar);
@@ -373,11 +418,13 @@ export const AuthProvider = ({ children }) => {
         return null;
     };
 
-    const applyAuthenticatedSession = ({ role, name, avatar, username, userId, preferences, mustChangeCredentials: mustChangeCredentialsOverride }) => {
+    const applyAuthenticatedSession = ({ role, name, fullName, avatar, username, userId, preferences, mustChangeCredentials: mustChangeCredentialsOverride }) => {
         const nextRole = role || userRole;
         const nextName = name || currentUserName;
+        const nextFullName = String(fullName || currentUserFullName || nextName || '').trim() || 'User';
         const nextMustChangeCredentials = Boolean(mustChangeCredentialsOverride);
         setUserPreferences(mergeUserPreferences(preferences));
+        setHasHydratedUserPreferences(true);
 
         if (typeof username === 'string') {
             sessionStorage.setItem('authUsername', username);
@@ -399,6 +446,9 @@ export const AuthProvider = ({ children }) => {
             sessionStorage.setItem('userName', name);
             setCurrentUserName(name);
         }
+
+        sessionStorage.setItem('userFullName', nextFullName);
+        setCurrentUserFullName(nextFullName);
 
         sessionStorage.setItem('mustChangeCredentials', nextMustChangeCredentials ? 'true' : 'false');
         setMustChangeCredentials(nextMustChangeCredentials);
@@ -427,17 +477,20 @@ export const AuthProvider = ({ children }) => {
     const clearAuthenticatedSession = () => {
         sessionStorage.removeItem('userRole');
         sessionStorage.removeItem('userName');
+        sessionStorage.removeItem('userFullName');
         sessionStorage.removeItem('userAvatar');
         sessionStorage.removeItem('authUsername');
         sessionStorage.removeItem('authUserId');
         sessionStorage.removeItem('mustChangeCredentials');
         setUserRole(ROLES.SUPER_ADMIN);
         setCurrentUserName('User');
+        setCurrentUserFullName('User');
         setCurrentUserAvatar(null);
         setCurrentAuthUsername('');
         setCurrentAuthUserId('');
         setMustChangeCredentials(false);
         setUserPreferences(DEFAULT_USER_PREFERENCES);
+        setHasHydratedUserPreferences(false);
         setAppSettings(DEFAULT_APP_SETTINGS);
     };
 
@@ -453,13 +506,15 @@ export const AuthProvider = ({ children }) => {
             updateUserPreferences,
             currentUserName,
             setCurrentUserName,
+            currentUserFullName,
+            setCurrentUserFullName,
             currentUserAvatar,
             setCurrentUserAvatar,
             currentAuthUsername,
             currentAuthUserId,
             mustChangeCredentials,
             setMustChangeCredentials,
-            isDarkMode,
+            isDarkMode: isDarkModeState,
             setIsDarkMode,
             isSettingsLoading,
             isSessionHydrating,

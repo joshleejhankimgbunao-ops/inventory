@@ -3,6 +3,7 @@ import { showToast } from '../utils/toastHelper';
 import { showPageLoadError } from '../utils/pageLoadError';
 import ArchiveIcon from '../components/ArchiveIcon';
 import EditIcon from '../components/EditIcon';
+import TableActionButton from '../components/TableActionButton';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
 import { createCategoryApi, updateCategoryApi } from '../services/inventoryApi';
@@ -20,12 +21,18 @@ import {
     preventInvalidWholeNumberPaste,
     sanitizeWholeNumberInput,
 } from '../utils/numericInput';
+import { normalizeHumanReadable } from '../utils/textNormalization';
 import {
     beginAutoSyncSave,
     endAutoSyncSave,
     excludeAutoSyncFromBulkSettings,
     persistAutoSyncImmediately,
 } from '../utils/autoSyncSetting';
+
+import {
+    excludeAutomaticBackupEnabledFromScheduleSave,
+    persistAutomaticBackupEnabledImmediately,
+} from '../utils/automaticBackupSetting';
 
 const Settings = () => {
     const { appSettings: initialSettings, updateSettings, userPreferences, updateUserPreferences, currentUserName, userRole, ROLES } = useAuth();
@@ -115,20 +122,6 @@ const Settings = () => {
     // State for Rule Creators
     const [newCategoryRule, setNewCategoryRule] = useState({ name: '', limit: '' });
     const [newProductRule, setNewProductRule] = useState({ code: '', limit: '' });
-
-    // Check for changes
-    const isModified = useMemo(() => {
-        if (!initialSettings) return false;
-        
-        // Reconstruct the baseline state
-        const baseline = { 
-            ...defaults, 
-            ...initialSettings,
-            stockRules: initialSettings.stockRules || { categories: {}, products: {} } 
-        };
-
-        return JSON.stringify(settings) !== JSON.stringify(baseline);
-    }, [settings, initialSettings, defaults]);
 
     const generalSettingKeys = useMemo(() => ([
         'storeName',
@@ -403,7 +396,7 @@ const Settings = () => {
         setIsCategoryLoading(true);
         try {
             await createCategoryApi({ 
-                name: newCategoryName.trim(),
+                name: normalizeHumanReadable(newCategoryName),
                 ...newCategoryRules,
                 sizeUnits: normalizeUnits(newCategoryRules.sizeUnits)
             });
@@ -430,7 +423,7 @@ const Settings = () => {
         setIsCategoryLoading(true);
         try {
             await updateCategoryApi(id, { 
-                name: updatedName.trim(),
+                name: normalizeHumanReadable(updatedName),
                 ...updatedRules,
                 sizeUnits: normalizeUnits(updatedRules.sizeUnits)
             });
@@ -521,10 +514,10 @@ const Settings = () => {
         automaticBackupSaveInFlightRef.current = true;
         setIsAutomaticBackupSaving(true);
         try {
+            const scheduleSettings = excludeAutomaticBackupEnabledFromScheduleSave(settings);
             const savedSettings = await updateSettings({
-                automaticBackupEnabled: Boolean(settings.automaticBackupEnabled),
-                automaticBackupIntervalDays: Number(settings.automaticBackupIntervalDays),
-                automaticBackupTime: settings.automaticBackupTime,
+                automaticBackupIntervalDays: Number(scheduleSettings.automaticBackupIntervalDays),
+                automaticBackupTime: scheduleSettings.automaticBackupTime,
             }, { partial: true, throwOnError: true });
 
             if (!savedSettings) {
@@ -541,6 +534,32 @@ const Settings = () => {
             );
         } catch (error) {
             showToast('Automatic Backup Failed', error.message || 'Unable to save automatic backup settings.', 'error');
+        } finally {
+            automaticBackupSaveInFlightRef.current = false;
+            setIsAutomaticBackupSaving(false);
+        }
+    };
+
+    const handleAutomaticBackupToggle = async () => {
+        if (automaticBackupSaveInFlightRef.current) return;
+
+        const previousEnabled = Boolean(settings.automaticBackupEnabled);
+        const nextEnabled = !previousEnabled;
+        automaticBackupSaveInFlightRef.current = true;
+        setIsAutomaticBackupSaving(true);
+        setSettings((previous) => ({ ...previous, automaticBackupEnabled: nextEnabled }));
+
+        try {
+            const savedEnabled = await persistAutomaticBackupEnabledImmediately(updateSettings, nextEnabled);
+            setSettings((previous) => ({ ...previous, automaticBackupEnabled: savedEnabled }));
+            showToast(
+                'Automatic Backup Updated',
+                savedEnabled ? 'Automatic backup schedule is active.' : 'Automatic backup schedule is disabled.',
+                'success',
+            );
+        } catch (error) {
+            setSettings((previous) => ({ ...previous, automaticBackupEnabled: previousEnabled }));
+            showToast('Automatic Backup Failed', error.message || 'Unable to save Automatic Backup. The previous setting was restored.', 'error');
         } finally {
             automaticBackupSaveInFlightRef.current = false;
             setIsAutomaticBackupSaving(false);
@@ -749,7 +768,7 @@ const Settings = () => {
             {/* Header */}
             <div className="relative z-20 bg-slate-200/50 p-4 sm:p-5 rounded-2xl shadow-inner border border-slate-300 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shrink-0">
                 <div className="min-w-0">
-                    <p className="text-3xl md:text-4xl font-bold text-gray-900 leading-tight">System Configuration</p>
+                    <p className="text-3xl md:text-4xl font-semibold tracking-tight text-gray-900 leading-tight">System Configuration</p>
                     <p className="text-gray-500 dark:text-gray-400 text-[11px] md:text-xs font-medium mt-0.5">Customize application behavior and preferences</p>
                 </div>
                 {activeTab === 'general' && (
@@ -964,7 +983,7 @@ const Settings = () => {
                                             {settings.desktopNotifications && 'Notification' in window && Notification.permission === 'granted' && (
                                                 <button 
                                                     onClick={() => {
-                                                        const notif = new Notification("Test Notification", {
+                                                        new Notification("Test Notification", {
                                                             body: "This is how alerts will appear!",
                                                             icon: "/vite.svg" 
                                                         });
@@ -1164,25 +1183,25 @@ const Settings = () => {
                        </div>
                    )}
                    {activeTab === 'categories' && (
-                       <div className="space-y-6 max-w-4xl mx-auto animate-in fade-in slide-in-from-right-4 duration-300">
+                       <div className="mx-auto max-w-4xl space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
                             <div>
-                               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+                               <div className="mb-4 flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
                                    <div>
-                                        <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-1">Product Categories</h3>
-                                        <p className="text-sm text-gray-500">Manage custom product categories for your inventory.</p>
+                                        <h3 className="mb-1 text-lg font-semibold text-gray-900 dark:text-white">Product Categories</h3>
+                                        <p className="text-sm text-slate-500">Manage custom product categories for your inventory.</p>
                                    </div>
                                     <button
                                         type="button"
                                         onClick={() => setIsCreateCategoryModalOpen(true)}
-                                        className="w-full sm:w-auto px-3 py-1.5 bg-gray-900 hover:bg-gray-800 dark:bg-white dark:hover:bg-gray-100 text-white dark:text-gray-900 rounded-lg text-xs font-semibold transition-all shadow-md flex items-center justify-center gap-1.5 hover:opacity-90 transform hover:-translate-y-0.5"
+                                        className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-400 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-100 sm:w-auto"
                                     >
                                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"></path></svg>
                                         Add Category
                                     </button>
                                </div>
 
-                               <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden mb-6">
-                                   <div className="p-5 border-b border-gray-100 dark:border-gray-700 bg-slate-50/50 dark:bg-gray-900/30">
+                               <div className="mb-6 overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
+                                   <div className="border-b border-gray-100 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
                                        <div className="flex items-center gap-3">
                                            <div className="relative flex-1 min-w-0 sm:flex-[0_1_78%]">
                                                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
@@ -1194,13 +1213,13 @@ const Settings = () => {
                                                    list="settings-category-search-suggestions"
                                                    onChange={(e) => setCategorySearchTerm(e.target.value)}
                                                    placeholder="Search categories..."
-                                                   className="w-full pl-10 pr-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl text-sm font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-400 outline-none text-gray-900 dark:text-white transition-shadow"
+                                                   className="w-full rounded-lg border border-gray-200 bg-white py-2 pl-9 pr-3 text-sm font-medium text-gray-900 outline-none transition-shadow focus:ring-2 focus:ring-slate-400 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
                                                />
                                            </div>
                                            <button
                                                type="button"
                                                onClick={() => setShowArchivedCategories(prev => !prev)}
-                                               className={`group shrink-0 inline-flex items-center rounded-xl border px-2.5 py-2.5 sm:ml-1 transition-all duration-300 ${showArchivedCategories ? 'border-gray-300 bg-gray-100 text-gray-700 dark:border-gray-500 dark:bg-gray-700 dark:text-gray-200' : 'border-orange-200 bg-orange-50 text-orange-600 dark:border-orange-800 dark:bg-orange-900/20 dark:text-orange-400'}`}
+                                               className={`group inline-flex shrink-0 items-center rounded-lg border px-2.5 py-2 transition-colors ${showArchivedCategories ? 'border-gray-300 bg-gray-100 text-gray-700 dark:border-gray-500 dark:bg-gray-700 dark:text-gray-200' : 'border-gray-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'}`}
                                                title={showArchivedCategories ? 'Back to Active Categories' : 'View Archived Categories'}
                                            >
                                                {showArchivedCategories ? (
@@ -1220,148 +1239,39 @@ const Settings = () => {
                                        </div>
                                    </div>
 
-                                   <ul className="divide-y divide-gray-50/50 dark:divide-gray-700/50 max-h-[500px] overflow-y-auto">
+                                   <ul className="max-h-[500px] divide-y divide-gray-200/80 overflow-y-auto dark:divide-gray-700/80">
                                        {filteredCustomCategories.length === 0 ? (
-                                            <li className="p-10 text-center flex flex-col items-center justify-center text-gray-500">
-                                                <div className="w-16 h-16 bg-gray-100 dark:bg-gray-800 rounded-full flex flex-col items-center justify-center mb-3">
+                                            <li className="px-4 py-10 text-center text-slate-500 dark:text-gray-400">
+                                                <div className="hidden">
                                                     <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
                                                 </div>
-                                                <p className="text-sm font-medium">No custom categories found.</p>
-                                                <p className="text-xs text-gray-400 mt-1">{showArchivedCategories ? 'No archived categories yet.' : 'Try a different search term or add a new one.'}</p>
+                                                <p className="text-sm font-medium text-slate-700 dark:text-gray-200">{categorySearchTerm.trim() ? 'No categories match your search.' : 'No categories found.'}</p>
+                                                {!categorySearchTerm.trim() && <p className="mt-1 text-xs text-gray-400">{showArchivedCategories ? 'No archived categories yet.' : 'Add a category to get started.'}</p>}
                                             </li>
                                        ) : (
-                                            filteredCustomCategories.map(category => (
-                                               <li key={category._id} className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between hover:bg-slate-50/80 dark:hover:bg-gray-700/30 transition-colors group">
-                                                   {false ? (
-                                                       <div className="flex-1 space-y-4 bg-white dark:bg-gray-800 p-4 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 ring-1 ring-black/5">
-                                                           {/* Edit Mode */}
-                                                           <div>
-                                                                <label className="block text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">Category Name</label>
-                                                                <input
-                                                                    type="text"
-                                                                    value={editingCategory.name}
-                                                                    onChange={(e) => setEditingCategory({ ...editingCategory, name: e.target.value })}
-                                                                    className="w-full p-2.5 border border-gray-200 dark:border-gray-600 rounded-lg text-sm font-semibold text-gray-900 dark:bg-gray-900 dark:text-white focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-100 outline-none"
-                                                                    autoFocus
-                                                                />
-                                                           </div>
-                                                           
-                                                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                                                <div className="space-y-2 p-3 bg-slate-50 dark:bg-gray-900/50 rounded-lg border border-gray-100 dark:border-gray-700">
-                                                                    <p className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">Visible Fields</p>
-                                                                    <label className="flex items-center justify-between p-1 cursor-pointer">
-                                                                        <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">Show Brand</span>
-                                                                        <input type="checkbox" checked={!!editingCategory.showBrand} onChange={(e) => setEditingCategory(prev => ({ ...prev, showBrand: e.target.checked, requireBrand: e.target.checked ? prev.requireBrand : false }))} className="w-4 h-4 text-gray-900 rounded border-gray-300 focus:ring-gray-900" />
-                                                                    </label>
-                                                                    <label className="flex items-center justify-between p-1 cursor-pointer">
-                                                                        <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">Show Color</span>
-                                                                        <input type="checkbox" checked={!!editingCategory.showColor} onChange={(e) => setEditingCategory(prev => ({ ...prev, showColor: e.target.checked, requireColor: e.target.checked ? prev.requireColor : false }))} className="w-4 h-4 text-gray-900 rounded border-gray-300 focus:ring-gray-900" />
-                                                                    </label>
-                                                                    <label className="flex items-center justify-between p-1 cursor-pointer">
-                                                                        <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">Show Size</span>
-                                                                        <input type="checkbox" checked={!!editingCategory.showSize} onChange={(e) => setEditingCategory(prev => ({ ...prev, showSize: e.target.checked, requireSize: e.target.checked ? prev.requireSize : false }))} className="w-4 h-4 text-gray-900 rounded border-gray-300 focus:ring-gray-900" />
-                                                                    </label>
-                                                                </div>
+                                            filteredCustomCategories.map(category => {
+                                                const categoryAttributes = [
+                                                    category.showBrand && `Brand${category.requireBrand ? ' required' : ''}`,
+                                                    category.showColor && `Color${category.requireColor ? ' required' : ''}`,
+                                                    category.showSize !== false && `Size${category.requireSize ? ' required' : ''}`,
+                                                    category.showSupplier !== false && 'Supplier',
+                                                ].filter(Boolean);
+                                                const unitCount = (category.sizeUnits || []).length;
+                                                const categoryMetadata = [...categoryAttributes, `${unitCount} ${unitCount === 1 ? 'unit' : 'units'}`].join(' • ');
 
-                                                                <div className="space-y-2 p-3 bg-slate-50 dark:bg-gray-900/50 rounded-lg border border-gray-100 dark:border-gray-700">
-                                                                    <p className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">Required Fields</p>
-                                                                    <label className={`flex items-center justify-between p-1 cursor-pointer ${editingCategory.showBrand ? 'opacity-100' : 'opacity-40 cursor-not-allowed'}`}>
-                                                                        <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">Require Brand</span>
-                                                                        <input type="checkbox" checked={!!editingCategory.requireBrand} disabled={!editingCategory.showBrand} onChange={(e) => setEditingCategory(prev => ({ ...prev, requireBrand: e.target.checked }))} className="w-4 h-4 text-gray-900 rounded border-gray-300 focus:ring-gray-900 disabled:opacity-50" />
-                                                                    </label>
-                                                                    <label className={`flex items-center justify-between p-1 cursor-pointer ${editingCategory.showColor ? 'opacity-100' : 'opacity-40 cursor-not-allowed'}`}>
-                                                                        <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">Require Color</span>
-                                                                        <input type="checkbox" checked={!!editingCategory.requireColor} disabled={!editingCategory.showColor} onChange={(e) => setEditingCategory(prev => ({ ...prev, requireColor: e.target.checked }))} className="w-4 h-4 text-gray-900 rounded border-gray-300 focus:ring-gray-900 disabled:opacity-50" />
-                                                                    </label>
-                                                                    <label className={`flex items-center justify-between p-1 cursor-pointer ${editingCategory.showSize ? 'opacity-100' : 'opacity-40 cursor-not-allowed'}`}>
-                                                                        <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">Require Size</span>
-                                                                        <input type="checkbox" checked={!!editingCategory.requireSize} disabled={!editingCategory.showSize} onChange={(e) => setEditingCategory(prev => ({ ...prev, requireSize: e.target.checked }))} className="w-4 h-4 text-gray-900 rounded border-gray-300 focus:ring-gray-900 disabled:opacity-50" />
-                                                                    </label>
-                                                                </div>
-                                                           </div>
-
-                                                           <div className="space-y-2">
-                                                                <p className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Measurement Units</p>
-                                                               <div className="flex gap-2">
-                                                                   <input
-                                                                       type="text"
-                                                                       value={editingCategory.unitInput || ''}
-                                                                       onChange={(e) => setEditingCategory((prev) => ({ ...prev, unitInput: e.target.value }))}
-                                                                       onKeyDown={(e) => {
-                                                                           if (e.key === 'Enter') {
-                                                                               e.preventDefault();
-                                                                               addUnitToEditingCategory();
-                                                                           }
-                                                                       }}
-                                                                       placeholder="e.g. pcs, boxes, kg"
-                                                                       className="flex-1 p-2.5 border border-gray-200 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-white outline-none focus:border-gray-900 dark:focus:border-gray-100"
-                                                                   />
-                                                                   <button type="button" onClick={addUnitToEditingCategory} className="px-4 py-2.5 rounded-lg text-sm font-semibold bg-white border border-gray-200 text-gray-800 shadow-sm hover:bg-gray-50 dark:bg-gray-800 dark:border-gray-600 dark:text-gray-100 dark:hover:bg-gray-700 transition-colors">Add</button>
-                                                               </div>
-                                                               <div className="flex flex-wrap gap-2 pt-1">
-                                                                   {(editingCategory.sizeUnits || []).map((unit) => (
-                                                                       <span key={unit} className="inline-flex items-center gap-1.5 pl-3 pr-1.5 py-1 rounded-md bg-gray-100 dark:bg-gray-800 text-xs font-semibold text-gray-800 dark:text-gray-200 border border-gray-200 dark:border-gray-700">
-                                                                           {unit}
-                                                                           <button type="button" onClick={() => removeUnitFromEditingCategory(unit)} className="text-gray-400 hover:text-gray-900 hover:bg-gray-200 dark:hover:text-white dark:hover:bg-gray-700 rounded flex items-center justify-center w-5 h-5 transition-colors">
-                                                                               <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M6 18L18 6M6 6l12 12" /></svg>
-                                                                           </button>
-                                                                       </span>
-                                                                   ))}
-                                                               </div>
-                                                           </div>
-
-                                                           <div className="flex gap-2 justify-end pt-2 border-t border-gray-100 dark:border-gray-700/50">
-                                                               <button 
-                                                                   onClick={() => setEditingCategory(null)}
-                                                                   className="px-4 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700 rounded-lg transition-colors border border-transparent"
-                                                               >
-                                                                   Cancel
-                                                               </button>
-                                                               <button 
-                                                                   onClick={() => handleUpdateCategory(category._id, editingCategory.name, editingCategory)}
-                                                                   className="px-4 py-2 text-sm font-semibold text-white dark:text-gray-900 bg-gray-900 hover:bg-gray-800 dark:bg-white dark:hover:bg-gray-100 rounded-lg transition-colors shadow-sm flex items-center gap-2"
-                                                               >
-                                                                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" /></svg>
-                                                                   Save Changes
-                                                               </button>
-                                                           </div>
-                                                       </div>
-                                                   ) : (
-                                                       <div className="flex-1 flex flex-col sm:flex-row sm:items-center justify-between min-w-0 pr-4">
+                                                return (
+                                               <li key={category._id} className="group flex flex-col justify-between gap-3 px-4 py-3.5 transition-colors hover:bg-slate-50/70 dark:hover:bg-gray-700/30 sm:flex-row sm:items-center">
+                                                   {(
+                                                       <div className="flex min-w-0 flex-1 flex-col justify-between gap-3 sm:flex-row sm:items-center">
                                                            {/* View Mode */}
-                                                           <div className="mb-3 sm:mb-0">
-                                                               <div className="flex items-center gap-2 mb-1.5">
-                                                                    <div className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-gray-800 border border-slate-200 dark:border-gray-700 flex items-center justify-center text-gray-500 dark:text-gray-400">
-                                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" /></svg>
-                                                                    </div>
-                                                                    <span className="text-base font-semibold text-gray-900 dark:text-white truncate">{category.name}</span>
-                                                               </div>
-                                                               
-                                                               <div className="flex flex-wrap items-center gap-1.5 pl-10">
-                                                                   {category.showBrand && (
-                                                                        <span className="inline-flex items-center border px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-50 text-slate-600 border-slate-200 dark:bg-gray-800 dark:text-gray-300 dark:border-gray-700">
-                                                                            Brand {category.requireBrand && <span className="ml-1 font-semibold">*</span>}
-                                                                        </span>
-                                                                   )}
-                                                                   {category.showColor && (
-                                                                        <span className="inline-flex items-center border px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-50 text-slate-600 border-slate-200 dark:bg-gray-800 dark:text-gray-300 dark:border-gray-700">
-                                                                            Color {category.requireColor && <span className="ml-1 font-semibold">*</span>}
-                                                                        </span>
-                                                                   )}
-                                                                   {category.showSize !== false && (
-                                                                        <span className="inline-flex items-center border px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-50 text-slate-600 border-slate-200 dark:bg-gray-800 dark:text-gray-300 dark:border-gray-700">
-                                                                            Size {category.requireSize && <span className="ml-1 font-semibold">*</span>}
-                                                                        </span>
-                                                                   )}
-                                                                   <span className="inline-flex items-center border border-gray-200 bg-gray-100 text-gray-700 px-2 py-0.5 rounded-full text-[10px] font-semibold dark:bg-gray-800 dark:text-gray-300 dark:border-gray-700 ml-1">
-                                                                       <svg className="w-3 h-3 mr-1 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3"></path></svg>
-                                                                       {(category.sizeUnits || []).length} Units
-                                                                   </span>
-                                                               </div>
+                                                           <div className="min-w-0">
+                                                               <p className="break-words text-sm font-medium text-slate-900 dark:text-white">{category.name}</p>
+                                                               <p className="mt-1 break-words text-xs font-normal text-slate-500 dark:text-gray-400">{categoryMetadata}</p>
                                                            </div>
                                                            
-                                                           <div className="flex items-center gap-2 pl-10 sm:pl-0">
-                                                               <button 
+                                                           <div className="flex shrink-0 items-center gap-1.5">
+                                                               <TableActionButton
+                                                                   label="Edit Category"
                                                                    onClick={() => setEditingCategory({
                                                                        id: category._id,
                                                                        name: category.name,
@@ -1375,30 +1285,28 @@ const Settings = () => {
                                                                        sizeUnits: Array.isArray(category.sizeUnits) ? category.sizeUnits : [],
                                                                        unitInput: '',
                                                                    })}
-                                                                    className="group/btn inline-flex shrink-0 items-center rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-gray-600 transition-all hover:bg-gray-100 hover:text-gray-800"
-                                                                    title="Edit Category"
-                                                                    aria-label={`Edit ${category.name}`}
+                                                                   aria-label={`Edit ${category.name}`}
                                                                >
                                                                     <EditIcon />
-                                                                    <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap text-[10px] font-semibold opacity-0 transition-all duration-200 group-hover/btn:ml-1 group-hover/btn:max-w-12 group-hover/btn:opacity-100">Edit</span>
-                                                               </button>
-                                                               <button 
+                                                               </TableActionButton>
+                                                               <TableActionButton
+                                                                   label={category.isActive === false ? 'Restore Category' : 'Archive Category'}
+                                                                   variant={category.isActive === false ? 'positive' : 'destructive'}
                                                                    onClick={() => openDeleteCategoryModal(category)}
-                                                                   className={`group/btn inline-flex items-center rounded-lg transition-all px-2.5 py-2 ${category.isActive === false ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/40' : 'bg-orange-50 dark:bg-orange-900/20 text-orange-600 dark:text-orange-400 hover:bg-orange-100 dark:hover:bg-orange-900/40'}`}
-                                                                   title={category.isActive === false ? 'Restore this category' : 'Archive this category'}
+                                                                   aria-label={category.isActive === false ? `Restore ${category.name}` : `Archive ${category.name}`}
                                                                >
                                                                    {category.isActive === false ? (
                                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
                                                                    ) : (
                                                                        <ArchiveIcon />
                                                                    )}
-                                                                   <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 text-[10px] font-semibold group-hover/btn:ml-1 group-hover/btn:max-w-36 group-hover/btn:opacity-100">{category.isActive === false ? 'Restore Category' : 'Archive Category'}</span>
-                                                               </button>
+                                                               </TableActionButton>
                                                            </div>
                                                        </div>
                                                    )}
                                                </li>
-                                           ))
+                                                );
+                                            })
                                        )}
                                    </ul>
                                </div>
@@ -1440,6 +1348,7 @@ const Settings = () => {
                                            type="text"
                                            value={newCategoryName}
                                            onChange={(e) => setNewCategoryName(e.target.value)}
+                                           onBlur={(e) => setNewCategoryName(normalizeHumanReadable(e.target.value))}
                                            placeholder="e.g., Tools, Plumbing, Electrical"
                                            disabled={isCategoryLoading}
                                            className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
@@ -1583,6 +1492,7 @@ const Settings = () => {
                                            type="text"
                                            value={editingCategory.name}
                                            onChange={(e) => setEditingCategory({ ...editingCategory, name: e.target.value })}
+                                           onBlur={(e) => setEditingCategory((prev) => ({ ...prev, name: normalizeHumanReadable(e.target.value) }))}
                                            disabled={isCategoryLoading}
                                            className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
                                            autoFocus
@@ -1729,7 +1639,7 @@ const Settings = () => {
                                 <p className="text-sm text-gray-500 mb-4">Backup or restore system data.</p>
                                 
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                    <div className="p-5 border border-gray-200 dark:border-gray-700 rounded-xl hover:border-gray-300 transition-colors">
+                                    <div className="rounded-xl border border-gray-200 bg-white p-5 transition-colors hover:border-gray-300 dark:border-gray-700 dark:bg-gray-800">
                                         <div className="w-10 h-10 bg-blue-50 dark:bg-blue-900/20 rounded-lg flex items-center justify-center mb-3">
                                             <svg className="w-6 h-6 text-blue-600 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
                                         </div>
@@ -1746,7 +1656,7 @@ const Settings = () => {
                                         </button>
                                     </div>
 
-                                    <div className="p-5 border border-gray-200 dark:border-gray-700 rounded-xl hover:border-gray-300 transition-colors">
+                                    <div className="rounded-xl border border-gray-200 bg-white p-5 transition-colors hover:border-gray-300 dark:border-gray-700 dark:bg-gray-800">
                                         <div className="w-10 h-10 bg-amber-50 dark:bg-amber-900/20 rounded-lg flex items-center justify-center mb-3">
                                             <svg className="w-6 h-6 text-amber-600 dark:text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 12a9 9 0 0 1 15.3-6.3L21 8" />
@@ -1787,8 +1697,9 @@ const Settings = () => {
                                             role="switch"
                                             aria-checked={Boolean(settings.automaticBackupEnabled)}
                                             aria-label="Automatic Backup"
-                                            onClick={() => setSettings((prev) => ({ ...prev, automaticBackupEnabled: !prev.automaticBackupEnabled }))}
-                                            className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${settings.automaticBackupEnabled ? 'bg-gray-900' : 'bg-gray-200 dark:bg-gray-600'}`}
+                                            onClick={handleAutomaticBackupToggle}
+                                            disabled={isAutomaticBackupSaving}
+                                            className={`relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${settings.automaticBackupEnabled ? 'bg-gray-900' : 'bg-gray-200 dark:bg-gray-600'}`}
                                         >
                                             <span className={`absolute left-1 top-1 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${settings.automaticBackupEnabled ? 'translate-x-5' : ''}`} />
                                         </button>

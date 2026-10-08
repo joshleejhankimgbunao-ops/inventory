@@ -17,7 +17,9 @@ const getPageItems = (currentPage, totalPages) => {
     return pages;
 };
 
-const Pagination = ({ currentPage, totalPages, onPageChange }) => {
+const PAGE_SIZE_OPTIONS = [10, 15, 25, 50, 100];
+
+const Pagination = ({ currentPage, totalPages, onPageChange, pageSize, onPageSizeChange }) => {
     const [pageInput, setPageInput] = useState('');
     const [isPageInputInvalid, setIsPageInputInvalid] = useState(false);
     const pageInputRef = useRef(null);
@@ -28,7 +30,10 @@ const Pagination = ({ currentPage, totalPages, onPageChange }) => {
         [safeCurrentPage, safeTotalPages],
     );
 
-    if (safeTotalPages <= 1) return null;
+    const canChangePageSize = Number.isFinite(pageSize) && typeof onPageSizeChange === 'function';
+    const showPageNavigation = safeTotalPages > 1;
+
+    if (!showPageNavigation && !canChangePageSize) return null;
 
     const buttonClass = 'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 dark:focus-visible:ring-gray-300';
     const inactivePageButtonClass = 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:bg-gray-100 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:border-gray-500 dark:hover:bg-gray-700';
@@ -56,7 +61,20 @@ const Pagination = ({ currentPage, totalPages, onPageChange }) => {
 
     return (
         <nav className="flex w-full min-w-0 flex-wrap items-center justify-between gap-4 sm:w-auto sm:justify-end" aria-label="Pagination">
-            <div className="flex min-w-0 items-center gap-1">
+            {canChangePageSize && (
+                <label className="flex shrink-0 items-center gap-2 text-xs font-medium text-gray-500 dark:text-gray-400">
+                    <span className="whitespace-nowrap">Rows per page:</span>
+                    <select
+                        value={pageSize}
+                        onChange={(event) => onPageSizeChange(Number(event.target.value))}
+                        aria-label="Rows per page"
+                        className="h-8 rounded-lg border border-gray-200 bg-white px-2 text-xs font-semibold text-gray-700 outline-none transition-colors hover:border-gray-300 focus:border-gray-900 focus:ring-2 focus:ring-gray-900 focus:ring-offset-2 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:hover:border-gray-500 dark:focus:border-gray-300 dark:focus:ring-gray-300 dark:focus:ring-offset-gray-900"
+                    >
+                        {PAGE_SIZE_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+                    </select>
+                </label>
+            )}
+            {showPageNavigation && <div className="flex min-w-0 items-center gap-1">
                 <button
                 type="button"
                 aria-label="Previous page"
@@ -91,8 +109,8 @@ const Pagination = ({ currentPage, totalPages, onPageChange }) => {
             >
                 <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7" /></svg>
                 </button>
-            </div>
-            {safeTotalPages > 5 && (
+            </div>}
+            {showPageNavigation && safeTotalPages > 5 && (
                 <form className="relative flex shrink-0 items-center gap-2" onSubmit={submitPageJump}>
                     <label htmlFor="pagination-go-to-page" className="text-xs font-semibold text-gray-600 dark:text-gray-300">Page</label>
                     <div>
