@@ -4,6 +4,7 @@ import IdentifierChip from '../components/IdentifierChip';
 import EditIcon from '../components/EditIcon';
 import ToolbarDropdown from '../components/ToolbarDropdown';
 import ReceiptPreviewModal from '../components/ReceiptPreviewModal';
+import TableActionButton from '../components/TableActionButton';
 import { showToast } from '../utils/toastHelper';
 import { showPageLoadError } from '../utils/pageLoadError';
 import { useAuth } from '../context/AuthContext';
@@ -21,6 +22,8 @@ import { subscribeRealtimeEvent } from '../services/realtimeClient';
 import { formatCurrency } from '../utils/numberFormat';
 import { createClientRequestId } from '../utils/clientRequestId';
 import { downloadSpecialOrderTransactionPdf } from '../utils/specialOrderPdf';
+import { getAttentionRowClass } from '../utils/tableStatusStyle';
+import { normalizeHumanReadable } from '../utils/textNormalization';
 import logo from '../assets/logo.png';
 import {
   formatMoneyInput,
@@ -36,7 +39,6 @@ import {
 } from '../utils/numericInput';
 
 const statusOptions = ['All', 'In Progress', 'Completed'];
-const SPECIAL_ORDERS_PER_PAGE = 15;
 const INPUT_CLASS = 'w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-800 outline-none transition-colors placeholder:text-gray-400 focus:border-gray-900 focus:ring-2 focus:ring-gray-900';
 const LABEL_CLASS = 'mb-1 block text-[10px] font-semibold text-gray-500';
 const PRIMARY_BUTTON_CLASS = 'rounded-lg border-2 border-gray-900 bg-gray-900 px-3 py-2 text-xs font-semibold text-white shadow-md transition-all hover:-translate-y-0.5 hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0';
@@ -103,7 +105,8 @@ const formatDate = (value) => {
 
 const getStatusBadgeClass = (status) => {
   if (status === 'Completed') return 'border-emerald-200 bg-emerald-50 text-emerald-700';
-  if (status === 'In Progress') return 'border-amber-200 bg-amber-50 text-amber-700';
+  if (['Pending', 'In Progress', 'Ready for Pickup'].includes(status)) return 'border-amber-300 bg-amber-50 text-amber-800';
+  if (status === 'Cancelled') return 'border-rose-200 bg-rose-50 text-rose-700';
   return 'border-gray-200 bg-gray-100 text-gray-600';
 };
 
@@ -222,7 +225,7 @@ const ItemEditor = ({ item, index, itemCount, disabled, errors = {}, fieldRefs, 
       <div className="grid gap-3 md:grid-cols-6">
         <label className="md:col-span-3">
           <span className={LABEL_CLASS}>Item name <span className="text-red-600">*</span></span>
-          <input {...inputProps('itemName')} value={item.itemName} onChange={(event) => onChange(index, 'itemName', event.target.value)} className={getInputClass(errors.itemName)} placeholder="Item name" required />
+          <input {...inputProps('itemName')} value={item.itemName} onChange={(event) => onChange(index, 'itemName', event.target.value)} onBlur={(event) => onChange(index, 'itemName', normalizeHumanReadable(event.target.value))} className={getInputClass(errors.itemName)} placeholder="Item name" required />
           <FieldError id={fieldId('itemName')} message={errors.itemName} />
         </label>
         <label className="md:col-span-3">
@@ -261,7 +264,7 @@ const ItemEditor = ({ item, index, itemCount, disabled, errors = {}, fieldRefs, 
         </label>
         <label className="md:col-span-3">
           <span className={LABEL_CLASS}>Description</span>
-          <input value={item.description} onChange={(event) => onChange(index, 'description', event.target.value)} className={INPUT_CLASS} placeholder="Item description" />
+          <input value={item.description} onChange={(event) => onChange(index, 'description', event.target.value)} onBlur={(event) => onChange(index, 'description', normalizeHumanReadable(event.target.value))} className={INPUT_CLASS} placeholder="Item description" />
         </label>
         <label className="md:col-span-6">
           <span className={LABEL_CLASS}>Item Notes (Optional)</span>
@@ -281,6 +284,7 @@ const SpecialOrders = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
   const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(10);
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [orderToComplete, setOrderToComplete] = useState(null);
   const [receiptPreview, setReceiptPreview] = useState(null);
@@ -364,12 +368,12 @@ const SpecialOrders = () => {
   }, [form.items]);
 
   const selectedSummary = useMemo(() => selectedOrder ? summarizeOrder(selectedOrder) : null, [selectedOrder]);
-  const totalPages = Math.ceil(orders.length / SPECIAL_ORDERS_PER_PAGE);
+  const totalPages = Math.ceil(orders.length / itemsPerPage);
   const activePage = Math.min(currentPage, Math.max(totalPages, 1));
-  const indexOfFirstOrder = (activePage - 1) * SPECIAL_ORDERS_PER_PAGE;
-  const paginatedOrders = orders.slice(indexOfFirstOrder, indexOfFirstOrder + SPECIAL_ORDERS_PER_PAGE);
+  const indexOfFirstOrder = (activePage - 1) * itemsPerPage;
+  const paginatedOrders = orders.slice(indexOfFirstOrder, indexOfFirstOrder + itemsPerPage);
   const displayStart = orders.length === 0 ? 0 : indexOfFirstOrder + 1;
-  const displayEnd = Math.min(indexOfFirstOrder + SPECIAL_ORDERS_PER_PAGE, orders.length);
+  const displayEnd = Math.min(indexOfFirstOrder + itemsPerPage, orders.length);
 
   useEffect(() => {
     setCurrentPage((previous) => Math.min(previous, Math.max(totalPages, 1)));
@@ -522,11 +526,11 @@ const SpecialOrders = () => {
 
     submitInFlightRef.current = true;
     const payload = {
-      customerName: form.customerName,
+      customerName: normalizeHumanReadable(form.customerName),
       remarks: form.remarks,
       items: normalizedItems.map((item) => ({
-        itemName: item.itemName,
-        description: item.description,
+        itemName: normalizeHumanReadable(item.itemName),
+        description: normalizeHumanReadable(item.description),
         quantity: Number(item.quantity),
         supplierId: item.supplierId,
         supplierName: item.supplierName,
@@ -610,24 +614,6 @@ const SpecialOrders = () => {
     };
   };
 
-  const openSpecialOrderReceiptPreview = async (order) => {
-    if (orderAction || order?.status !== 'Completed') return;
-
-    setOrderAction('load-receipt');
-    try {
-      const finalized = await loadFinalizedSpecialOrderReceipt(order);
-      setReceiptPrintStatus('idle');
-      setReceiptPreview({
-        ...finalized,
-        isReprint: true,
-      });
-    } catch (error) {
-      showToast('Receipt Load Failed', error?.message || 'Unable to load the finalized receipt.', 'error', 'special-order-receipt-load-error');
-    } finally {
-      setOrderAction('');
-    }
-  };
-
   const downloadSpecialOrderPdf = async (order) => {
     if (orderAction || order?.status !== 'Completed') return;
 
@@ -681,7 +667,7 @@ const SpecialOrders = () => {
       <section className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-300 bg-slate-200/50 p-4 shadow-inner md:h-full">
         <header className="flex flex-col items-start gap-1 border-b border-gray-200 pb-3">
           <div>
-            <p className="text-3xl font-bold leading-tight text-gray-900 md:text-4xl">Special Orders</p>
+            <p className="text-3xl md:text-4xl font-semibold tracking-tight text-gray-900 leading-tight">Special Orders</p>
             <p className="text-[11px] font-medium text-gray-500 md:text-xs">Create, track, and complete customer-requested items.</p>
           </div>
         </header>
@@ -691,8 +677,9 @@ const SpecialOrders = () => {
             <input type="text" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Search Special Orders..." className="main-toolbar-search-input" />
             <div className="main-toolbar-search-icon" aria-hidden="true"><svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg></div>
           </div>
-          <ToolbarDropdown value={statusFilter} options={statusOptions.map((status) => ({ value: status, label: status }))} onChange={setStatusFilter} ariaLabel="Filter special orders by status" className="w-full sm:w-40" />
-          <button type="button" onClick={openCreateForm} className={`${PRIMARY_BUTTON_CLASS} sm:ml-auto`}>
+          <ToolbarDropdown value={statusFilter} options={statusOptions.map((status) => ({ value: status, label: status }))} onChange={setStatusFilter} ariaLabel="Filter special orders by status" className="w-full sm:w-32 [&_[role=option]]:whitespace-nowrap" />
+          <button type="button" onClick={openCreateForm} className={`${PRIMARY_BUTTON_CLASS} inline-flex self-start items-center justify-center gap-2 whitespace-nowrap sm:ml-auto sm:self-auto`}>
+            <svg className="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"></path></svg>
             New Special Order
           </button>
           {refreshing && !initialLoading && <span className="text-[11px] font-semibold text-gray-500">Refreshing...</span>}
@@ -735,9 +722,6 @@ const SpecialOrders = () => {
                 ) : paginatedOrders.map((order) => {
                   const summary = summarizeOrder(order);
                   const canEdit = canEditSpecialOrder(order);
-                  const isInProgress = order.status === 'In Progress';
-                  const viewTooltipId = `special-order-${order._id}-view-tooltip`;
-                  const editTooltipId = `special-order-${order._id}-edit-tooltip`;
                   return (
                     <tr
                       key={order._id}
@@ -751,11 +735,7 @@ const SpecialOrders = () => {
                           setSelectedOrder(order);
                         }
                       }}
-                      className={`cursor-pointer border-b border-gray-200 transition-colors duration-200 focus:outline-none ${
-                        isInProgress
-                          ? 'special-order-in-progress-row bg-gray-100 hover:bg-gray-100 focus:bg-gray-100'
-                          : 'hover:bg-gray-50 focus:bg-gray-50'
-                      }`}
+                      className={`${getAttentionRowClass(order.status)} cursor-pointer transition-colors duration-150 focus:outline-none`}
                     >
                       <td className="whitespace-nowrap border border-gray-200 px-1.5 py-1.5 text-center"><IdentifierChip className="break-normal whitespace-nowrap px-1.5">{order.orderNumber}</IdentifierChip></td>
                       <td className="truncate border border-gray-200 px-1.5 py-1.5 text-center text-xs font-medium text-gray-800">{order.customerName}</td>
@@ -773,31 +753,21 @@ const SpecialOrders = () => {
                       </td>
                       <td className="border border-gray-200 px-1 py-1.5 text-center">
                         <div className="inline-flex items-center gap-1 whitespace-nowrap">
-                          <span className="group/tooltip relative inline-flex">
-                            <button
+                          <TableActionButton
                               type="button"
                               onClick={(event) => { event.stopPropagation(); setSelectedOrder(order); }}
-                              className="inline-flex items-center rounded-lg border border-black bg-white px-2 py-1.5 text-black transition-all hover:bg-gray-100 dark:border-gray-500 dark:bg-gray-800 dark:text-white dark:hover:bg-gray-700"
-                              aria-label="View Details"
-                              aria-describedby={viewTooltipId}
+                              label="View Details"
                             >
                               <svg className="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M1.5 12s3.6-7 10.5-7 10.5 7 10.5 7-3.6 7-10.5 7S1.5 12 1.5 12z" /><circle cx="12" cy="12" r="3" /></svg>
-                            </button>
-                            <span id={viewTooltipId} role="tooltip" className="pointer-events-none absolute bottom-full right-0 z-30 mb-2 whitespace-nowrap rounded-md bg-slate-900 px-2 py-1 text-[10px] font-medium text-white opacity-0 shadow-sm transition-opacity duration-150 group-hover/tooltip:opacity-100 group-focus-within/tooltip:opacity-100">View Details</span>
-                          </span>
-                          <span className="group/tooltip relative inline-flex">
-                            <button
+                          </TableActionButton>
+                          <TableActionButton
                               type="button"
                               disabled={!canEdit}
                               onClick={(event) => { event.stopPropagation(); if (canEdit) openEditForm(order); }}
-                              className={`inline-flex shrink-0 items-center rounded-lg border border-gray-200 bg-white px-2 py-1.5 transition-all ${canEdit ? 'text-gray-600 hover:bg-gray-100 hover:text-gray-800' : 'cursor-not-allowed text-gray-400 opacity-60'}`}
-                              aria-label="Edit"
-                              aria-describedby={editTooltipId}
+                              label={canEdit ? 'Edit' : 'Editing unavailable'}
                             >
                               <EditIcon aria-hidden="true" />
-                            </button>
-                            <span id={editTooltipId} role="tooltip" className="pointer-events-none absolute bottom-full right-0 z-30 mb-2 whitespace-nowrap rounded-md bg-slate-900 px-2 py-1 text-[10px] font-medium text-white opacity-0 shadow-sm transition-opacity duration-150 group-hover/tooltip:opacity-100 group-focus-within/tooltip:opacity-100">Edit</span>
-                          </span>
+                          </TableActionButton>
                         </div>
                       </td>
                     </tr>
@@ -812,7 +782,7 @@ const SpecialOrders = () => {
               <div className="text-xs font-medium text-gray-500">
                 Showing <span className="font-semibold text-gray-900">{displayStart}</span> to <span className="font-semibold text-gray-900">{displayEnd}</span> of <span className="font-semibold text-gray-900">{orders.length}</span> results
               </div>
-              <Pagination currentPage={activePage} totalPages={totalPages} onPageChange={setCurrentPage} />
+              <Pagination currentPage={activePage} totalPages={totalPages} onPageChange={setCurrentPage} pageSize={itemsPerPage} onPageSizeChange={(pageSize) => { setItemsPerPage(pageSize); setCurrentPage(1); }} />
             </div>
           </div>
         </div>
@@ -840,7 +810,7 @@ const SpecialOrders = () => {
                   <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-gray-400">Customer &amp; Order</h3>
                   <label className="block">
                     <span className={LABEL_CLASS}>Customer <span className="text-red-600">*</span></span>
-                    <input ref={(element) => { if (element) formFieldRefs.current.customerName = element; else delete formFieldRefs.current.customerName; }} aria-invalid={Boolean(formErrors.customerName)} aria-describedby={formErrors.customerName ? 'special-order-customer-error' : undefined} value={form.customerName} onChange={(event) => { setForm((previous) => ({ ...previous, customerName: event.target.value })); setFormErrors((previous) => ({ ...previous, customerName: '' })); }} className={getInputClass(formErrors.customerName)} placeholder="Customer name" required />
+                    <input ref={(element) => { if (element) formFieldRefs.current.customerName = element; else delete formFieldRefs.current.customerName; }} aria-invalid={Boolean(formErrors.customerName)} aria-describedby={formErrors.customerName ? 'special-order-customer-error' : undefined} value={form.customerName} onChange={(event) => { setForm((previous) => ({ ...previous, customerName: event.target.value })); setFormErrors((previous) => ({ ...previous, customerName: '' })); }} onBlur={(event) => setForm((previous) => ({ ...previous, customerName: normalizeHumanReadable(event.target.value) }))} className={getInputClass(formErrors.customerName)} placeholder="Customer name" required />
                     <FieldError id="special-order-customer-error" message={formErrors.customerName} />
                   </label>
                 </section>
@@ -930,10 +900,7 @@ const SpecialOrders = () => {
             <div className="flex shrink-0 justify-end gap-2 border-t border-gray-200 bg-gray-50 px-4 py-2.5">
               <button type="button" onClick={closeDetails} disabled={Boolean(orderAction)} className={SECONDARY_BUTTON_CLASS}>Close</button>
               {selectedOrder.status === 'Completed' && (
-                <>
-                  <button type="button" onClick={() => openSpecialOrderReceiptPreview(selectedOrder)} disabled={Boolean(orderAction)} className={PRIMARY_BUTTON_CLASS}>{orderAction === 'load-receipt' ? 'Loading...' : 'Print Receipt'}</button>
-                  <button type="button" onClick={() => downloadSpecialOrderPdf(selectedOrder)} disabled={Boolean(orderAction)} className={SECONDARY_BUTTON_CLASS}>{orderAction === 'download-pdf' ? 'Downloading...' : 'Download PDF'}</button>
-                </>
+                <button type="button" onClick={() => downloadSpecialOrderPdf(selectedOrder)} disabled={Boolean(orderAction)} className={PRIMARY_BUTTON_CLASS}>{orderAction === 'download-pdf' ? 'Downloading...' : 'Download PDF'}</button>
               )}
               {canEditSpecialOrder(selectedOrder) && (
                 <button type="button" onClick={() => openCompleteConfirmation(selectedOrder)} disabled={Boolean(orderAction)} className={PRIMARY_BUTTON_CLASS}>Complete</button>

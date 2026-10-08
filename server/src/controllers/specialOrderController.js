@@ -11,6 +11,7 @@ const {
 const { parseStrictWholeNumber } = require('../utils/numericValidation');
 const { isMoneyInputTooLarge, parseSafeMoney } = require('../utils/moneyValidation');
 const { mapSaleToTransactionContract } = require('./saleController');
+const { normalizeHumanReadable } = require('../../../shared/textNormalization.cjs');
 
 const normalizeString = (value) => String(value || '').trim();
 
@@ -65,7 +66,7 @@ const publishSpecialOrderChange = (order) => {
 };
 
 const normalizeOrderItem = (item) => {
-  const itemName = normalizeString(item?.itemName);
+  const itemName = normalizeHumanReadable(item?.itemName);
   const quantity = parseStrictWholeNumber(item?.quantity, { min: 1 });
   const purchaseCostRaw = item?.purchaseCost;
   const sellingPriceRaw = item?.sellingPrice;
@@ -91,10 +92,10 @@ const normalizeOrderItem = (item) => {
 
   return {
     itemName,
-    description: normalizeString(item?.description),
+    description: normalizeHumanReadable(item?.description),
     quantity,
     supplier: normalizeString(item?.supplierId) || item?.supplier || null,
-    supplierName: normalizeString(item?.supplierName),
+    supplierName: normalizeHumanReadable(item?.supplierName),
     purchaseCost,
     sellingPrice,
     expectedArrivalDate,
@@ -209,7 +210,7 @@ const buildSalePayload = (order, req) => {
     customer: order.customer || null,
     customerName: order.customerName,
     cashier: req.user._id,
-    cashierName: req.user.displayName || req.user.name || req.user.username || 'Unknown',
+    cashierName: req.user.name || req.user.displayName || req.user.username || 'Unknown',
     notes: `Special Order ${order.orderNumber}. ${order.remarks || ''}`.trim(),
     isArchived: false,
     specialOrderId: order._id,
@@ -231,7 +232,8 @@ const findSpecialOrderSale = async (order, session = null) => {
   ];
   if (order.linkedSaleId) selectors.unshift({ _id: order.linkedSaleId });
 
-  const query = Sale.findOne({ $or: selectors });
+  const query = Sale.findOne({ $or: selectors })
+    .populate('cashier', 'name displayName username role');
   return session ? query.session(session) : query;
 };
 
@@ -290,8 +292,8 @@ const createSpecialOrder = async (req, res, next) => {
 
     const customerId = normalizeString(req.body?.customerId);
     const supplierId = normalizeString(req.body?.supplierId);
-    const customerNameInput = normalizeString(req.body?.customerName);
-    const supplierNameInput = normalizeString(req.body?.supplierName);
+    const customerNameInput = normalizeHumanReadable(req.body?.customerName);
+    const supplierNameInput = normalizeHumanReadable(req.body?.supplierName);
     const items = normalizeOrderItems(req.body);
 
     if (!customerNameInput) {
@@ -395,7 +397,7 @@ const updateSpecialOrder = async (req, res, next) => {
 
     const payload = {};
     if (req.body?.customerName !== undefined) {
-      payload.customerName = normalizeString(req.body.customerName);
+      payload.customerName = normalizeHumanReadable(req.body.customerName);
       if (!payload.customerName) {
         return res.status(400).json({ message: 'customerName is required.' });
       }
@@ -521,7 +523,7 @@ const completeSpecialOrder = async (req, res, next) => {
       publishSaleCreated({
         saleId: result.sale._id,
         cashierId: req.user?._id,
-        cashierName: req.user.displayName || req.user.name || req.user.username || 'Unknown',
+        cashierName: req.user.name || req.user.displayName || req.user.username || 'Unknown',
       });
       publishActivityLogged({
         action: 'Completed Special Order',
@@ -592,7 +594,7 @@ const completeSpecialOrder = async (req, res, next) => {
       publishSaleCreated({
         saleId: sale._id,
         cashierId: req.user?._id,
-        cashierName: req.user.displayName || req.user.name || req.user.username || 'Unknown',
+        cashierName: req.user.name || req.user.displayName || req.user.username || 'Unknown',
       });
       publishActivityLogged({
         action: 'Completed Special Order',
