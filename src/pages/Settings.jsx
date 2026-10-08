@@ -1814,7 +1814,17 @@ const Settings = () => {
 
                                     <div className="mt-3 overflow-hidden rounded-lg border border-gray-100 dark:border-gray-700">
                                         {isAutomaticBackupHistoryLoading ? (
-                                            <p className="px-3 py-4 text-center text-xs text-gray-500">Loading automatic backups...</p>
+                                            <div className="space-y-2 p-3" aria-label="Loading automatic backups">
+                                                {Array.from({ length: 3 }).map((_, index) => (
+                                                    <div key={`automatic-backup-skeleton-${index}`} className="flex items-center justify-between gap-3 animate-pulse">
+                                                        <div className="space-y-1.5">
+                                                            <div className="h-3 w-36 rounded bg-gray-200 dark:bg-gray-700" />
+                                                            <div className="h-2.5 w-24 rounded bg-gray-100 dark:bg-gray-700/70" />
+                                                        </div>
+                                                        <div className="h-7 w-20 rounded-lg bg-gray-200 dark:bg-gray-700" />
+                                                    </div>
+                                                ))}
+                                            </div>
                                         ) : filteredAutomaticBackupHistory.length === 0 ? (
                                             <p className="px-3 py-4 text-center text-xs text-gray-500">
                                                 {automaticBackupHistoryDate ? 'No automatic backups were created on this Philippine calendar date.' : 'No automatic backups are available yet.'}

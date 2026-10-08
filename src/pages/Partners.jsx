@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import toast from 'react-hot-toast';
 import { showToast } from '../utils/toastHelper';
+import TableSkeletonRows from '../components/TableSkeletonRows';
 import { showPageLoadError } from '../utils/pageLoadError';
 import { getSupplierRestockRecommendations } from '../utils/recommendationLogic';
 import { useAuth } from '../context/AuthContext';
@@ -514,9 +515,6 @@ const Partners = ({ viewOnly = false }) => {
                             <p className="text-gray-500 font-medium text-[11px] md:text-xs mt-0.5">
                                 {isViewOnly ? 'View suppliers and regular customers (read-only)' : 'Manage your suppliers and regular customers'}
                             </p>
-                            {isLoadingPartners && (
-                                <p className="text-[10px] text-gray-500 font-semibold mt-1">Syncing partner data from server...</p>
-                            )}
                         </div>
                         {!isViewOnly && (
                             <button 
@@ -621,7 +619,12 @@ const Partners = ({ viewOnly = false }) => {
                                 </tr>
                             </thead>
                             <tbody className="text-sm">
-                                {filteredData.length === 0 ? (
+                                {isLoadingPartners ? (
+                                    <TableSkeletonRows
+                                        rowKeyPrefix="partners-skeleton"
+                                        columnTypes={[...Array(5).fill('text'), ...(showActionsColumn ? ['actions'] : [])]}
+                                    />
+                                ) : filteredData.length === 0 ? (
                                     <tr>
                                         <td colSpan={showActionsColumn ? 6 : 5} className="p-8 text-center">
                                             <div className="mx-auto flex max-w-xl flex-col items-center justify-center rounded-3xl border-2 border-dashed border-gray-300 bg-gray-50/50 p-8 text-gray-500">

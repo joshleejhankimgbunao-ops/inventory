@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import Pagination from '../components/Pagination';
+import TableSkeletonRows from '../components/TableSkeletonRows';
 import IdentifierChip from '../components/IdentifierChip';
 import { showToast } from '../utils/toastHelper';
 import { useInventory } from '../context/InventoryContext';
@@ -20,7 +21,7 @@ const Inventory = () => {
     const listContainerRef = useRef(null);
     const stockSubmitInFlightRef = useRef(false);
     const stockAdjustmentRequestIdRef = useRef('');
-    const { inventory, setInventory } = useInventory();
+    const { inventory, setInventory, isInventoryLoading } = useInventory();
     const { appSettings } = useAuth();
 
     const stripTrailingSizeFromName = (nameValue, sizeValue) => {
@@ -540,7 +541,9 @@ const Inventory = () => {
                         </tr>
                     </thead>
                     <tbody className="text-sm divide-y divide-gray-100 dark:divide-gray-700">
-                        {filteredInventory.length === 0 ? (
+                        {isInventoryLoading ? (
+                            <TableSkeletonRows rowKeyPrefix="inventory-skeleton" columnTypes={['text', 'text', 'text', 'text', 'text', 'pill', 'actions']} />
+                        ) : filteredInventory.length === 0 ? (
                             <tr>
                                 <td colSpan="7" className="p-12 text-center text-gray-400 dark:text-gray-500">
                                     <div className="flex flex-col items-center">

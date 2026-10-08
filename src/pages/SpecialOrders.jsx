@@ -6,6 +6,7 @@ import ToolbarDropdown from '../components/ToolbarDropdown';
 import ReceiptPreviewModal from '../components/ReceiptPreviewModal';
 import TableActionButton from '../components/TableActionButton';
 import { showToast } from '../utils/toastHelper';
+import TableSkeletonRows from '../components/TableSkeletonRows';
 import { showPageLoadError } from '../utils/pageLoadError';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
@@ -702,9 +703,10 @@ const SpecialOrders = () => {
               </thead>
               <tbody className="text-sm">
                 {initialLoading ? (
-                  <tr>
-                    <td colSpan={8} className="p-8 text-center text-sm font-medium text-gray-500">Loading special orders...</td>
-                  </tr>
+                  <TableSkeletonRows
+                    rowKeyPrefix="special-orders-skeleton"
+                    columnTypes={['text', 'text', 'text', 'text', 'text', 'text', 'pill', 'actions']}
+                  />
                 ) : orders.length === 0 ? (
                   <tr>
                     <td colSpan={8} className="border border-gray-200 p-8 text-center">

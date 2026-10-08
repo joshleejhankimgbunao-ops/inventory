@@ -8,6 +8,7 @@ import TableActionButton from '../components/TableActionButton';
 import TransactionReferenceModal from '../components/TransactionReferenceModal';
 import { useLocation } from 'react-router-dom';
 import { showToast } from '../utils/toastHelper';
+import TableSkeletonRows from '../components/TableSkeletonRows';
 import { showPageLoadError } from '../utils/pageLoadError';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
@@ -1171,7 +1172,9 @@ const History = () => {
                                     </tr>
                                 </thead>
                                 <tbody className="text-sm">
-                                    {currentList.length === 0 ? (
+                                    {isCurrentTabLoading ? (
+                                        <TableSkeletonRows rowKeyPrefix="sales-history-skeleton" columnTypes={['text', 'text', 'text', 'text', 'text', 'pill', 'actions']} />
+                                    ) : currentList.length === 0 ? (
                                         <tr>
                                             <td colSpan="7" className="p-8 text-center">
                                                 <div className="flex flex-col items-center justify-center text-gray-500 border-2 border-dashed border-gray-300 rounded-3xl p-8 bg-gray-50/50">
@@ -1284,7 +1287,9 @@ const History = () => {
                                     </tr>
                                 </thead>
                                 <tbody className="text-sm">
-                                    {currentList.length === 0 ? (
+                                    {isCurrentTabLoading ? (
+                                        <TableSkeletonRows rowKeyPrefix="credit-history-skeleton" columnTypes={['text', 'text', 'text', 'text', 'text', 'text', 'text', 'pill', 'actions']} />
+                                    ) : currentList.length === 0 ? (
                                         <tr>
                                             <td colSpan="9" className="p-8 text-center">
                                                 <div className="flex flex-col items-center justify-center text-gray-500 border-2 border-dashed border-gray-300 rounded-3xl p-8 bg-gray-50/50">
@@ -1353,7 +1358,9 @@ const History = () => {
                                     </tr>
                                 </thead>
                                 <tbody className="text-sm">
-                                    {currentList.length === 0 ? (
+                                    {isCurrentTabLoading ? (
+                                        <TableSkeletonRows rowKeyPrefix="inventory-history-skeleton" columnTypes={['text', 'pill', 'text', 'text', 'text']} />
+                                    ) : currentList.length === 0 ? (
                                         <tr>
                                             <td colSpan="5" className="p-8 text-center">
                                                 <div className="flex flex-col items-center justify-center text-gray-500 border-2 border-dashed border-gray-300 rounded-3xl p-8 bg-gray-50/50">

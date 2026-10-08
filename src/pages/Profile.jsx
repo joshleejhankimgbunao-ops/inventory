@@ -6,6 +6,7 @@ import { useInventory } from '../context/InventoryContext';
 import { meApi, updateMyProfileApi, verifyCurrentPasswordApi, verifyCurrentPinApi } from '../services/authApi';
 import { getPasswordChecks, isValidPassword } from '../utils/passwordPolicy';
 import { normalizeHumanReadable } from '../utils/textNormalization';
+import ProfileSkeleton from '../components/ProfileSkeleton';
 
 const normalizePhoneDigits = (value) => (value || '').replace(/\D/g, '').slice(0, 11);
 const PROFILE_CACHE_KEY = 'profile.cache.v1';
@@ -810,16 +811,7 @@ const Profile = () => {
     };
 
     if (isProfileHydrating) {
-        return (
-            <div className="w-full min-h-screen bg-slate-200/50">
-                <div className="w-full min-h-screen max-w-[1180px] mx-auto flex items-center justify-center p-4">
-                    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm px-6 py-5 flex items-center gap-3">
-                        <span className="inline-block h-4 w-4 rounded-full border-2 border-gray-300 border-t-gray-900 animate-spin" aria-hidden="true" />
-                        <p className="text-sm font-semibold text-gray-700">Loading your latest profile...</p>
-                    </div>
-                </div>
-            </div>
-        );
+        return <ProfileSkeleton />;
     }
 
     return (

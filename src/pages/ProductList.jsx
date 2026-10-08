@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import Pagination from '../components/Pagination';
+import TableSkeletonRows from '../components/TableSkeletonRows';
 import IdentifierChip from '../components/IdentifierChip';
 import ArchiveIcon from '../components/ArchiveIcon';
 import EditIcon from '../components/EditIcon';
@@ -35,7 +36,7 @@ const ProductList = () => {
     const productCreateRequestIdRef = useRef('');
     const productArchiveInFlightRef = useRef(false);
     const { appSettings: settings, currentUserName, ROLES, isAdminOrAbove } = useAuth();
-    const { inventory, setInventory, logAction, logActivity, categories: customCategories = [] } = useInventory();
+    const { inventory, setInventory, logAction, logActivity, categories: customCategories = [], isInventoryLoading } = useInventory();
 
     const [searchTerm, setSearchTerm] = useState('');
     const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
@@ -1316,7 +1317,12 @@ const ProductList = () => {
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-50 dark:divide-gray-700">
-                            {filteredProducts.length === 0 ? (
+                            {isInventoryLoading ? (
+                                <TableSkeletonRows
+                                    rowKeyPrefix="products-skeleton"
+                                    columnTypes={[...Array(6).fill('text'), ...(isAdminOrAbove() ? ['actions'] : [])]}
+                                />
+                            ) : filteredProducts.length === 0 ? (
                                 <tr>
                                     <td colSpan={isAdminOrAbove() ? "7" : "6"} className="px-6 py-12 text-center text-gray-400 dark:text-gray-500">
                                         <div className="flex flex-col items-center justify-center">
