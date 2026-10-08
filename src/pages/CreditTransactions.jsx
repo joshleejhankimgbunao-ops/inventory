@@ -1223,10 +1223,11 @@ const CreditTransactions = () => {
                 <ReceiptPreviewModal
                     transaction={creditReceiptPreview.transaction}
                     settings={appSettings}
-                    subtitle={`Paid Credit ${creditReceiptPreview.record.creditTransactionId} finalized receipt`}
+                    isCreditPaymentConfirmation
+                    subtitle={`Credit payment for ${creditReceiptPreview.record.creditTransactionId}`}
                     isReprint={creditReceiptPreview.isReprint}
                     printStatus={creditReceiptPrintStatus}
-                    printLabel="Print Receipt"
+                    printLabel="Print Confirmation"
                     contentId="credit-transaction-receipt-content"
                     onClose={closeCreditReceiptPreview}
                     onPrint={printCreditReceipt}
