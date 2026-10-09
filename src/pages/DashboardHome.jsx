@@ -5,7 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
 import { formatCurrency, formatNumber } from '../utils/numberFormat';
 import ColoredPiePercentageLabel from '../components/ColoredPiePercentageLabel';
-import { ANALYTICS_PIE_COLORS } from '../utils/analyticsChart';
+import { ANALYTICS_PIE_COLORS, SALES_ANALYTICS_LINE_STYLE } from '../utils/analyticsChart';
 import { listCreditTransactionsApi } from '../services/inventoryApi';
 import { getOutstandingCreditSummary } from '../utils/creditDueStatus';
 import { getDashboardComparisonPeriod, getMetricTrend, getPreviousPeriodMetrics } from '../utils/dashboardTrend';
@@ -703,10 +703,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                                                 <Line
                                                     type="monotone"
                                                     dataKey="sales"
-                                                    stroke="#111827"
-                                                    strokeWidth={2.5}
-                                                    dot={{ r: 3, strokeWidth: 2, fill: '#111827' }}
-                                                    activeDot={{ r: 5 }}
+                                                    {...SALES_ANALYTICS_LINE_STYLE}
                                                 />
                                             </LineChart>
                                         </ResponsiveContainer>

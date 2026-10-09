@@ -11,7 +11,7 @@ import { listCreditTransactionsApi } from '../services/inventoryApi';
 import { formatCurrency, formatNumber } from '../utils/numberFormat';
 import logo from '../assets/logo.png';
 import ColoredPiePercentageLabel from '../components/ColoredPiePercentageLabel';
-import { ANALYTICS_PIE_COLORS } from '../utils/analyticsChart';
+import { ANALYTICS_PIE_COLORS, SALES_ANALYTICS_LINE_STYLE } from '../utils/analyticsChart';
 import MetricTrendLine from '../components/MetricTrendLine';
 import ReportDateRangeSelector from '../components/ReportDateRangeSelector';
 import ReportsDateSelector from '../components/ReportsDateSelector';
@@ -978,10 +978,7 @@ const Reports = () => {
                         <Line
                           type="monotone"
                           dataKey="sales"
-                          stroke="#111827"
-                          strokeWidth={2.5}
-                          dot={{ r: 3, strokeWidth: 2, fill: '#111827' }}
-                          activeDot={{ r: 5 }}
+                          {...SALES_ANALYTICS_LINE_STYLE}
                         />
                       </LineChart>
                     </ResponsiveContainer>
