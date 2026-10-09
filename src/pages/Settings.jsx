@@ -930,7 +930,7 @@ const Settings = () => {
                 <div className="flex-1 bg-slate-200/50 rounded-2xl shadow-inner border border-slate-300 p-6 overflow-y-auto">
                     {/* Content will go here based on activeTab */}
                     {activeTab === 'general' && (
-                        <div className="space-y-6 max-w-2xl animate-in fade-in slide-in-from-right-4 duration-300">
+                        <div className="mx-auto max-w-2xl space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
                              <div>
                                 <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">Store Information</h3>
                                 <p className="text-sm text-gray-500 mb-4">Manage details about your business.</p>
@@ -1047,7 +1047,7 @@ const Settings = () => {
                     )}
 
                    {activeTab === 'notifications' && (
-                       <div className="space-y-6 max-w-2xl animate-in fade-in slide-in-from-right-4 duration-300">
+                       <div className="mx-auto max-w-2xl space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
                              <div>
                                 <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">Notification Preferences</h3>
                                 <p className="text-sm text-gray-500 mb-4">Control when and how you get alerted.</p>
@@ -1127,7 +1127,7 @@ const Settings = () => {
                    )}
 
                    {activeTab === 'stock rules' && (
-                       <div className="space-y-6 max-w-2xl animate-in fade-in slide-in-from-right-4 duration-300">
+                       <div className="mx-auto max-w-2xl space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
                              <div>
                                 <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">Stock Level Rules</h3>
                                 <p className="text-sm text-gray-500 mb-4">Set granular maximum stock limits by category or product.</p>
@@ -1748,7 +1748,7 @@ const Settings = () => {
                    )}
 
                     {activeTab === 'backup' && isSuperAdmin && (
-                        <div className="space-y-6 max-w-2xl animate-in fade-in slide-in-from-right-4 duration-300">
+                        <div className="mx-auto max-w-2xl space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
                              <div>
                                 <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">Data Management</h3>
                                 <p className="text-sm text-gray-500 mb-4">Backup or restore system data.</p>
