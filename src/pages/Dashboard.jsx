@@ -1156,7 +1156,7 @@ const Dashboard = ({ onLogout }) => {
                                 </div>
                                 Activity Log
                                 {isAdminOrAbove() && unreadActivityCount > 0 && (
-                                    <span className="ml-auto inline-flex min-w-[22px] h-[20px] items-center justify-center rounded-full bg-gradient-to-b from-red-500 to-red-600 px-1.5 text-[10px] font-semibold leading-none text-white shadow-[0_6px_14px_-4px_rgba(239,68,68,0.8)] ring-2 ring-red-300/60">
+                                    <span className="ml-auto inline-flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-full border border-rose-200/80 bg-rose-100 px-1.5 text-[10px] font-semibold leading-none tabular-nums text-rose-700 dark:border-rose-800/60 dark:bg-rose-950/50 dark:text-rose-300">
                                         {unreadActivityLabel}
                                     </span>
                                 )}
