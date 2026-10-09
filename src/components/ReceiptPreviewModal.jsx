@@ -46,6 +46,7 @@ const ReceiptPreviewModal = ({
   const isPrinted = printStatus === 'success';
   const isVoidedConfirmation = isVoidedOrderConfirmation(transaction, isOrderConfirmation);
   const usesConfirmationLayout = isOrderConfirmation || isCreditPaymentConfirmation;
+  const usesUnitPriceColumn = isOrderConfirmation;
   const documentTitle = isOrderConfirmation
     ? 'Order Confirmation'
     : isCreditPaymentConfirmation
@@ -133,11 +134,20 @@ const ReceiptPreviewModal = ({
               </div>
             </div>
 
-            <table className={`${usesConfirmationLayout ? 'mb-4' : 'mb-3'} w-full`}>
+            <table className={`${usesConfirmationLayout ? 'mb-4' : 'mb-3'} ${usesUnitPriceColumn ? 'table-fixed' : ''} w-full`}>
+              {usesUnitPriceColumn && (
+                <colgroup>
+                  <col className="w-[43%]" />
+                  <col className="w-[10%]" />
+                  <col className="w-[22%]" />
+                  <col className="w-[25%]" />
+                </colgroup>
+              )}
               <thead>
                 <tr className="border-b-2 border-gray-100">
-                  <th className={`${usesConfirmationLayout ? 'py-1.5 text-xs' : 'py-1 text-[9px]'} text-left font-semibold text-gray-700`}>Item</th>
+                  <th className={`${usesConfirmationLayout ? 'py-1.5 text-xs' : 'py-1 text-[9px]'} ${usesUnitPriceColumn ? 'pr-2' : ''} text-left font-semibold text-gray-700`}>Item</th>
                   <th className={`${usesConfirmationLayout ? 'py-1.5 text-xs' : 'py-1 text-[9px]'} text-center font-semibold text-gray-700`}>Qty</th>
+                  {usesUnitPriceColumn && <th className="whitespace-nowrap py-1.5 text-right text-xs font-semibold text-gray-700">Unit Price</th>}
                   <th className={`${usesConfirmationLayout ? 'py-1.5 text-xs' : 'py-1 text-[9px]'} text-right font-semibold text-gray-700`}>Amount</th>
                 </tr>
               </thead>
@@ -151,9 +161,10 @@ const ReceiptPreviewModal = ({
                       <td className={usesConfirmationLayout ? 'py-2 pr-2' : 'py-1'}>
                         <div className="font-semibold leading-tight text-gray-800">{item.brand ? `${item.brand} ` : ''}{item.name || 'Item'}{item.color ? ` — ${item.color}` : ''}</div>
                         {item.code && <div className={`${usesConfirmationLayout ? 'text-[11px] text-gray-500' : 'text-[8px]'} leading-tight`}>{item.code}</div>}
-                        <div className={`${usesConfirmationLayout ? 'text-[11px]' : 'text-[8px]'} leading-tight text-gray-400`}>{formatCurrency(unitPrice)} each</div>
+                        {!usesUnitPriceColumn && <div className={`${usesConfirmationLayout ? 'text-[11px]' : 'text-[8px]'} leading-tight text-gray-400`}>{formatCurrency(unitPrice)} each</div>}
                       </td>
                       <td className={`${usesConfirmationLayout ? 'py-2' : 'py-1'} text-center`}>{quantity}</td>
+                      {usesUnitPriceColumn && <td className="whitespace-nowrap py-2 text-right font-medium">{formatCurrency(unitPrice)}</td>}
                       <td className={`${usesConfirmationLayout ? 'py-2 font-medium' : 'py-1'} text-right`}>{formatCurrency(lineSubtotal)}</td>
                     </tr>
                   );

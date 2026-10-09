@@ -139,6 +139,22 @@ const appendField = (lines, label, value, width = DEFAULT_WIDTH_CHARS) => {
 
 const formatReceiptAmount = (value) => `\u20b1${formatMoney(value)}`;
 
+const appendItemPriceColumns = (lines, item, width = DEFAULT_WIDTH_CHARS) => {
+  const quantity = String(Number(item?.qty || 0));
+  const unitPrice = formatReceiptAmount(item?.unitPrice || 0);
+  const amount = formatReceiptAmount(item?.subtotal || 0);
+  const row = `${quantity.padStart(3)}  ${unitPrice.padStart(10)}  ${amount.padStart(10)}`;
+
+  if (row.length <= width) {
+    lines.push(row);
+    return;
+  }
+
+  appendField(lines, 'Qty', quantity, width);
+  appendField(lines, 'Unit Price', unitPrice, width);
+  appendField(lines, 'Amount', amount, width);
+};
+
 const formatReceiptDateTime = (value) => {
   const source = toPrinterSafeText(value).trim();
   const parsed = new Date(value);
@@ -172,7 +188,8 @@ const buildReceiptLines = (payload = {}) => {
   const lines = [];
   const separator = '-'.repeat(DEFAULT_WIDTH_CHARS);
   const isCredit = String(receipt.paymentMethod || '').toLowerCase() === 'credit';
-  const isVoidedConfirmation = receipt.documentType === 'order-confirmation'
+  const isOrderConfirmation = receipt.documentType === 'order-confirmation';
+  const isVoidedConfirmation = isOrderConfirmation
     && String(receipt.status || '').toLowerCase() === 'voided';
   const receiptDateTime = formatReceiptDateTime(receipt.date || '');
 
@@ -192,7 +209,7 @@ const buildReceiptLines = (payload = {}) => {
     appendCenteredText(lines, '*** REPRINT ***');
   }
 
-  if (receipt.documentType === 'order-confirmation') {
+  if (isOrderConfirmation) {
     lines.push('');
     appendCenteredText(lines, 'ORDER CONFIRMATION');
     appendCenteredText(lines, 'For transaction reference only');
@@ -203,7 +220,7 @@ const buildReceiptLines = (payload = {}) => {
 
   lines.push('');
   lines.push(separator);
-  appendField(lines, receipt.documentType === 'order-confirmation' ? 'Transaction ID' : 'Receipt No', receipt.id);
+  appendField(lines, isOrderConfirmation ? 'Transaction ID' : 'Receipt No', receipt.id);
   if (receipt.transactionReference) {
     appendField(lines, 'Transaction Ref', receipt.transactionReference);
   }
@@ -227,7 +244,10 @@ const buildReceiptLines = (payload = {}) => {
   }
 
   lines.push(separator);
-  lines.push('ITEMS');
+  lines.push(isOrderConfirmation ? 'ITEM' : 'ITEMS');
+  if (isOrderConfirmation) {
+    lines.push('QTY  UNIT PRICE  AMOUNT');
+  }
   lines.push('');
 
   items.forEach((item, index) => {
@@ -238,11 +258,15 @@ const buildReceiptLines = (payload = {}) => {
       wrapText(`Code: ${item.code}`).forEach((line) => lines.push(line));
     }
 
-    appendPair(
-      lines,
-      `${Number(item?.qty || 0)} x ${formatMoney(item?.unitPrice || 0)}`,
-      formatReceiptAmount(item?.subtotal || 0),
-    );
+    if (isOrderConfirmation) {
+      appendItemPriceColumns(lines, item);
+    } else {
+      appendPair(
+        lines,
+        `${Number(item?.qty || 0)} x ${formatMoney(item?.unitPrice || 0)}`,
+        formatReceiptAmount(item?.subtotal || 0),
+      );
+    }
 
     if (index < items.length - 1) {
       lines.push('');
@@ -301,7 +325,7 @@ const buildReceiptLines = (payload = {}) => {
   lines.push(separator);
   lines.push('');
   appendCenteredText(lines, 'THANK YOU!');
-  appendCenteredText(lines, receipt.documentType === 'order-confirmation'
+  appendCenteredText(lines, isOrderConfirmation
     ? 'For transaction reference only.'
     : 'Please keep this receipt.');
   lines.push('');

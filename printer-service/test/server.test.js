@@ -224,6 +224,8 @@ test('POS order confirmation prints its distinct heading and optional transactio
   assert.match(output, /ORDER CONFIRMATION/);
   assert.match(output, /Transaction Ref:\s+REF-123/);
   assert.match(output, /Transaction ID:\s+TRX-ABC12345/);
+  assert.match(output, /ITEM\nQTY  UNIT PRICE  AMOUNT/);
+  assert.match(output, /\n\s*1\s+₱100\.00\s+₱100\.00/);
   assert.ok(lines.every((line) => line.length <= 30));
 });
 

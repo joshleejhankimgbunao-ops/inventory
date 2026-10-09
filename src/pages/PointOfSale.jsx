@@ -27,7 +27,14 @@ import { createClientRequestId } from '../utils/clientRequestId';
 import { removeSelectedCartItems, toggleAllCartItemSelections, toggleCartItemSelection } from '../utils/cartSelection';
 import { ROLES } from '../constants/roles';
 import TransactionReferenceModal from '../components/TransactionReferenceModal';
+import ViewportTooltip from '../components/ViewportTooltip';
 import { ORDER_CONFIRMATION_PREVIEW_SIZE } from '../constants/orderConfirmationPreview';
+import {
+    getPosVariantSelectionModel,
+    getPosVariantValueKey,
+    groupProductsForPos,
+    updatePosVariantSelection,
+} from '../utils/posVariantSelection';
 
 const getProductImageUrl = (item) => String(item?.imageUrl || '').trim();
 const QUOTATION_NAME_MAX_LENGTH = 32;
@@ -126,26 +133,22 @@ const PointOfSale = () => {
 
     const productListRef = useRef(null);
     const printLockRef = useRef(false);
-    const { processedInventory: inventory, setInventory, setTransactions, logAction, logActivity, addToSyncQueue, syncQueue, isOnline } = useInventory();
+    const {
+        processedInventory: inventory,
+        categories: categoryDefinitions,
+        setInventory,
+        setTransactions,
+        logAction,
+        logActivity,
+        addToSyncQueue,
+        syncQueue,
+        isOnline,
+    } = useInventory();
     const { appSettings: settings, userPreferences, currentUserName, currentUserFullName, userRole } = useAuth();
     const canQuickAddCreditCustomer = userRole === ROLES.SUPER_ADMIN || userRole === ROLES.ADMIN;
 
     const showErrorDetails = (message, title = 'Action Failed') => {
         showToast(title, message, 'error', 'pos-action-error');
-    };
-
-    const normalizeVariantOption = (value) => {
-        return String(value || '')
-            .trim()
-            .replace(/\s*[x×]\s*/g, 'x')
-            .replace(/\s+/g, ' ')
-            .toLowerCase();
-    };
-    const formatVariantOptionLabel = (value) => {
-        return String(value || '')
-            .trim()
-            .replace(/\s*[x×]\s*/g, 'x')
-            .replace(/\s+/g, ' ');
     };
 
     const [enlargedProductImage, setEnlargedProductImage] = useState(null);
@@ -289,15 +292,17 @@ const PointOfSale = () => {
         selectedBrand: null,
         selectedSize: null,
         selectedColor: null,
+        selectedVariantCode: null,
         quantity: 1,
     });
     const createOpenVariantModalState = (group) => ({
         isOpen: true,
         group,
-        step: group?.availableBrands?.length > 1 ? 'brand' : 'variants',
+        step: group?.brandOptions?.length > 1 ? 'brand' : 'variants',
         selectedBrand: null,
         selectedSize: null,
         selectedColor: null,
+        selectedVariantCode: null,
         quantity: 1,
     });
     const [variantModal, setVariantModal] = useState(createClosedVariantModalState);
@@ -306,17 +311,12 @@ const PointOfSale = () => {
         if (!variantModal.isOpen || !variantModal.group) return null;
 
         const variants = variantModal.group.variants.filter((variant) => (
-            !variantModal.selectedBrand || variant.brand === variantModal.selectedBrand
+            !variantModal.selectedBrand || getPosVariantValueKey(variant, 'brand') === variantModal.selectedBrand
         ));
-        const selectedSize = variantModal.selectedSize;
-        const selectedColor = variantModal.selectedColor;
-        const hasSelection = selectedSize !== null || selectedColor !== null;
-        const selectedVariant = hasSelection
-            ? variants.find((variant) => (
-                (selectedSize === null || normalizeVariantOption(variant.size) === selectedSize)
-                && (selectedColor === null || normalizeVariantOption(variant.color) === selectedColor)
-            ))
-            : null;
+        const selectedVariant = getPosVariantSelectionModel(variants, {
+            size: variantModal.selectedSize,
+            color: variantModal.selectedColor,
+        }, variantModal.selectedVariantCode, variantModal.group.variantDimensions?.filter((dimension) => dimension !== 'brand')).matchedVariant;
         const brandRepresentative = variants.find((variant) => getProductImageUrl(variant)) || null;
 
         return getProductImageUrl(selectedVariant) ? selectedVariant : brandRepresentative;
@@ -371,49 +371,7 @@ const PointOfSale = () => {
             return matchesSearch && matchesCategory;
         });
 
-        const groups = {};
-        filtered.forEach(item => {
-            // Group solely by Category and Name, allowing brands, sizes, colors, and other variations to be grouped together
-            const key = `${item.category || ''}|${item.name || ''}`;
-            if (!groups[key]) groups[key] = [];
-            groups[key].push(item);
-        });
-
-        const result = [];
-        Object.values(groups).forEach(variants => {
-            if (variants.length === 1) {
-                result.push(variants[0]);
-            } else {
-                const totalStock = variants.reduce((sum, v) => sum + v.stock, 0);
-                const prices = variants.map(v => v.price);
-                const minPrice = Math.min(...prices);
-                const maxPrice = Math.max(...prices);
-                const sample = variants[0];
-                
-                // Determine color text: if all same color, show it; if multiple, say "Multiple Colors"; otherwise null
-                const uniqueColors = new Set(variants.map(v => v.color).filter(Boolean));
-                const displayColor = uniqueColors.size === 1 ? [...uniqueColors][0] : (uniqueColors.size > 1 ? 'Multiple Colors' : null);
-                
-                // Determine brand text: if all same brand, show it; if multiple, say "Multiple Brands"
-                const uniqueBrands = new Set(variants.map(v => v.brand).filter(Boolean));
-                const displayBrand = uniqueBrands.size === 1 ? [...uniqueBrands][0] : (uniqueBrands.size > 1 ? 'Multiple Brands' : null);
-
-                result.push({
-                    isGroup: true,
-                    code: `group-${sample.code}`, // unique key alias so map key works
-                    name: sample.name,
-                    brand: displayBrand,
-                    color: displayColor,
-                    imageUrl: variants.find((variant) => getProductImageUrl(variant))?.imageUrl || '',
-                    category: sample.category,
-                    stock: totalStock,
-                    minPrice,
-                    maxPrice,
-                    availableBrands: [...uniqueBrands],
-                    variants: [...variants].sort((a, b) => (a.brand || '').localeCompare(b.brand || '') || a.price - b.price || (a.size || '').localeCompare(b.size || '') || (a.color || '').localeCompare(b.color || ''))
-                });
-            }
-        });
+        const result = groupProductsForPos(filtered, categoryDefinitions);
         
         // Sort order:
         // 1) Out of Stock (alphabetical)
@@ -442,7 +400,19 @@ const PointOfSale = () => {
 
             return String(a?.code || '').localeCompare(String(b?.code || ''), undefined, { sensitivity: 'base' });
         });
-    }, [inventory, debouncedSearchQuery, selectedCategory, settings]);
+    }, [inventory, categoryDefinitions, debouncedSearchQuery, selectedCategory, settings]);
+
+    useEffect(() => {
+        if (!variantModal.isOpen || !variantModal.group?.groupKey) return;
+
+        const refreshedGroup = filteredProducts.find((item) => (
+            item.isGroup && item.groupKey === variantModal.group.groupKey
+        ));
+
+        if (refreshedGroup && refreshedGroup !== variantModal.group) {
+            setVariantModal((previous) => ({ ...previous, group: refreshedGroup }));
+        }
+    }, [filteredProducts, variantModal.isOpen, variantModal.group]);
 
     // Reset pagination when filters change
     useEffect(() => {
@@ -666,7 +636,7 @@ const PointOfSale = () => {
     const totalPages = Math.ceil(filteredProducts.length / itemsPerPage);
 
     // Derived categories
-    const categories = ['All', ...Array.from(new Set(inventory.map(item => item.category).filter(Boolean))).sort((a, b) => a.localeCompare(b))];
+    const categoryNames = ['All', ...Array.from(new Set(inventory.map(item => item.category).filter(Boolean))).sort((a, b) => a.localeCompare(b))];
 
     const posSearchSuggestions = useMemo(() => {
         const terms = new Set();
@@ -1376,11 +1346,18 @@ const PointOfSale = () => {
                                 </div>
                             </div>
 
-                            <table className="mb-4 w-full">
+                            <table className="mb-4 w-full table-fixed">
+                                <colgroup>
+                                    <col className="w-[43%]" />
+                                    <col className="w-[10%]" />
+                                    <col className="w-[22%]" />
+                                    <col className="w-[25%]" />
+                                </colgroup>
                                 <thead>
                                     <tr className="border-b border-gray-100">
-                                        <th className="py-1.5 text-left text-xs font-semibold text-gray-700">Item</th>
+                                        <th className="py-1.5 pr-2 text-left text-xs font-semibold text-gray-700">Item</th>
                                         <th className="py-1.5 text-center text-xs font-semibold text-gray-700">Qty</th>
+                                        <th className="py-1.5 text-right text-xs font-semibold text-gray-700 whitespace-nowrap">Unit Price</th>
                                         <th className="py-1.5 text-right text-xs font-semibold text-gray-700">Amount</th>
                                     </tr>
                                 </thead>
@@ -1392,6 +1369,7 @@ const PointOfSale = () => {
                                                 <div className="text-[11px] leading-tight text-gray-500">{item.code}</div>
                                             </td>
                                             <td className="py-2 text-center">{item.qty}</td>
+                                            <td className="py-2 text-right font-medium whitespace-nowrap">{formatCurrency(item.price)}</td>
                                             <td className="py-2 text-right font-medium">{formatCurrency(item.price * item.qty)}</td>
                                         </tr>
                                     ))}
@@ -1523,7 +1501,7 @@ const PointOfSale = () => {
                             onChange={(e) => setSelectedCategory(e.target.value)}
                             className="appearance-none w-full md:w-48 px-3 py-1.5 rounded-xl text-sm font-semibold inline-flex items-center transition-all border-2 bg-gray-900 dark:bg-gray-600 text-white border-gray-900 dark:border-gray-500 hover:opacity-90"
                         >
-                            {categories.map(cat => (
+                            {categoryNames.map(cat => (
                                 <option key={cat} value={cat}>{cat}</option>
                             ))}
                         </select>
@@ -2718,9 +2696,9 @@ const PointOfSale = () => {
                     <div className="relative z-10 flex flex-col gap-2 border-b border-slate-200 bg-white/95 px-4 py-3">
                         <div className="w-full">
                             <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
-                                {variantModal.step === 'variants' && variantModal.group.availableBrands?.length > 1 && (
+                                {variantModal.step === 'variants' && variantModal.group.brandOptions?.length > 1 && (
                                     <button 
-                                        onClick={() => setVariantModal(prev => ({ ...prev, step: 'brand', selectedBrand: null, selectedSize: null, selectedColor: null, quantity: 1 }))}
+                                        onClick={() => setVariantModal(prev => ({ ...prev, step: 'brand', selectedBrand: null, selectedSize: null, selectedColor: null, selectedVariantCode: null, quantity: 1 }))}
                                         className="text-[10px] font-semibold text-slate-600 hover:text-slate-900 bg-white border border-slate-200 hover:border-slate-300 hover:bg-slate-50 px-2 py-0.5 rounded-full shadow-sm flex items-center gap-1 transition-all"
                                     >
                                         <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7" /></svg>
@@ -2728,7 +2706,7 @@ const PointOfSale = () => {
                                     </button>
                                 )}
                                 <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[9px] font-semibold tracking-wide text-slate-600">{variantModal.step === 'brand' ? 'Select Brand' : 'Product Group'}</span>
-                                {variantModal.step === 'variants' && variantModal.selectedBrand && <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[9px] font-medium text-slate-500">{variantModal.selectedBrand}</span>}
+                                {variantModal.step === 'variants' && variantModal.selectedBrand && <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[9px] font-medium text-slate-500">{variantModal.group.brandOptions?.find((option) => option.key === variantModal.selectedBrand)?.label || variantModal.selectedBrand}</span>}
                                 {variantModal.step === 'variants' && !variantModal.selectedBrand && variantModal.group.brand && variantModal.group.brand !== 'Multiple Brands' && <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[9px] font-medium text-slate-500">{variantModal.group.brand}</span>}
                             </div>
                             <h3 className="text-center text-lg font-semibold leading-tight tracking-tight text-slate-900">
@@ -2752,8 +2730,8 @@ const PointOfSale = () => {
                     <div className="flex-1 overflow-y-auto w-full max-h-full no-scrollbar">
                         {variantModal.step === 'brand' ? (
                             <div className="p-6 grid grid-cols-2 sm:grid-cols-3 gap-3 pb-12">
-                                 {variantModal.group.availableBrands.map(brand => {
-                                     const brandVariants = variantModal.group.variants.filter(v => v.brand === brand);
+                                 {variantModal.group.brandOptions.map((brandOption) => {
+                                     const brandVariants = variantModal.group.variants.filter((variant) => getPosVariantValueKey(variant, 'brand') === brandOption.key);
                                     const brandImageItem = brandVariants.find((variant) => getProductImageUrl(variant)) || brandVariants[0] || null;
                                      const isBrandOutOfStock = brandVariants.every(v => v.stock <= 0);
                                     const brandPrices = brandVariants.map(v => Number(v.price) || 0);
@@ -2765,7 +2743,7 @@ const PointOfSale = () => {
                                     
                                     return (
                                         <div 
-                                            key={brand || 'unbranded'}
+                                            key={brandOption.key}
                                             className={`group relative flex min-h-[120px] flex-col items-center justify-center rounded-xl border p-3 text-center transition-colors duration-200
                                                 ${isBrandOutOfStock 
                                                     ? 'cursor-not-allowed border-rose-100 bg-rose-50/30 opacity-70 grayscale-[0.5]'
@@ -2773,12 +2751,12 @@ const PointOfSale = () => {
                                                 }`}
                                             onClick={() => {
                                                 if (!isBrandOutOfStock) {
-                                                    setVariantModal(prev => ({ ...prev, step: 'variants', selectedBrand: brand, selectedSize: null, selectedColor: null, quantity: 1 }));
+                                                    setVariantModal(prev => ({ ...prev, step: 'variants', selectedBrand: brandOption.key, selectedSize: null, selectedColor: null, selectedVariantCode: null, quantity: 1 }));
                                                 }
                                             }}
                                         >
                                             <ProductThumbnail item={brandImageItem} className="mb-2 h-12 w-12" onPreview={handleProductImagePreviewClick} fit="contain" />
-                                            <h4 className="text-sm font-semibold leading-tight tracking-tight text-slate-800">{brand || 'Unbranded'}</h4>
+                                            <h4 className="text-sm font-semibold leading-tight tracking-tight text-slate-800">{brandOption.label}</h4>
                                             
                                             <div className="flex-1 flex flex-col justify-end mt-2 w-full">
                                                 <div className={`mx-auto inline-block rounded-md border px-2 py-1 text-[10px] font-semibold transition-colors ${isBrandOutOfStock ? 'hidden bg-transparent text-rose-500/0' : 'border-slate-200 bg-slate-50 text-slate-600 group-hover:bg-white'}`}>
@@ -2795,49 +2773,22 @@ const PointOfSale = () => {
                         ) : (
                             <div className="flex h-full min-h-0 flex-col">
                                 {(() => {
-                                    const filteredVariants = variantModal.group.variants.filter(v => variantModal.selectedBrand ? v.brand === variantModal.selectedBrand : true);
-                                    const sizeOptionMap = new Map();
-                                    filteredVariants.forEach((variant) => {
-                                        const rawSize = String(variant?.size || '').trim();
-                                        if (!rawSize) return;
-
-                                        const normalizedSize = normalizeVariantOption(rawSize);
-                                        if (!normalizedSize || sizeOptionMap.has(normalizedSize)) return;
-
-                                        sizeOptionMap.set(normalizedSize, formatVariantOptionLabel(rawSize));
-                                    });
-
-                                    const colorOptionMap = new Map();
-                                    filteredVariants.forEach((variant) => {
-                                        const rawColor = String(variant?.color || '').trim();
-                                        if (!rawColor) return;
-
-                                        const normalizedColor = normalizeVariantOption(rawColor);
-                                        if (!normalizedColor || colorOptionMap.has(normalizedColor)) return;
-
-                                        colorOptionMap.set(normalizedColor, formatVariantOptionLabel(rawColor));
-                                    });
-
-                                    const uniqueSizes = Array.from(sizeOptionMap.entries())
-                                        .map(([key, label]) => ({ key, label }))
-                                        .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base', numeric: true }));
-                                    const uniqueColors = Array.from(colorOptionMap.entries())
-                                        .map(([key, label]) => ({ key, label }))
-                                        .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base', numeric: true }));
-
-                                    const needsColor = uniqueColors.length > 0;
-                                    const needsSize = uniqueSizes.length > 0;
-                                    const resolvedSelectedColor = variantModal.selectedColor ?? (uniqueColors.length === 1 ? uniqueColors[0].key : null);
-                                    const resolvedSelectedSize = variantModal.selectedSize ?? (uniqueSizes.length === 1 ? uniqueSizes[0].key : null);
-                                    const hasSelectedColor = resolvedSelectedColor !== null;
-                                    const hasSelectedSize = resolvedSelectedSize !== null;
-
-                                    const isAllSelected = (!needsColor || hasSelectedColor) && (!needsSize || hasSelectedSize);
-
-                                    const matchedVariant = isAllSelected ? filteredVariants.find(v => 
-                                        (!needsColor || normalizeVariantOption(v.color) === resolvedSelectedColor) && 
-                                        (!needsSize || normalizeVariantOption(v.size) === resolvedSelectedSize)
-                                    ) : null;
+                                    const filteredVariants = variantModal.group.variants.filter((variant) => (
+                                        !variantModal.selectedBrand || getPosVariantValueKey(variant, 'brand') === variantModal.selectedBrand
+                                    ));
+                                    const selectionModel = getPosVariantSelectionModel(filteredVariants, {
+                                        size: variantModal.selectedSize,
+                                        color: variantModal.selectedColor,
+                                    }, variantModal.selectedVariantCode, variantModal.group.variantDimensions?.filter((dimension) => dimension !== 'brand'));
+                                    const uniqueSizes = selectionModel.optionGroups.size || [];
+                                    const uniqueColors = selectionModel.optionGroups.color || [];
+                                    const needsSize = selectionModel.dimensions.includes('size');
+                                    const needsColor = selectionModel.dimensions.includes('color');
+                                    const resolvedSelectedSize = selectionModel.resolvedSelections.size ?? null;
+                                    const resolvedSelectedColor = selectionModel.resolvedSelections.color ?? null;
+                                    const isAllSelected = selectionModel.isComplete
+                                        && (!selectionModel.needsSkuSelection || Boolean(selectionModel.resolvedCode));
+                                    const matchedVariant = selectionModel.matchedVariant;
                                     const canAddSelectedVariant = Boolean(matchedVariant && Number(matchedVariant.stock) > 0);
                                     const selectedRecommendationAvailability = matchedVariant
                                         ? getRecommendationAvailability(matchedVariant, inventory, settings)
@@ -2850,6 +2801,40 @@ const PointOfSale = () => {
                                     const selectedQuantity = Math.min(Math.max(1, Number(variantModal.quantity) || 1), maxSelectableQty);
                                     const selectedUnitPrice = Number(matchedVariant?.price || 0);
                                     const selectedTotalPrice = selectedUnitPrice * selectedQuantity;
+                                    const selectorDimensions = variantModal.group.variantDimensions?.filter((dimension) => dimension !== 'brand');
+                                    const handleUnavailableVariantOption = (dimension, optionKey) => {
+                                        const nextSelections = updatePosVariantSelection(filteredVariants, {
+                                            size: resolvedSelectedSize,
+                                            color: resolvedSelectedColor,
+                                        }, dimension, optionKey, selectorDimensions);
+                                        const nextModel = getPosVariantSelectionModel(
+                                            filteredVariants,
+                                            nextSelections,
+                                            null,
+                                            selectorDimensions
+                                        );
+                                        const exactUnavailableVariant = nextModel.matchingVariants.length === 1
+                                            && Number(nextModel.matchingVariants[0]?.stock) <= 0
+                                            ? nextModel.matchingVariants[0]
+                                            : null;
+
+                                        if (exactUnavailableVariant) {
+                                            openRecommendationResults(exactUnavailableVariant, 'alternative', { type: 'out-of-stock' });
+                                            setVariantModal(createClosedVariantModalState());
+                                            return;
+                                        }
+
+                                        // More than one legacy SKU can share the same visible option.
+                                        // Keep narrowing through the existing selectors/SKU fallback
+                                        // without treating the unavailable option as purchasable.
+                                        setVariantModal((previous) => ({
+                                            ...previous,
+                                            selectedSize: nextSelections.size ?? null,
+                                            selectedColor: nextSelections.color ?? null,
+                                            selectedVariantCode: null,
+                                            quantity: 1,
+                                        }));
+                                    };
 
                                     return (
                                         <div className="flex h-full min-h-0 flex-col overflow-hidden bg-slate-50/70">
@@ -2918,44 +2903,43 @@ const PointOfSale = () => {
                                                         <div className="flex flex-wrap gap-2">
                                                             {uniqueSizes.map((sizeOption) => {
                                                                 const isSelected = resolvedSelectedSize === sizeOption.key;
-                                                                const hasMatchingCombination = filteredVariants.some((variant) => (
-                                                                    normalizeVariantOption(variant.size) === sizeOption.key
-                                                                    && (!needsColor || !hasSelectedColor || normalizeVariantOption(variant.color) === resolvedSelectedColor)
-                                                                ));
-                                                                const hasStock = filteredVariants.some((variant) => (
-                                                                    normalizeVariantOption(variant.size) === sizeOption.key
-                                                                    && (!needsColor || !hasSelectedColor || normalizeVariantOption(variant.color) === resolvedSelectedColor)
-                                                                    && Number(variant.stock) > 0
-                                                                ));
+                                                                const hasMatchingCombination = sizeOption.exists;
+                                                                const hasStock = sizeOption.hasStock;
 
                                                                 return (
-                                                                    <div key={sizeOption.key} className="relative group">
+                                                                    <ViewportTooltip
+                                                                        key={sizeOption.key}
+                                                                        content={!hasMatchingCombination
+                                                                            ? 'Not available for selected color'
+                                                                            : (!hasStock ? 'Sold out — click to view alternatives' : null)}
+                                                                    >
                                                                         <button
                                                                             disabled={!hasMatchingCombination}
+                                                                            aria-disabled={!hasMatchingCombination || !hasStock}
+                                                                            aria-label={!hasStock && hasMatchingCombination ? `${sizeOption.label}. Out of stock. View recommendations.` : undefined}
                                                                             onClick={() => {
                                                                                 if (!hasMatchingCombination) return;
-                                                                                setVariantModal(prev => ({ ...prev, selectedSize: isSelected ? null : sizeOption.key, quantity: 1 }));
+                                                                                if (!hasStock) {
+                                                                                    handleUnavailableVariantOption('size', sizeOption.key);
+                                                                                    return;
+                                                                                }
+                                                                                const nextSelections = updatePosVariantSelection(filteredVariants, {
+                                                                                    size: resolvedSelectedSize,
+                                                                                    color: resolvedSelectedColor,
+                                                                                }, 'size', isSelected ? null : sizeOption.key, variantModal.group.variantDimensions?.filter((dimension) => dimension !== 'brand'));
+                                                                                setVariantModal(prev => ({
+                                                                                    ...prev,
+                                                                                    selectedSize: nextSelections.size ?? null,
+                                                                                    selectedColor: nextSelections.color ?? null,
+                                                                                    selectedVariantCode: null,
+                                                                                    quantity: 1,
+                                                                                }));
                                                                             }}
-                                                                            className={`min-h-9 min-w-[52px] rounded-lg border px-3 py-2 text-[13px] font-semibold transition-colors ${isSelected ? 'border-slate-900 bg-slate-900 text-white' : !hasMatchingCombination ? 'cursor-not-allowed border-slate-200 bg-slate-50 text-slate-300 opacity-70' : hasStock ? 'border-slate-200 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-50' : 'border-rose-200 bg-rose-50 text-rose-700 hover:border-rose-300 hover:bg-rose-100'}`}
+                                                                            className={`min-h-9 min-w-[52px] rounded-lg border px-3 py-2 text-[13px] font-semibold transition-colors ${isSelected ? 'border-slate-900 bg-slate-900 text-white' : !hasMatchingCombination ? 'cursor-not-allowed border-slate-200 bg-slate-50 text-slate-300 opacity-70' : !hasStock ? 'cursor-pointer border-rose-200 bg-rose-50 text-rose-500 opacity-75 hover:border-rose-300 hover:bg-rose-100/70' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-50'}`}
                                                                         >
                                                                             {sizeOption.label}
                                                                         </button>
-                                                                        {!hasMatchingCombination ? (
-                                                                            <div className="pointer-events-none absolute -top-11 left-1/2 -translate-x-1/2 z-30 hidden w-max group-hover:block transition-all">
-                                                                                <div className="rounded-xl bg-slate-900 px-3 py-1.5 text-[10px] font-semibold text-white shadow-xl">
-                                                                                    Not available for selected color
-                                                                                </div>
-                                                                                <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 h-2.5 w-2.5 rotate-45 bg-slate-900" />
-                                                                            </div>
-                                                                        ) : !hasStock && (
-                                                                            <div className="pointer-events-none absolute -top-11 left-1/2 -translate-x-1/2 z-30 hidden w-max group-hover:block transition-all">
-                                                                                <div className="rounded-xl bg-slate-900 px-3 py-1.5 text-[10px] font-semibold text-white shadow-xl">      
-                                                                                    Sold Out
-                                                                                </div>
-                                                                                <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 h-2.5 w-2.5 rotate-45 bg-slate-900" />
-                                                                            </div>
-                                                                        )}
-                                                                    </div>
+                                                                    </ViewportTooltip>
                                                                 )
                                                             })}
                                                         </div>
@@ -2970,45 +2954,86 @@ const PointOfSale = () => {
                                                         <div className="flex flex-wrap gap-2">
                                                             {uniqueColors.map((colorOption) => {
                                                                 const isSelected = resolvedSelectedColor === colorOption.key;
-                                                                const hasMatchingCombination = filteredVariants.some((variant) => (
-                                                                    normalizeVariantOption(variant.color) === colorOption.key
-                                                                    && (!needsSize || !hasSelectedSize || normalizeVariantOption(variant.size) === resolvedSelectedSize)
-                                                                ));
-                                                                const hasStock = filteredVariants.some((variant) => (
-                                                                    normalizeVariantOption(variant.color) === colorOption.key
-                                                                    && (!needsSize || !hasSelectedSize || normalizeVariantOption(variant.size) === resolvedSelectedSize)
-                                                                    && Number(variant.stock) > 0
-                                                                ));
+                                                                const hasMatchingCombination = colorOption.exists;
+                                                                const hasStock = colorOption.hasStock;
 
                                                                 return (
-                                                                    <div key={colorOption.key} className="relative group">
+                                                                    <ViewportTooltip
+                                                                        key={colorOption.key}
+                                                                        content={!hasMatchingCombination
+                                                                            ? 'Not available for selected size'
+                                                                            : (!hasStock ? 'Sold out — click to view alternatives' : null)}
+                                                                    >
                                                                         <button
                                                                             disabled={!hasMatchingCombination}
+                                                                            aria-disabled={!hasMatchingCombination || !hasStock}
+                                                                            aria-label={!hasStock && hasMatchingCombination ? `${colorOption.label}. Out of stock. View recommendations.` : undefined}
                                                                             onClick={() => {
                                                                                 if (!hasMatchingCombination) return;
-                                                                                setVariantModal(prev => ({ ...prev, selectedColor: isSelected ? null : colorOption.key, quantity: 1 }));
+                                                                                if (!hasStock) {
+                                                                                    handleUnavailableVariantOption('color', colorOption.key);
+                                                                                    return;
+                                                                                }
+                                                                                const nextSelections = updatePosVariantSelection(filteredVariants, {
+                                                                                    size: resolvedSelectedSize,
+                                                                                    color: resolvedSelectedColor,
+                                                                                }, 'color', isSelected ? null : colorOption.key, variantModal.group.variantDimensions?.filter((dimension) => dimension !== 'brand'));
+                                                                                setVariantModal(prev => ({
+                                                                                    ...prev,
+                                                                                    selectedSize: nextSelections.size ?? null,
+                                                                                    selectedColor: nextSelections.color ?? null,
+                                                                                    selectedVariantCode: null,
+                                                                                    quantity: 1,
+                                                                                }));
                                                                             }}
-                                                                            className={`flex min-h-9 items-center justify-center rounded-lg border px-4 py-2 text-[13px] font-semibold transition-colors ${isSelected ? 'border-slate-900 bg-slate-900 text-white' : !hasMatchingCombination ? 'cursor-not-allowed border-slate-200 bg-slate-50 text-slate-300 opacity-70' : hasStock ? 'border-slate-200 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-50' : 'border-rose-200 bg-rose-50 text-rose-700 hover:border-rose-300 hover:bg-rose-100'}`}
+                                                                            className={`flex min-h-9 items-center justify-center rounded-lg border px-4 py-2 text-[13px] font-semibold transition-colors ${isSelected ? 'border-slate-900 bg-slate-900 text-white' : !hasMatchingCombination ? 'cursor-not-allowed border-slate-200 bg-slate-50 text-slate-300 opacity-70' : !hasStock ? 'cursor-pointer border-rose-200 bg-rose-50 text-rose-500 opacity-75 hover:border-rose-300 hover:bg-rose-100/70' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-50'}`}
                                                                         >
                                                                             {colorOption.label}
                                                                         </button>
-                                                                        {!hasMatchingCombination ? (
-                                                                            <div className="pointer-events-none absolute -top-11 left-1/2 -translate-x-1/2 z-30 hidden w-max group-hover:block transition-all">
-                                                                                <div className="rounded-xl bg-slate-900 px-3 py-1.5 text-[10px] font-semibold text-white shadow-xl">
-                                                                                    Not available for selected size
-                                                                                </div>
-                                                                                <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 h-2.5 w-2.5 rotate-45 bg-slate-900" />
-                                                                            </div>
-                                                                        ) : !hasStock && (
-                                                                            <div className="pointer-events-none absolute -top-11 left-1/2 -translate-x-1/2 z-30 hidden w-max group-hover:block transition-all">
-                                                                                <div className="rounded-xl bg-slate-900 px-3 py-1.5 text-[10px] font-semibold text-white shadow-xl">      
-                                                                                    Sold Out
-                                                                                </div>
-                                                                                <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 h-2.5 w-2.5 rotate-45 bg-slate-900" />
-                                                                            </div>
-                                                                        )}
-                                                                    </div>
+                                                                    </ViewportTooltip>
                                                                 )
+                                                            })}
+                                                        </div>
+                                                    </div>
+                                                )}
+
+                                                {selectionModel.needsSkuSelection && (
+                                                    <div className="mb-4">
+                                                        <div className="mb-2 flex items-center">
+                                                            <h5 className="text-[11px] font-semibold uppercase tracking-widest text-slate-800">Select SKU</h5>
+                                                        </div>
+                                                        <div className="flex flex-wrap gap-2">
+                                                            {selectionModel.matchingVariants.map((variant) => {
+                                                                const hasStock = Number(variant.stock) > 0;
+                                                                const isSelected = selectionModel.resolvedCode === variant.code;
+
+                                                                return (
+                                                                    <ViewportTooltip
+                                                                        key={variant.code}
+                                                                        content={!hasStock ? 'Sold out — click to view alternatives' : null}
+                                                                    >
+                                                                        <button
+                                                                            type="button"
+                                                                            aria-disabled={!hasStock}
+                                                                            aria-label={!hasStock ? `${variant.code}. Out of stock. View recommendations.` : undefined}
+                                                                            onClick={() => {
+                                                                                if (!hasStock) {
+                                                                                    openRecommendationResults(variant, 'alternative', { type: 'out-of-stock' });
+                                                                                    setVariantModal(createClosedVariantModalState());
+                                                                                    return;
+                                                                                }
+                                                                                setVariantModal((previous) => ({
+                                                                                    ...previous,
+                                                                                    selectedVariantCode: variant.code,
+                                                                                    quantity: 1,
+                                                                                }));
+                                                                            }}
+                                                                            className={`min-h-9 rounded-lg border px-3 py-2 text-[12px] font-semibold transition-colors ${isSelected ? 'border-slate-900 bg-slate-900 text-white' : !hasStock ? 'cursor-pointer border-rose-200 bg-rose-50 text-rose-500 opacity-75 hover:border-rose-300 hover:bg-rose-100/70' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-50'}`}
+                                                                        >
+                                                                            {variant.code}
+                                                                        </button>
+                                                                    </ViewportTooltip>
+                                                                );
                                                             })}
                                                         </div>
                                                     </div>
@@ -3155,7 +3180,7 @@ const PointOfSale = () => {
                             style={{ backgroundColor: '#111827', color: '#ffffff' }}
                             className="px-5 py-2 font-semibold rounded-xl hover:opacity-90 transition-all shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
                         >
-                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2-4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2-2v4h10z"></path></svg>
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2-4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path></svg>
                             Generate
                         </button>
                     </div>
@@ -3249,86 +3274,91 @@ const PointOfSale = () => {
         {/* Quotation Preview Modal */}
         {showQuotationPreview && quotationData && (
             <div className="fixed inset-0 z-70 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-                <div className="bg-white rounded-xl shadow-2xl w-full max-w-[58mm] overflow-hidden flex flex-col max-h-[90vh]">
-                    <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
-                        <h3 className="font-semibold text-lg text-gray-800">Quotation Preview</h3>
-                        <button onClick={() => setShowQuotationPreview(false)} className="text-gray-400 hover:text-gray-600">
+                <div className={`flex ${ORDER_CONFIRMATION_PREVIEW_SIZE.modal} flex-col overflow-hidden rounded-2xl bg-white shadow-2xl`}>
+                    <div className="flex items-center justify-between border-b border-gray-100 bg-gray-50 px-4 py-3.5 sm:px-5 sm:py-4">
+                        <h3 className="text-xl font-semibold text-gray-800 sm:text-2xl">Quotation Preview</h3>
+                        <button onClick={() => setShowQuotationPreview(false)} className="rounded-lg p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600" aria-label="Close quotation preview">
                             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                         </button>
                     </div>
                     
-                    <div className="flex-1 overflow-y-auto bg-white p-3" id="quotation-content">
+                    <div className="flex-1 overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5" id="quotation-content">
                         {(() => {
                             const quotationReceipt = buildQuotationReceiptModel(quotationData, settings);
 
                             return (
-                                <div className="mx-auto w-full text-[9px] leading-tight text-gray-700">
-                                    <div className="border-b border-dashed border-gray-200 pb-2 text-center">
-                                        <p className="text-[11px] font-semibold tracking-tight text-gray-900">{quotationReceipt.storeName}</p>
-                                        {quotationReceipt.storeAddress && <p className="mt-0.5 text-gray-500">{quotationReceipt.storeAddress}</p>}
-                                        {quotationReceipt.contactPhone && <p className="text-gray-500">Contact: {quotationReceipt.contactPhone}</p>}
-                                        <p className="mt-2 text-[10px] font-semibold tracking-[0.12em] text-gray-900">{quotationReceipt.title}</p>
+                                <div className={`${ORDER_CONFIRMATION_PREVIEW_SIZE.content} px-1 text-xs leading-relaxed text-gray-600 sm:text-[13px]`}>
+                                    <div className="mb-5 text-center">
+                                        <p className="mb-1 text-lg font-semibold leading-tight text-gray-900">{quotationReceipt.storeName}</p>
+                                        <div className="mt-1.5 space-y-0.5 text-[11px] leading-relaxed text-gray-400 sm:text-xs">
+                                            {quotationReceipt.storeAddress && <p>{quotationReceipt.storeAddress}</p>}
+                                            {quotationReceipt.contactPhone && <p>Contact: {quotationReceipt.contactPhone}</p>}
+                                        </div>
+                                        <p className="mt-3 text-xs font-semibold tracking-wider text-gray-900">{quotationReceipt.title}</p>
                                     </div>
 
-                                    <div className="border-b border-dashed border-gray-200 py-2 text-[9px]">
-                                        <div className="flex items-start justify-between gap-2">
-                                            <span className="shrink-0 text-gray-500">Customer</span>
-                                            <span className="min-w-0 text-right font-semibold text-gray-800 break-words">{quotationReceipt.customerName}</span>
+                                    <div className="mb-4 border-y border-dashed border-gray-200 py-3">
+                                        <div className="mb-1 flex items-start justify-between gap-3">
+                                            <span className="shrink-0 text-gray-500">Customer:</span>
+                                            <span className="min-w-0 break-words text-right font-semibold text-gray-800">{quotationReceipt.customerName}</span>
                                         </div>
-                                        <div className="mt-1 flex items-start justify-between gap-2">
-                                            <span className="shrink-0 text-gray-500">Date</span>
-                                            <span className="min-w-0 text-right text-gray-800 break-words">{quotationReceipt.date}</span>
+                                        <div className="flex items-start justify-between gap-3">
+                                            <span className="shrink-0 text-gray-500">Date:</span>
+                                            <span className="min-w-0 break-words text-right text-gray-800">{quotationReceipt.date}</span>
                                         </div>
                                     </div>
 
-                                    <div className="grid grid-cols-[minmax(0,1fr)_2rem_4.25rem] gap-x-1 border-b border-gray-200 py-1.5 text-[8px] font-semibold uppercase tracking-wide text-gray-500">
+                                    <div className="grid grid-cols-[minmax(0,1.95fr)_2rem_minmax(0,1fr)_minmax(0,1.1fr)] gap-x-2 border-b-2 border-gray-100 py-1.5 text-xs font-semibold text-gray-700">
                                         <span>Item</span>
                                         <span className="text-center">Qty</span>
+                                        <span className="text-right whitespace-nowrap">Unit Price</span>
                                         <span className="text-right">Amount</span>
                                     </div>
 
                                     <div className="divide-y divide-gray-100">
                                         {quotationReceipt.items.map((item, index) => (
-                                            <div key={`${item.code || item.name}-${index}`} className="grid grid-cols-[minmax(0,1fr)_2rem_4.25rem] gap-x-1 py-1.5">
+                                            <div key={`${item.code || item.name}-${index}`} className="grid grid-cols-[minmax(0,1.95fr)_2rem_minmax(0,1fr)_minmax(0,1.1fr)] gap-x-2 py-2">
                                                 <div className="min-w-0">
-                                                    <p className="break-words font-semibold text-gray-800">{item.name}</p>
-                                                    {item.code && <p className="mt-0.5 break-all text-[8px] text-gray-500">Code: {item.code}</p>}
-                                                    <p className="mt-0.5 text-[8px] text-gray-500">{formatCurrency(item.unitPrice)} each</p>
+                                                    <p className="break-words font-semibold leading-tight text-gray-800">{item.name}</p>
                                                 </div>
-                                                <span className="pt-px text-center text-gray-800">{item.quantity}</span>
-                                                <span className="pt-px text-right font-medium text-gray-800 whitespace-nowrap">{formatCurrency(item.amount)}</span>
+                                                <span className="text-center text-gray-600">{item.quantity}</span>
+                                                <span className="text-right font-medium text-gray-600 whitespace-nowrap">{formatCurrency(item.unitPrice)}</span>
+                                                <span className="text-right font-medium text-gray-600 whitespace-nowrap">{formatCurrency(item.amount)}</span>
                                             </div>
                                         ))}
                                     </div>
 
-                                    <div className="mt-1 border-t border-gray-900 pt-1.5">
-                                        <div className="flex items-baseline justify-between gap-2 text-[11px] font-semibold text-gray-900">
+                                    <div className="mt-2 border-t border-gray-900 pt-2">
+                                        <div className="flex items-baseline justify-between gap-2 text-lg font-semibold text-gray-900">
                                             <span>TOTAL</span>
                                             <span className="whitespace-nowrap">{formatCurrency(quotationReceipt.total)}</span>
                                         </div>
                                     </div>
 
-                                    <p className="mt-3 text-center text-[8px] text-gray-400">{quotationReceipt.footer}</p>
+                                    <p className="mt-5 text-center text-[11px] leading-relaxed text-gray-400 sm:text-xs">{quotationReceipt.footer}</p>
                                 </div>
                             );
                         })()}
                     </div>
 
-                    <div className="p-4 bg-gray-50 border-t border-gray-100 grid grid-cols-2 gap-3">
+                    <div className="border-t border-gray-100 bg-gray-50 p-3 sm:p-4">
+                        <p className="mb-2 text-center text-[9px] font-medium text-gray-400">Printing is optional.</p>
+                        <div className="grid grid-cols-2 gap-2">
                         <button 
                             onClick={() => setShowQuotationPreview(false)}
-                            className="py-2 px-4 rounded-xl text-xs font-semibold uppercase tracking-widest hover:bg-gray-100 transition-all duration-300 flex items-center justify-center gap-2 shadow-sm transform hover:-translate-y-0.5 text-gray-600 bg-white"
+                            className="flex items-center justify-center gap-2 rounded-xl bg-white px-4 py-2.5 text-xs font-semibold uppercase tracking-widest text-gray-600 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:bg-gray-100"
                             style={{ border: '2px solid #e5e7eb' }}
                         >
                             Close
                         </button>
-                        <button 
-                            onClick={handlePrintQuotationDoc}
-                            disabled={printStatus === 'printing'}
-                            className={`py-2 px-4 rounded-xl text-xs font-semibold uppercase tracking-widest transition-all duration-300 flex items-center justify-center gap-2 shadow-sm transform ${printStatus === 'printing' ? 'opacity-80 cursor-wait' : 'hover:opacity-90 hover:-translate-y-0.5'}`}
-                            style={{ backgroundColor: printStatus === 'success' ? '#10B981' : '#111827', color: '#ffffff', border: printStatus === 'success' ? '2px solid #10B981' : '2px solid #111827' }}
-                        >
-                            {printStatus === 'printing' ? (
+                        <div className="min-w-0">
+                            <button
+                                onClick={handlePrintQuotationDoc}
+                                disabled={printStatus === 'printing'}
+                                className={`flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-xs font-semibold uppercase tracking-widest shadow-sm transition-all duration-300 ${printStatus === 'printing' ? 'cursor-wait opacity-80' : 'hover:-translate-y-0.5 hover:opacity-90'}`}
+                                style={{ backgroundColor: printStatus === 'success' ? '#10B981' : '#111827', color: '#ffffff', border: printStatus === 'success' ? '2px solid #10B981' : '2px solid #111827' }}
+                            >
+                                {printStatus === 'printing' ? (
                                 <>
                                     <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
@@ -3338,11 +3368,13 @@ const PointOfSale = () => {
                                 </>
                             ) : (
                                 <>
-                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2-4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2-2v4h10z"></path></svg>
+                                    <svg className="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M6 8V4h12v4m-1 10H7v-6h10v6Zm2-10H5a2 2 0 0 0-2 2v5h3m12 0h3v-5a2 2 0 0 0-2-2Z" /></svg>
                                     Print
                                 </>
-                            )}
-                        </button>
+                                )}
+                            </button>
+                        </div>
+                        </div>
                     </div>
                 </div>
             </div>

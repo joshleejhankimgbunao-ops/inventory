@@ -2,6 +2,7 @@ import { formatCurrency } from './numberFormat.js';
 
 const THERMAL_LINE_WIDTH = 32;
 const SEPARATOR = '-'.repeat(THERMAL_LINE_WIDTH);
+const ITEM_PRICE_COLUMNS_HEADER = 'QTY  UNIT PRICE  AMOUNT';
 
 const wrapQuotationLine = (value, width = THERMAL_LINE_WIDTH) => {
     const source = String(value || '').trim();
@@ -33,6 +34,21 @@ const wrapQuotationLine = (value, width = THERMAL_LINE_WIDTH) => {
 
     if (currentLine) lines.push(currentLine);
     return lines.length > 0 ? lines : [''];
+};
+
+const buildQuotationItemPriceLines = (item) => {
+    const quantity = String(item?.quantity ?? '');
+    const unitPrice = formatCurrency(item?.unitPrice);
+    const amount = formatCurrency(item?.amount);
+    const row = `${quantity.padStart(3)}  ${unitPrice.padStart(10)}  ${amount.padStart(10)}`;
+
+    if (row.length <= THERMAL_LINE_WIDTH) return [row];
+
+    return [
+        `Qty: ${quantity}`,
+        `Unit Price: ${unitPrice}`,
+        `Amount: ${amount}`,
+    ].flatMap((line) => wrapQuotationLine(line));
 };
 
 export const buildQuotationReceiptModel = (quotation = {}, settings = {}) => {
@@ -68,7 +84,7 @@ export const buildQuotationReceiptModel = (quotation = {}, settings = {}) => {
         date,
         items: normalizedItems,
         total: Number(quotation?.total) || 0,
-        footer: 'Thank you for your business.',
+        footer: 'This quotation is for estimation purposes only. Prices are subject to change without prior notice.',
     };
 };
 
@@ -81,10 +97,11 @@ export const buildQuotationPrintLines = (receipt = {}) => [
     `Customer: ${receipt.customerName}`,
     `Date: ${receipt.date}`,
     SEPARATOR,
+    'ITEM',
+    ITEM_PRICE_COLUMNS_HEADER,
     ...(Array.isArray(receipt.items) ? receipt.items : []).flatMap((item) => [
         ...wrapQuotationLine(item.name),
-        ...(item.code ? [`  Code: ${item.code}`] : []),
-        `  ${item.quantity} x ${formatCurrency(item.unitPrice).replace('₱', '')} = ${formatCurrency(item.amount)}`,
+        ...buildQuotationItemPriceLines(item),
     ]),
     SEPARATOR,
     `TOTAL: ${formatCurrency(receipt.total)}`,
