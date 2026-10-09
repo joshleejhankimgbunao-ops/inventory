@@ -555,15 +555,15 @@ const Inventory = () => {
                         ) : (
                             currentItems.map((item) => (
                                 <tr key={item.code} className="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors group">
-                                    <td className="py-2 px-3 text-center border border-gray-200 dark:border-gray-700">
+                                    <td className="px-3 py-1.5 text-center border border-gray-200 dark:border-gray-700">
                                         <IdentifierChip>{item.code}</IdentifierChip>
                                     </td>
-                                    <td className="py-2 px-3 text-center border border-gray-200 dark:border-gray-700">
+                                    <td className="px-3 py-1.5 text-center border border-gray-200 dark:border-gray-700">
                                         {getProductImageUrl(item) ? (
                                             <button
                                                 type="button"
                                                 onClick={() => openProductImagePreview(item)}
-                                                className="group/photo mx-auto relative h-12 w-12 rounded-xl overflow-hidden border flex items-center justify-center transition-transform duration-150 hover:scale-105 focus:outline-none focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-300 bg-gray-100 border-gray-200 dark:bg-gray-700 dark:border-gray-600"
+                                                className="group/photo mx-auto relative flex h-10 w-10 items-center justify-center overflow-hidden rounded-lg border border-gray-200 bg-gray-100 transition-transform duration-150 hover:scale-105 focus:outline-none focus:ring-2 focus:ring-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:focus:ring-gray-300"
                                                 aria-label={`Enlarge image for ${item._displayName || item.name || item.code || 'product'}`}
                                             >
                                                 <img
@@ -573,7 +573,7 @@ const Inventory = () => {
                                                     loading="lazy"
                                                 />
                                                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none bg-black/0 opacity-0 transition-all duration-150 group-hover/photo:bg-black/45 group-hover/photo:opacity-100">
-                                                    <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-white/92 text-gray-900 shadow-md ring-1 ring-black/5">
+                                                    <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/92 text-gray-900 shadow-md ring-1 ring-black/5">
                                                         <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 3H3v5M3 3l6 6M16 3h5v5m0-5l-6 6M8 21H3v-5m0 5l6-6M16 21h5v-5m0 5l-6-6"></path>
                                                         </svg>
@@ -581,33 +581,33 @@ const Inventory = () => {
                                                 </div>
                                             </button>
                                         ) : (
-                                            <div className="mx-auto h-12 w-12 rounded-xl border border-dashed border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 flex items-center justify-center text-[11px] font-semibold text-gray-400 dark:text-gray-500">
+                                            <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg border border-dashed border-gray-200 bg-gray-50 text-[10px] font-semibold text-gray-400 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-500">
                                                 IMG
                                             </div>
                                         )}
                                     </td>
-                                    <td className="py-2 px-3 text-center border border-gray-200 dark:border-gray-700">
+                                    <td className="px-3 py-1.5 text-center border border-gray-200 dark:border-gray-700">
                                         <div className="flex flex-col items-center">
-                                            <span className="font-semibold text-gray-900 dark:text-white text-sm">{item.brand ? `${item.brand} ` : ''}{item._displayName || item.name}</span>
-                                            <span className="text-xs text-gray-500 dark:text-gray-400">{item._displaySize || item.size || '-'} {item.color ? `• ${item.color}` : ''}</span>
+                                            <span className="text-[13px] font-semibold leading-tight text-gray-900 dark:text-white">{item.brand ? `${item.brand} ` : ''}{item._displayName || item.name}</span>
+                                            <span className="text-[11px] leading-tight text-gray-500 dark:text-gray-400">{item._displaySize || item.size || '-'} {item.color ? `• ${item.color}` : ''}</span>
                                         </div>
                                     </td>
-                                    <td className="py-2 px-3 text-center border border-gray-200 dark:border-gray-700">
-                                        <span className="text-xs font-medium text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded">{item.category}</span>
+                                    <td className="px-3 py-1.5 text-center border border-gray-200 dark:border-gray-700">
+                                        <span className="rounded bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-700 dark:text-gray-300">{item.category}</span>
                                     </td>
-                                    <td className="py-2 px-3 text-center border border-gray-200 dark:border-gray-700">
+                                    <td className="px-3 py-1.5 text-center border border-gray-200 dark:border-gray-700">
                                         <span className="font-semibold text-gray-900 dark:text-white text-base">{formatNumber(item.stock)}</span>
                                     </td>
-                                    <td className="py-2 px-3 text-center border border-gray-200 dark:border-gray-700">
+                                    <td className="px-3 py-1.5 text-center border border-gray-200 dark:border-gray-700">
                                         <span className={`inline-flex whitespace-nowrap px-2 py-0.5 rounded-full text-[10px] font-semibold border ${getStatusColor(deriveStatus(item))}`}>
                                             {deriveStatus(item)}
                                         </span>
                                     </td>
-                                    <td className="py-2 pl-3 pr-5 text-center border border-gray-200 dark:border-gray-700">
+                                    <td className="py-1.5 pl-3 pr-5 text-center border border-gray-200 dark:border-gray-700">
                                         <div className="flex flex-nowrap items-center justify-center gap-2 whitespace-nowrap">
                                             <button 
                                                 onClick={() => handleOpenStockModal(item, 'IN')}
-                                                className="inline-flex h-8 w-14 shrink-0 items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white px-1.5 text-[11px] font-medium tracking-wide text-slate-600 transition-colors hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-700 active:bg-emerald-100 focus-visible:border-emerald-200 focus-visible:bg-emerald-50 focus-visible:text-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/25 focus-visible:ring-offset-1 dark:border-slate-700 dark:bg-[#282b30] dark:text-slate-200 dark:hover:border-emerald-800/60 dark:hover:bg-emerald-950/35 dark:hover:text-emerald-300 dark:active:bg-emerald-900/35 dark:focus-visible:border-emerald-800/60 dark:focus-visible:bg-emerald-950/35 dark:focus-visible:text-emerald-300 dark:focus-visible:ring-emerald-400/25 dark:focus-visible:ring-offset-[#222428]"
+                                                className="inline-flex h-[30px] w-[52px] shrink-0 items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white px-1 text-[11px] font-medium tracking-wide text-slate-600 transition-colors hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-700 active:bg-emerald-100 focus-visible:border-emerald-200 focus-visible:bg-emerald-50 focus-visible:text-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/25 focus-visible:ring-offset-1 dark:border-slate-700 dark:bg-[#282b30] dark:text-slate-200 dark:hover:border-emerald-800/60 dark:hover:bg-emerald-950/35 dark:hover:text-emerald-300 dark:active:bg-emerald-900/35 dark:focus-visible:border-emerald-800/60 dark:focus-visible:bg-emerald-950/35 dark:focus-visible:text-emerald-300 dark:focus-visible:ring-emerald-400/25 dark:focus-visible:ring-offset-[#222428]"
                                                 title="Received Stock"
                                             >
                                                 <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.25" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
@@ -617,7 +617,7 @@ const Inventory = () => {
                                                 onClick={() => item.stock > 0 && handleOpenStockModal(item, 'OUT')}
                                                 disabled={item.stock <= 0}
                                                 title={item.stock <= 0 ? 'No stock available' : 'Remove/Adjust Stock'}
-                                                className={`inline-flex h-8 w-14 shrink-0 items-center justify-center gap-1 rounded-lg border px-1.5 text-[11px] font-medium tracking-wide transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/25 focus-visible:ring-offset-1 dark:focus-visible:ring-rose-400/25 dark:focus-visible:ring-offset-[#222428] ${
+                                                className={`inline-flex h-[30px] w-[52px] shrink-0 items-center justify-center gap-1 rounded-lg border px-1 text-[11px] font-medium tracking-wide transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/25 focus-visible:ring-offset-1 dark:focus-visible:ring-rose-400/25 dark:focus-visible:ring-offset-[#222428] ${
                                                     item.stock <= 0
                                                     ? 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400 dark:border-slate-700 dark:bg-[#24262a] dark:text-slate-500'
                                                     : 'border-slate-200 bg-white text-slate-600 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700 active:bg-rose-100 focus-visible:border-rose-200 focus-visible:bg-rose-50 focus-visible:text-rose-700 dark:border-slate-700 dark:bg-[#282b30] dark:text-slate-200 dark:hover:border-rose-800/60 dark:hover:bg-rose-950/35 dark:hover:text-rose-300 dark:active:bg-rose-900/35 dark:focus-visible:border-rose-800/60 dark:focus-visible:bg-rose-950/35 dark:focus-visible:text-rose-300'
