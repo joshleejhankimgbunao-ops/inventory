@@ -18,6 +18,7 @@ require.cache[logPath] = {
 };
 
 const Product = require('../src/models/Product');
+const Category = require('../src/models/Category');
 const { updateProduct } = require('../src/controllers/productController');
 
 const createResponse = () => ({
@@ -30,9 +31,11 @@ const createResponse = () => ({
 test('a stale absolute stock adjustment cannot overwrite a concurrent stock change', async (context) => {
   const originalFindById = Product.findById;
   const originalFindOneAndUpdate = Product.findOneAndUpdate;
+  const originalCategoryFindOne = Category.findOne;
   context.after(() => {
     Product.findById = originalFindById;
     Product.findOneAndUpdate = originalFindOneAndUpdate;
+    Category.findOne = originalCategoryFindOne;
   });
 
   const version = new Date('2026-01-01T00:00:00.000Z');
@@ -48,6 +51,7 @@ test('a stale absolute stock adjustment cannot overwrite a concurrent stock chan
     writeFilter = filter;
     return null; // MongoDB predicate loses because a concurrent update already won.
   };
+  Category.findOne = async () => null;
 
   const response = createResponse();
   await updateProduct({

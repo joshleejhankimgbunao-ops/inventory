@@ -14,6 +14,7 @@ import { showToast } from '../utils/toastHelper';
 import Pagination from '../components/Pagination';
 import { formatCurrency } from '../utils/numberFormat';
 import { addProductRecommendationApi, removeProductRecommendationApi } from '../services/inventoryApi';
+import { getEffectiveProductAttributes, productAttributeValues } from '../utils/productAttributes';
 
 const DEFAULT_VISIBLE_RECOMMENDATIONS = 3;
 
@@ -75,7 +76,7 @@ const Recommendation = () => {
     };
 
     // Inventory helpers from context
-    const { inventory: rawInventory, setInventory, processedInventory } = useInventory();
+    const { inventory: rawInventory, setInventory, processedInventory, categories: categoryDefinitions = [] } = useInventory();
     
     // Use processed items
     const inventory = rawInventory || processedInventory || [];
@@ -91,6 +92,13 @@ const Recommendation = () => {
     // State for Product Details Modal
     const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false);
     const [viewDetailsItem, setViewDetailsItem] = useState(null);
+    const detailAttributeDefinitions = useMemo(() => getEffectiveProductAttributes(
+        categoryDefinitions.find((category) => category.name === viewDetailsItem?.category) || {}
+    ), [categoryDefinitions, viewDetailsItem?.category]);
+    const detailAttributeValues = useMemo(
+        () => productAttributeValues(viewDetailsItem || {}, detailAttributeDefinitions),
+        [detailAttributeDefinitions, viewDetailsItem]
+    );
 
     // State for Confirmation Modal
     const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false);
@@ -960,6 +968,20 @@ const Recommendation = () => {
                                         <dd className={`truncate text-sm font-semibold ${viewDetailsItem.supplier ? 'text-slate-800 dark:text-slate-100' : 'text-slate-400 dark:text-slate-500'}`}>{viewDetailsItem.supplier || 'N/A'}</dd>
                                     </div>
                                 </dl>
+
+                                {detailAttributeDefinitions.some((attribute) => !['brand', 'color', 'size'].includes(attribute.key) && String(detailAttributeValues[attribute.key] ?? '').trim()) && (
+                                    <div className="mt-4 border-t border-slate-100 pt-4 dark:border-slate-700">
+                                        <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400">Attributes</p>
+                                        <dl className="grid grid-cols-1 gap-x-6 sm:grid-cols-2">
+                                            {detailAttributeDefinitions.filter((attribute) => !['brand', 'color', 'size'].includes(attribute.key) && String(detailAttributeValues[attribute.key] ?? '').trim()).map((attribute) => (
+                                                <div key={attribute.key} className="border-b border-slate-100 py-2.5 dark:border-slate-700">
+                                                    <dt className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">{attribute.name}</dt>
+                                                    <dd className="text-sm font-semibold text-slate-800 dark:text-slate-100">{detailAttributeValues[attribute.key]}{attribute.type === 'number_unit' && attribute.unit ? ` ${attribute.unit}` : ''}</dd>
+                                                </div>
+                                            ))}
+                                        </dl>
+                                    </div>
+                                )}
 
                                 {viewDetailsItem.description && (
                                     <div className="mt-4 border-t border-slate-100 pt-4">

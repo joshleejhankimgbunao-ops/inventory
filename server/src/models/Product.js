@@ -67,6 +67,11 @@ const productSchema = new mongoose.Schema(
       trim: true,
       lowercase: true,
     },
+    attributes: {
+      type: Map,
+      of: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
     clientRequestId: {
       type: String,
       trim: true,

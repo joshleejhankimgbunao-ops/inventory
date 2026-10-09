@@ -1,9 +1,25 @@
 const Product = require('../models/Product');
+const Category = require('../models/Category');
 const { writeActivityLog, writeInventoryLog } = require('../services/logService');
 const { publishInventoryUpdated } = require('../services/realtimeService');
 const { parseStrictWholeNumber } = require('../utils/numericValidation');
 const { isMoneyInputTooLarge, parseSafeMoney } = require('../utils/moneyValidation');
 const { normalizeHumanReadable } = require('../../../shared/textNormalization.cjs');
+const { applyLegacyCompatibility, getEffectiveDefinitions, plainAttributes, validateProductAttributeValues } = require('../utils/productAttributes');
+const { buildProductConfigurationIdentity, productConfigurationInput } = require('../utils/productConfigurationIdentity');
+
+const DUPLICATE_CONFIGURATION_MESSAGE = 'A product with the same configuration already exists. Update the existing product or add a distinguishing product attribute.';
+
+const resolveProductAttributes = async ({ categoryName, attributes, legacy }) => {
+  // Legacy clients do not send an attributes payload. Preserve their existing
+  // fixed-field contract while new clients receive category-aware validation.
+  if (attributes === undefined) return { attributes: {}, legacy };
+  const category = await Category.findOne({ name: categoryName });
+  if (!category) return { attributes: plainAttributes(attributes), legacy };
+  const definitions = getEffectiveDefinitions(category);
+  const values = validateProductAttributeValues(definitions, attributes, legacy);
+  return { attributes: values, legacy: applyLegacyCompatibility(definitions, values, legacy) };
+};
 
 const normalizeString = (value) => {
   if (typeof value !== 'string') {
@@ -77,6 +93,29 @@ const generateNextSku = async (category) => {
 
 const isDuplicateKeyError = (error) => Number(error?.code) === 11000;
 
+const getConfigurationDefinitions = async (categoryName) => {
+  const category = await Category.findOne({ name: categoryName });
+  return category ? getEffectiveDefinitions(category) : [];
+};
+
+const findConfigurationConflict = async ({ candidate, definitions, excludeId = null }) => {
+  const identity = buildProductConfigurationIdentity({
+    ...productConfigurationInput(candidate),
+    definitions,
+  });
+  const candidates = await Product.find({
+    category: candidate.category,
+    ...(excludeId ? { _id: { $ne: excludeId } } : {}),
+  });
+
+  return candidates.find((product) => (
+    buildProductConfigurationIdentity({
+      ...productConfigurationInput(product),
+      definitions,
+    }) === identity
+  )) || null;
+};
+
 const buildInventoryLogDetails = ({ productName, stockDelta, adjustmentReason }) => {
   const reason = normalizeString(adjustmentReason);
 
@@ -130,18 +169,34 @@ const createProduct = async (req, res, next) => {
       return res.status(400).json({ message: 'stock must be a non-negative whole number.' });
     }
 
+    let resolvedAttributes;
+    try {
+      resolvedAttributes = await resolveProductAttributes({ categoryName: category, attributes: req.body?.attributes, legacy: { brand, color, size } });
+    } catch (error) {
+      return res.status(400).json({ message: error.message });
+    }
     const createPayload = {
       name,
       category,
-      brand,
-      color,
-      size,
+      brand: resolvedAttributes.legacy.brand,
+      color: resolvedAttributes.legacy.color,
+      size: resolvedAttributes.legacy.size,
+      attributes: resolvedAttributes.attributes,
       supplierName,
       imageUrl,
       stock,
       price,
       ...(clientRequestId ? { clientRequestId } : {}),
     };
+
+    const configurationDefinitions = await getConfigurationDefinitions(category);
+    const configurationConflict = await findConfigurationConflict({
+      candidate: createPayload,
+      definitions: configurationDefinitions,
+    });
+    if (configurationConflict) {
+      return res.status(409).json({ message: DUPLICATE_CONFIGURATION_MESSAGE });
+    }
 
     let product;
     if (requestedSku) {
@@ -383,6 +438,30 @@ const updateProduct = async (req, res, next) => {
     if (req.body?.imageUrl !== undefined) payload.imageUrl = normalizeString(req.body.imageUrl);
     if (req.body?.isActive !== undefined) payload.isActive = Boolean(req.body.isActive);
 
+    if (req.body?.attributes !== undefined) {
+      try {
+        const legacy = {
+          // Existing legacy values remain the fallback for attributes that are
+          // no longer configured. Configured Brand/Color/Size values are still
+          // mirrored from the authoritative attributes payload below.
+          brand: existing.brand,
+          color: existing.color,
+          size: existing.size,
+        };
+        const resolved = await resolveProductAttributes({
+          categoryName: payload.category ?? existing.category,
+          attributes: req.body?.attributes ?? plainAttributes(existing.attributes),
+          legacy,
+        });
+        payload.attributes = resolved.attributes;
+        payload.brand = resolved.legacy.brand;
+        payload.color = resolved.legacy.color;
+        payload.size = resolved.legacy.size;
+      } catch (error) {
+        return res.status(400).json({ message: error.message });
+      }
+    }
+
     if (req.body?.stock !== undefined) {
       const stockValue = parseStrictWholeNumber(req.body.stock);
       if (stockValue === null) {
@@ -398,6 +477,34 @@ const updateProduct = async (req, res, next) => {
         return res.status(400).json({ message: isMoneyInputTooLarge(req.body.price) ? 'Amount is too large. Please enter a smaller value.' : 'price must be a non-negative number with up to 2 decimal places.' });
       }
       payload.price = priceValue;
+    }
+
+    const configurationCandidate = {
+      category: payload.category ?? existing.category,
+      name: payload.name ?? existing.name,
+      attributes: payload.attributes ?? plainAttributes(existing.attributes),
+      brand: payload.brand ?? existing.brand,
+      color: payload.color ?? existing.color,
+      size: payload.size ?? existing.size,
+    };
+    const configurationDefinitions = await getConfigurationDefinitions(configurationCandidate.category);
+    const existingConfigurationIdentity = buildProductConfigurationIdentity({
+      ...productConfigurationInput(existing),
+      definitions: configurationDefinitions,
+    });
+    const updatedConfigurationIdentity = buildProductConfigurationIdentity({
+      ...productConfigurationInput(configurationCandidate),
+      definitions: configurationDefinitions,
+    });
+    if (existingConfigurationIdentity !== updatedConfigurationIdentity) {
+      const configurationConflict = await findConfigurationConflict({
+        candidate: configurationCandidate,
+        definitions: configurationDefinitions,
+        excludeId: id,
+      });
+      if (configurationConflict) {
+        return res.status(409).json({ message: DUPLICATE_CONFIGURATION_MESSAGE });
+      }
     }
 
     const product = await Product.findOneAndUpdate({
@@ -480,6 +587,8 @@ module.exports = {
   buildInventoryLogDetails,
   generateNextSku,
   getSkuPrefix,
+  DUPLICATE_CONFIGURATION_MESSAGE,
+  findConfigurationConflict,
   normalizeSku,
   validateSku,
   listProducts,

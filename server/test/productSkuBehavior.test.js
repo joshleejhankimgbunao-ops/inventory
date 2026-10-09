@@ -23,6 +23,7 @@ require.cache[realtimeServicePath] = {
 };
 
 const Product = require('../src/models/Product');
+const Category = require('../src/models/Category');
 const {
   addProductRecommendation,
   createProduct,
@@ -158,10 +159,14 @@ test('blank SKU generation preserves the existing category prefix and first avai
 
 test('manual SKU creation saves the supplied normalized SKU instead of generating another one', async () => {
   const originalFindOne = Product.findOne;
+  const originalFind = Product.find;
   const originalCreate = Product.create;
+  const originalCategoryFindOne = Category.findOne;
   let createdPayload = null;
 
   Product.findOne = async () => null;
+  Product.find = async () => [];
+  Category.findOne = async () => null;
   Product.create = async (payload) => {
     createdPayload = payload;
     return { _id: 'product-manual', ...payload };
@@ -177,21 +182,30 @@ test('manual SKU creation saves the supplied normalized SKU instead of generatin
     assert.equal(res.body.sku, 'SUP-12345');
   } finally {
     Product.findOne = originalFindOne;
+    Product.find = originalFind;
     Product.create = originalCreate;
+    Category.findOne = originalCategoryFindOne;
   }
 });
 
 test('blank SKU product creation retries after a unique-index collision', async () => {
   const originalFind = Product.find;
   const originalCreate = Product.create;
+  const originalCategoryFindOne = Category.findOne;
   const existingSkus = ['PNT-001'];
   let createAttempts = 0;
 
-  Product.find = () => ({
-    select: () => ({
-      lean: async () => existingSkus.map((sku) => ({ sku })),
-    }),
-  });
+  Product.find = (filter) => {
+    if (filter?.sku instanceof RegExp) {
+      return {
+        select: () => ({
+          lean: async () => existingSkus.map((sku) => ({ sku })),
+        }),
+      };
+    }
+    return Promise.resolve([]);
+  };
+  Category.findOne = async () => null;
   Product.create = async (payload) => {
     createAttempts += 1;
     if (createAttempts === 1) {
@@ -214,6 +228,7 @@ test('blank SKU product creation retries after a unique-index collision', async 
   } finally {
     Product.find = originalFind;
     Product.create = originalCreate;
+    Category.findOne = originalCategoryFindOne;
   }
 });
 

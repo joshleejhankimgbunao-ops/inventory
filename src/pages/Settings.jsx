@@ -4,6 +4,8 @@ import { showPageLoadError } from '../utils/pageLoadError';
 import ArchiveIcon from '../components/ArchiveIcon';
 import EditIcon from '../components/EditIcon';
 import TableActionButton from '../components/TableActionButton';
+import CategoryAttributesEditor from '../components/CategoryAttributesEditor';
+import { getEffectiveProductAttributes } from '../utils/productAttributes';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
 import { createCategoryApi, updateCategoryApi } from '../services/inventoryApi';
@@ -66,7 +68,7 @@ const Settings = () => {
         showColor: false, requireColor: false,
         showSize: true, requireSize: true,
         showSupplier: true,
-        sizeUnits: []
+        sizeUnits: [], productAttributes: []
     });
     const [newCategoryUnitInput, setNewCategoryUnitInput] = useState('');
     const [editingCategory, setEditingCategory] = useState(null);
@@ -226,7 +228,7 @@ const Settings = () => {
             showColor: false, requireColor: false,
             showSize: true, requireSize: true,
             showSupplier: true,
-            sizeUnits: []
+            sizeUnits: [], productAttributes: []
         });
         setNewCategoryUnitInput('');
     };
@@ -1250,12 +1252,8 @@ const Settings = () => {
                                             </li>
                                        ) : (
                                             filteredCustomCategories.map(category => {
-                                                const categoryAttributes = [
-                                                    category.showBrand && `Brand${category.requireBrand ? ' required' : ''}`,
-                                                    category.showColor && `Color${category.requireColor ? ' required' : ''}`,
-                                                    category.showSize !== false && `Size${category.requireSize ? ' required' : ''}`,
-                                                    category.showSupplier !== false && 'Supplier',
-                                                ].filter(Boolean);
+                                                const categoryAttributes = getEffectiveProductAttributes(category)
+                                                    .map((attribute) => `${attribute.name}${attribute.required ? ' required' : ''}`);
                                                 const unitCount = (category.sizeUnits || []).length;
                                                 const categoryMetadata = [...categoryAttributes, `${unitCount} ${unitCount === 1 ? 'unit' : 'units'}`].join(' • ');
 
@@ -1282,6 +1280,7 @@ const Settings = () => {
                                                                        showSize: category.showSize !== false,
                                                                        requireSize: !!category.requireSize,
                                                                        showSupplier: category.showSupplier !== false,
+                                                                       productAttributes: getEffectiveProductAttributes(category),
                                                                        sizeUnits: Array.isArray(category.sizeUnits) ? category.sizeUnits : [],
                                                                        unitInput: '',
                                                                    })}
@@ -1355,7 +1354,13 @@ const Settings = () => {
                                        />
                                    </div>
 
-                                   <div>
+                                   <CategoryAttributesEditor
+                                       value={newCategoryRules.productAttributes || []}
+                                       onChange={(productAttributes) => setNewCategoryRules((prev) => ({ ...prev, productAttributes }))}
+                                       disabled={isCategoryLoading}
+                                   />
+
+                                   <div className="hidden">
                                        <p className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-2">Visible & Required Fields</p>
                                        <div className="grid grid-cols-2 gap-2.5">
                                            <div className="space-y-1.5 p-2 bg-slate-50 dark:bg-gray-900/50 rounded-lg border border-gray-100 dark:border-gray-700">
@@ -1394,7 +1399,8 @@ const Settings = () => {
                                    </div>
 
                                    <div>
-                                       <p className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-2 flex justify-between">Measurement Units <span className="normal-case opacity-70 font-medium">Optional</span></p>
+                                       <p className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-2">Selling Units</p>
+                                       <p className="mb-2 text-[10px] text-gray-500 dark:text-gray-400">Units available when stocking or selling products in this category. Separate from product attribute units.</p>
                                        <div className="flex gap-2.5 items-center mb-2">
                                            <input
                                                type="text"
@@ -1537,8 +1543,15 @@ const Settings = () => {
                                        </div>
                                    </div>
 
+                                   <CategoryAttributesEditor
+                                       value={editingCategory.productAttributes || []}
+                                       onChange={(productAttributes) => setEditingCategory((prev) => ({ ...prev, productAttributes }))}
+                                       disabled={isCategoryLoading}
+                                   />
+
                                    <div className="space-y-2">
-                                       <p className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-2 flex justify-between">Measurement Units <span className="normal-case opacity-70 font-medium">Optional</span></p>
+                                       <p className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-2">Selling Units</p>
+                                       <p className="mb-2 text-[10px] text-gray-500 dark:text-gray-400">Units available when stocking or selling products in this category. Separate from product attribute units.</p>
                                        <div className="flex gap-2.5 items-center mb-2">
                                            <input
                                                type="text"

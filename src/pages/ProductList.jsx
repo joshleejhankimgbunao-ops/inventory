@@ -5,6 +5,7 @@ import IdentifierChip from '../components/IdentifierChip';
 import ArchiveIcon from '../components/ArchiveIcon';
 import EditIcon from '../components/EditIcon';
 import TableActionButton from '../components/TableActionButton';
+import ProductAttributeFields from '../components/ProductAttributeFields';
 import { showToast } from '../utils/toastHelper';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
@@ -15,6 +16,7 @@ import { createProductApi, updateProductApi, listPartnersApi, listProductsApi } 
 import { getStockStatus } from '../utils/recommendationLogic';
 import { formatMoney } from '../utils/numberFormat';
 import { normalizeHumanReadable } from '../utils/textNormalization';
+import { getEffectiveProductAttributes, legacyValuesFromAttributes, productAttributeValues, validateAttributeValues } from '../utils/productAttributes';
 import {
     formatMoneyInput,
     isMoneyInput,
@@ -246,17 +248,24 @@ const ProductList = () => {
         const dynamicCat = customCategories.find((c) => c.name === categoryName);
         if (dynamicCat) {
             return {
-                showBrand: dynamicCat.showBrand ?? false,
-                requireBrand: dynamicCat.requireBrand ?? false,
-                showColor: dynamicCat.showColor ?? false,
-                requireColor: dynamicCat.requireColor ?? false,
-                showSize: dynamicCat.showSize ?? true,
-                requireSize: dynamicCat.requireSize ?? true,
+                showBrand: false,
+                requireBrand: false,
+                showColor: false,
+                requireColor: false,
+                showSize: false,
+                requireSize: false,
                 showSupplier: dynamicCat.showSupplier ?? true,
             };
         }
         // 2. Check static built-in config
         return CATEGORY_FIELD_RULES[categoryName] || CATEGORY_FIELD_RULES.default;
+    };
+
+    const isCompactLegacyAttributeVisible = (categoryName, attributeKey) => {
+        const category = customCategories.find((item) => item.name === categoryName);
+        if (Number(category?.attributeSchemaVersion || 0) < 1) return true;
+
+        return getEffectiveProductAttributes(category).some((definition) => definition.key === attributeKey);
     };
 
     // Helper: parse a size string back into value + unit
@@ -359,9 +368,12 @@ const ProductList = () => {
         price: '',
         stock: '',
         supplier: '',
+        attributes: {},
     };
     const [formData, setFormData] = useState(initialFormState);
-    const categoryFieldRules = useMemo(() => getCategoryFieldRules(formData.category), [formData.category]);
+    const categoryFieldRules = getCategoryFieldRules(formData.category);
+    const selectedCategory = customCategories.find((category) => category.name === formData.category) || {};
+    const attributeDefinitions = getEffectiveProductAttributes(selectedCategory);
 
     const supplierPartnerNames = useMemo(() => {
         return [...new Set((supplierPartners || [])
@@ -515,7 +527,8 @@ const ProductList = () => {
             const matchesSearch = item.name.toLowerCase().includes(normalizedQuery) || 
                                 item.code.toLowerCase().includes(normalizedQuery) ||
                                 (item.brand || '').toLowerCase().includes(normalizedQuery) ||
-                                (item.color || '').toLowerCase().includes(normalizedQuery);
+                                (item.color || '').toLowerCase().includes(normalizedQuery) ||
+                                Object.values(item.attributes || {}).some((value) => String(value ?? '').toLowerCase().includes(normalizedQuery));
             
             // Special handling for Archived Items view
             if (statusFilter === 'Archived') {
@@ -746,7 +759,8 @@ const ProductList = () => {
         setModalMode('add');
         setFormData({
             ...initialFormState,
-            sizeUnit: getDefaultSizeUnit(initialFormState.category)
+            sizeUnit: getDefaultSizeUnit(initialFormState.category),
+            attributes: productAttributeValues({}, getEffectiveProductAttributes(customCategories.find((category) => category.name === initialFormState.category) || {})),
         });
         setIsModalOpen(true);
     };
@@ -756,6 +770,7 @@ const ProductList = () => {
         setModalMode('edit');
         setEditingProduct(product);
         const parsed = parseSizeString(product.size || '', product.category);
+        const definitions = getEffectiveProductAttributes(customCategories.find((category) => category.name === product.category) || {});
         setFormData({
             code: product.code,
             brand: product.brand || '',
@@ -768,6 +783,7 @@ const ProductList = () => {
             price: product.price,
             stock: product.stock,
             supplier: product.supplier || 'Local Supplier',
+            attributes: productAttributeValues(product, definitions),
         });
         setIsModalOpen(true);
     };
@@ -781,15 +797,19 @@ const ProductList = () => {
         }
 
         const rules = getCategoryFieldRules(formData.category);
-        const normalizedBrand = rules.showBrand ? normalizeHumanReadable(formData.brand) : '';
-        const normalizedColor = rules.showColor ? normalizeHumanReadable(formData.color) : '';
+        const attributeError = validateAttributeValues(attributeDefinitions, formData.attributes);
+        if (attributeError) {
+            showToast('Missing Fields', attributeError, 'error', 'product-validation');
+            return;
+        }
+        const legacyAttributes = legacyValuesFromAttributes(attributeDefinitions, formData.attributes);
+        const normalizedBrand = normalizeHumanReadable(legacyAttributes.brand);
+        const normalizedColor = normalizeHumanReadable(legacyAttributes.color);
         const normalizedSupplier = rules.showSupplier ? String(formData.supplier || '').trim() : '';
         const supplierExists = supplierPartnerNames.some(
             (name) => name.toLowerCase() === normalizedSupplier.toLowerCase()
         );
-        const combinedSize = rules.showSize
-            ? resolveCombinedSize(formData.size, formData.sizeUnit, formData.category)
-            : '';
+        const combinedSize = legacyAttributes.size;
         const normalizedPrice = formatMoneyInput(formData.price);
         
         // Basic Validation
@@ -806,21 +826,6 @@ const ProductList = () => {
 
         if (modalMode === 'add' && !isWholeNumberInput(formData.stock)) {
             showToast('Invalid Stock', 'Initial stock must be a non-negative whole number.', 'error', 'product-validation');
-            return;
-        }
-
-        if (rules.requireBrand && !normalizedBrand) {
-            showToast('Missing Fields', `Brand is required for ${formData.category}.`, 'error', 'product-validation');
-            return;
-        }
-
-        if (rules.requireColor && !normalizedColor) {
-            showToast('Missing Fields', `Color or variant is required for ${formData.category}.`, 'error', 'product-validation');
-            return;
-        }
-
-        if (rules.requireSize && !combinedSize) {
-            showToast('Missing Fields', `${getCategoryConfig(formData.category).sizeLabel} is required for ${formData.category}.`, 'error', 'product-validation');
             return;
         }
 
@@ -862,6 +867,7 @@ const ProductList = () => {
                 price: Number(normalizedPrice),
                 stock: stockVal,
                 supplier: normalizedSupplier || 'Local Supplier',
+                attributes: formData.attributes,
                 clientRequestId: productCreateRequestIdRef.current || (productCreateRequestIdRef.current = createClientRequestId('product')),
             };
             newProduct.status = deriveStatus(newProduct);
@@ -871,8 +877,11 @@ const ProductList = () => {
             try {
                 productToInsert = await createProductApi(newProduct);
             } catch (error) {
+                const isDuplicateConfiguration = /same configuration already exists/i.test(error.message || '');
                 showToast(
-                    isApiConnectionFailure(error) ? 'Cannot reach API server.' : 'Unable to Save Product',
+                    isApiConnectionFailure(error)
+                        ? 'Cannot reach API server.'
+                        : (isDuplicateConfiguration ? 'Duplicate Product Configuration' : 'Unable to Save Product'),
                     error.message || 'Product was not saved.',
                     'error',
                     'product-sync'
@@ -900,8 +909,9 @@ const ProductList = () => {
                 (finalSize || '') !== (editingProduct.size || '') ||
                 parseFloat(formData.price) !== editingProduct.price ||
                 (normalizedSupplier || 'Local Supplier') !== (editingProduct.supplier || 'Local Supplier');
+            const attributesChanged = JSON.stringify(formData.attributes || {}) !== JSON.stringify(productAttributeValues(editingProduct, attributeDefinitions));
 
-            if (!hasChanges) {
+            if (!hasChanges && !attributesChanged) {
                setIsModalOpen(false);
                return; 
             }
@@ -919,6 +929,7 @@ const ProductList = () => {
                 price: Number(normalizedPrice),
                 stock: editingProduct.stock,
                 supplier: normalizedSupplier || 'Local Supplier',
+                attributes: formData.attributes,
             };
             localUpdatedProduct.status = deriveStatus(localUpdatedProduct);
 
@@ -936,6 +947,10 @@ const ProductList = () => {
                 if (Number(error?.status || 0) === 409) {
                     if (/SKU already exists/i.test(error.message || '')) {
                         showToast('Duplicate SKU', error.message, 'error', 'product-duplicate');
+                        return;
+                    }
+                    if (/same configuration already exists/i.test(error.message || '')) {
+                        showToast('Duplicate Product Configuration', error.message, 'error', 'product-duplicate');
                         return;
                     }
                     showToast('Conflict Detected', 'This product was edited in another session. Data was refreshed.', 'warning', 'product-conflict');
@@ -1381,7 +1396,7 @@ const ProductList = () => {
                                                     <span className={`text-sm font-semibold leading-tight truncate ${product.isArchived ? 'text-gray-400 dark:text-gray-500 line-through' : 'text-gray-900 dark:text-white'}`}>
                                                         {product.name}
                                                     </span>
-                                                    {product.brand && (
+                                                    {product.brand && isCompactLegacyAttributeVisible(product.category, 'brand') && (
                                                         <span className={`shrink-0 text-[10px] font-medium leading-tight px-1.5 py-0.5 rounded-md ${product.isArchived ? 'bg-gray-50 text-gray-300 dark:bg-gray-800 dark:text-gray-600' : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'}`}>
                                                             {product.brand}
                                                         </span>
@@ -1390,10 +1405,15 @@ const ProductList = () => {
                                                         <span className="shrink-0 px-1.5 py-0.5 rounded text-[10px] bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400 font-semibold uppercase">Archived</span>
                                                     )}
                                                 </div>
-                                                {(product.size || product.color) && (
+                                                {((product.size && isCompactLegacyAttributeVisible(product.category, 'size'))
+                                                    || (product.color && isCompactLegacyAttributeVisible(product.category, 'color'))) && (
                                                     <div className="mt-1 flex items-center gap-1.5 min-w-0">
                                                         <span className={`min-w-0 truncate px-1.5 py-0.5 rounded text-[10px] font-medium border ${product.isArchived ? 'bg-gray-50 text-gray-400 border-gray-200 dark:bg-gray-800 dark:text-gray-600 dark:border-gray-700' : 'bg-gray-50 text-black border-gray-300 dark:bg-gray-700 dark:text-white dark:border-gray-600'}`}>
-                                                            {product.size ? `Size: ${product.size}` : ''}{product.size && product.color ? ' • ' : ''}{product.color ? `Color: ${product.color}` : ''}
+                                                            {product.size && isCompactLegacyAttributeVisible(product.category, 'size') ? `Size: ${product.size}` : ''}
+                                                            {product.size && product.color
+                                                                && isCompactLegacyAttributeVisible(product.category, 'size')
+                                                                && isCompactLegacyAttributeVisible(product.category, 'color') ? ' • ' : ''}
+                                                            {product.color && isCompactLegacyAttributeVisible(product.category, 'color') ? `Color: ${product.color}` : ''}
                                                         </span>
                                                     </div>
                                                 )}
@@ -1552,7 +1572,7 @@ const ProductList = () => {
                                             value={formData.code}
                                             onChange={e => setFormData(prev => ({ ...prev, code: e.target.value }))}
                                             maxLength={100}
-                                            className="w-full p-2 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg text-xs font-mono font-semibold text-gray-800 dark:text-gray-100 focus:border-gray-900 dark:focus:border-gray-400 outline-none"
+                                            className="w-full p-2 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg text-xs font-mono font-semibold text-gray-800 placeholder:font-sans placeholder:font-medium dark:text-gray-100 focus:border-gray-900 dark:focus:border-gray-400 outline-none"
                                             placeholder={modalMode === 'add' ? 'Optional — auto-generate' : 'SKU'}
                                         />
                                         {modalMode === 'add' && <p className="mt-1 text-[10px] font-medium text-gray-400 dark:text-gray-500">Leave blank to auto-generate.</p>}
@@ -1565,6 +1585,9 @@ const ProductList = () => {
                                                 const newCat = e.target.value;
                                                 const newRules = getCategoryFieldRules(newCat);
                                                 const newSizeUnits = getCategorySizeUnits(newCat);
+                                                const nextDefinitions = getEffectiveProductAttributes(customCategories.find((category) => category.name === newCat) || {});
+                                                const hasEnteredAttributes = Object.values(formData.attributes || {}).some((value) => String(value ?? '').trim());
+                                                if (hasEnteredAttributes && !window.confirm('Changing category may remove attribute values that are not used by the new category. Continue?')) return;
                                                 setFormData(prev => ({
                                                     ...prev, 
                                                     category: newCat,
@@ -1578,7 +1601,11 @@ const ProductList = () => {
                                                                 : (modalMode === 'add' ? (newSizeUnits[0] || '') : prev.sizeUnit)
                                                         )
                                                         : '',
-                                                    supplier: newRules.showSupplier ? prev.supplier : ''
+                                                    supplier: newRules.showSupplier ? prev.supplier : '',
+                                                    attributes: nextDefinitions.reduce((values, definition) => {
+                                                        values[definition.key] = prev.attributes?.[definition.key] ?? '';
+                                                        return values;
+                                                    }, {})
                                                 }));
                                             }}
                                             required
@@ -1642,6 +1669,11 @@ const ProductList = () => {
                                             />
                                         </div>
                                     </div>
+                                    <ProductAttributeFields
+                                        definitions={attributeDefinitions}
+                                        values={formData.attributes}
+                                        onChange={(attributes) => setFormData((prev) => ({ ...prev, attributes }))}
+                                    />
                                     {(categoryFieldRules.showColor || categoryFieldRules.showSize) && (
                                     <div className="grid grid-cols-2 gap-2.5">
                                         {categoryFieldRules.showColor && (

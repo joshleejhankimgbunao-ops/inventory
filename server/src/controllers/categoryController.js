@@ -1,5 +1,6 @@
 const Category = require('../models/Category');
 const { normalizeHumanReadable } = require('../../../shared/textNormalization.cjs');
+const { getEffectiveDefinitions, normalizeDefinitions } = require('../utils/productAttributes');
 
 const normalizeUnits = (units) => {
   if (!Array.isArray(units)) return undefined;
@@ -17,8 +18,15 @@ const normalizeUnits = (units) => {
 const getCategories = async (req, res, next) => {
   try {
     const categories = await Category.find().sort({ name: 1 });
-    res.json(categories);
+    res.json(categories.map((category) => ({
+      ...category.toObject(),
+      productAttributes: getEffectiveDefinitions(category),
+    })));
   } catch (error) {
+    if (error?.code === 'INVALID_PRODUCT_ATTRIBUTES') {
+      res.status(400);
+      return next(error);
+    }
     next(error);
   }
 };
@@ -33,7 +41,7 @@ const createCategory = async (req, res, next) => {
       showBrand, requireBrand, 
       showColor, requireColor, 
       showSize, requireSize, 
-      sizeUnits
+      sizeUnits, productAttributes
     } = req.body;
 
     const normalizedName = normalizeHumanReadable(name);
@@ -52,16 +60,23 @@ const createCategory = async (req, res, next) => {
 
     const normalizedUnits = normalizeUnits(sizeUnits);
 
+    const normalizedAttributes = productAttributes === undefined ? undefined : normalizeDefinitions(productAttributes);
     const category = await Category.create({ 
       name: normalizedName, description,
       showBrand, requireBrand,
       showColor, requireColor,
       showSize, requireSize,
       ...(normalizedUnits ? { sizeUnits: normalizedUnits } : {}),
+      ...(normalizedAttributes ? { productAttributes: normalizedAttributes } : {}),
+      ...(productAttributes !== undefined ? { attributeSchemaVersion: 1 } : {}),
       showSupplier: true
     });
     res.status(201).json(category);
   } catch (error) {
+    if (error?.code === 'INVALID_PRODUCT_ATTRIBUTES') {
+      res.status(400);
+      return next(error);
+    }
     if (error?.code === 11000) {
       res.status(400);
       return next(new Error('Category already exists'));
@@ -80,7 +95,7 @@ const updateCategory = async (req, res, next) => {
       showBrand, requireBrand,
       showColor, requireColor,
       showSize, requireSize,
-      sizeUnits
+      sizeUnits, productAttributes
     } = req.body;
     const categoryId = req.params.id;
     const normalizedName = name !== undefined ? normalizeHumanReadable(name) : undefined;
@@ -118,15 +133,23 @@ const updateCategory = async (req, res, next) => {
       if (normalizedUnits !== undefined) {
         category.sizeUnits = normalizedUnits;
       }
+      if (productAttributes !== undefined) {
+        category.productAttributes = normalizeDefinitions(productAttributes);
+        category.attributeSchemaVersion = 1;
+      }
       category.showSupplier = true;
 
       const updatedCategory = await category.save();
-      res.json(updatedCategory);
+      res.json({ ...updatedCategory.toObject(), productAttributes: getEffectiveDefinitions(updatedCategory) });
     } else {
       res.status(404);
       throw new Error('Category not found');
     }
   } catch (error) {
+    if (error?.code === 'INVALID_PRODUCT_ATTRIBUTES') {
+      res.status(400);
+      return next(error);
+    }
     if (error?.code === 11000) {
       res.status(400);
       return next(new Error('Category already exists'));
