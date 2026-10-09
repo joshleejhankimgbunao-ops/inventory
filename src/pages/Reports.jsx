@@ -13,13 +13,14 @@ import logo from '../assets/logo.png';
 import ColoredPiePercentageLabel from '../components/ColoredPiePercentageLabel';
 import { ANALYTICS_PIE_COLORS } from '../utils/analyticsChart';
 import MetricTrendLine from '../components/MetricTrendLine';
+import ReportDateRangeSelector from '../components/ReportDateRangeSelector';
+import ReportsDateSelector from '../components/ReportsDateSelector';
 import { getDashboardComparisonPeriod, getMetricTrend, getPreviousSalesReportMetrics } from '../utils/dashboardTrend';
 import { getValidSales, isValidCreditCollectionForReporting } from '../../shared/saleLifecycle.mjs';
 import { subscribeRealtimeEvent } from '../services/realtimeClient';
 import {
   formatReportExportRangeLabel,
   getDefaultReportExportRange,
-  getExportPresetRange,
   getReportExportFilenameRange,
   isDateWithinReportExportRange,
   toDateInputValue,
@@ -560,10 +561,9 @@ const Reports = () => {
     setExportRangeError('');
   };
 
-  const applyExportPreset = (preset) => {
-    const range = getExportPresetRange(preset);
-    setExportStartDate(range.from);
-    setExportEndDate(range.to);
+  const updateExportRange = ({ from, to }) => {
+    setExportStartDate(from);
+    setExportEndDate(to);
     setExportRangeError('');
   };
 
@@ -771,32 +771,16 @@ const Reports = () => {
               )}
 
               <div className="flex items-center gap-2 flex-wrap">
-                <div className="relative flex items-center gap-2">
-                  <select value={dateRange} onChange={(e) => setDateRange(e.target.value)} className="px-3 py-1.5 rounded-lg text-xs font-medium bg-gray-900 text-white appearance-none pr-8" style={{ minWidth: 140 }}>
-                    <option value="all">All Time</option>
-                    <option value="today">Today</option>
-                    <option value="week">This Week</option>
-                    <option value="month">This Month</option>
-                    <option value="year">This Year</option>
-                    <option value="specific_date">Select Date</option>
-                    <option value="custom">Custom Range</option>
-                  </select>
-                  <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none">
-                    <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" /></svg>
-                  </div>
-
-                  {dateRange === 'specific_date' && (
-                    <input type="date" value={specificDate} max={new Date().toISOString().split('T')[0]} onChange={(e) => setSpecificDate(e.target.value)} className="ml-2 px-2 py-1.5 rounded-lg border border-gray-900 text-xs bg-white" style={{ minWidth: 140 }} />
-                  )}
-
-                  {dateRange === 'custom' && (
-                    <div className="flex items-center gap-2 ml-2">
-                      <input type="date" value={customStartDate} max={new Date().toISOString().split('T')[0]} onChange={(e) => setCustomStartDate(e.target.value)} className="px-2 py-1.5 rounded-lg border border-gray-900 text-xs bg-white" style={{ minWidth: 140 }} />
-                      <span className="text-gray-400 text-xs">to</span>
-                      <input type="date" value={customEndDate} max={new Date().toISOString().split('T')[0]} onChange={(e) => setCustomEndDate(e.target.value)} className="px-2 py-1.5 rounded-lg border border-gray-900 text-xs bg-white" style={{ minWidth: 140 }} />
-                    </div>
-                  )}
-                </div>
+                <ReportsDateSelector
+                  value={dateRange}
+                  onChange={setDateRange}
+                  specificDate={specificDate}
+                  onSpecificDateChange={setSpecificDate}
+                  customStartDate={customStartDate}
+                  onCustomStartDateChange={setCustomStartDate}
+                  customEndDate={customEndDate}
+                  onCustomEndDateChange={setCustomEndDate}
+                />
 
                 <div className="pdf-exclude shrink-0">
                   <button
@@ -1153,29 +1137,13 @@ const Reports = () => {
               </label>
             </div>
 
-            <div>
-              <p className="text-xs font-medium text-slate-600 dark:text-slate-300">Export Range</p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {[
-                  ['week', 'This Week'],
-                  ['month', 'This Month'],
-                  ['year', 'This Year'],
-                ].map(([value, label]) => (
-                  <button key={value} type="button" disabled={isExporting} onClick={() => applyExportPreset(value)} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-medium text-slate-600 transition-colors hover:border-slate-300 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-600/80 dark:bg-[#2d3035] dark:text-slate-300 dark:hover:bg-[#373a40]">
-                    {label}
-                  </button>
-                ))}
-              </div>
-              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <label className="block text-xs font-medium text-slate-600 dark:text-slate-300">From
-                  <input type="date" value={exportStartDate} max={toDateInputValue(new Date())} disabled={isExporting} onChange={(event) => { setExportStartDate(event.target.value); setExportRangeError(''); }} className="mt-1.5 h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition-colors focus:border-slate-400 focus:ring-2 focus:ring-slate-300/40 disabled:opacity-60 dark:border-slate-600/80 dark:bg-[#2d3035] dark:text-slate-100 dark:[color-scheme:dark] dark:focus:border-slate-500 dark:focus:ring-slate-500/25" />
-                </label>
-                <label className="block text-xs font-medium text-slate-600 dark:text-slate-300">To
-                  <input type="date" value={exportEndDate} max={toDateInputValue(new Date())} disabled={isExporting} onChange={(event) => { setExportEndDate(event.target.value); setExportRangeError(''); }} className="mt-1.5 h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition-colors focus:border-slate-400 focus:ring-2 focus:ring-slate-300/40 disabled:opacity-60 dark:border-slate-600/80 dark:bg-[#2d3035] dark:text-slate-100 dark:[color-scheme:dark] dark:focus:border-slate-500 dark:focus:ring-slate-500/25" />
-                </label>
-              </div>
-              {exportRangeError && <p role="alert" className="mt-2 text-xs font-medium text-rose-600 dark:text-rose-300">{exportRangeError}</p>}
-            </div>
+            <ReportDateRangeSelector
+              from={exportStartDate}
+              to={exportEndDate}
+              onChange={updateExportRange}
+              disabled={isExporting}
+              error={exportRangeError}
+            />
           </div>
           <div className="flex flex-col-reverse gap-2 border-t border-slate-200/70 px-5 py-3 sm:flex-row sm:justify-end dark:border-slate-700/70">
             <button type="button" onClick={closeExportModal} disabled={isExporting} className="h-9 rounded-lg border border-slate-300 bg-white px-4 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400/40 disabled:opacity-50 dark:border-slate-600 dark:bg-[#2d3035] dark:text-slate-200 dark:hover:bg-[#373a40]">Cancel</button>

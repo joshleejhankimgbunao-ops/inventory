@@ -5,13 +5,13 @@ import ArchiveIcon from '../components/ArchiveIcon';
 import EditIcon from '../components/EditIcon';
 import TableActionButton from '../components/TableActionButton';
 import CategoryAttributesEditor from '../components/CategoryAttributesEditor';
+import ReportsDateSelector from '../components/ReportsDateSelector';
 import { getEffectiveProductAttributes } from '../utils/productAttributes';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
 import { createCategoryApi, updateCategoryApi } from '../services/inventoryApi';
 import {
     downloadAutomaticBackupApi,
-    downloadLatestAutomaticBackupApi,
     downloadSystemBackupApi,
     listAutomaticBackupHistoryApi,
     restoreSystemBackupApi,
@@ -88,9 +88,15 @@ const Settings = () => {
     const [isAutomaticBackupSaving, setIsAutomaticBackupSaving] = useState(false);
     const automaticBackupSaveInFlightRef = useRef(false);
     const [automaticBackupHistory, setAutomaticBackupHistory] = useState([]);
-    const [automaticBackupHistoryDate, setAutomaticBackupHistoryDate] = useState('');
+    const [automaticBackupHistoryFilter, setAutomaticBackupHistoryFilter] = useState('all');
+    const [automaticBackupHistorySpecificDate, setAutomaticBackupHistorySpecificDate] = useState('');
+    const [automaticBackupHistoryCustomStartDate, setAutomaticBackupHistoryCustomStartDate] = useState('');
+    const [automaticBackupHistoryCustomEndDate, setAutomaticBackupHistoryCustomEndDate] = useState('');
+    const [automaticBackupHistoryError, setAutomaticBackupHistoryError] = useState('');
+    const [selectedAutomaticBackupIds, setSelectedAutomaticBackupIds] = useState(() => new Set());
     const [isAutomaticBackupHistoryLoading, setIsAutomaticBackupHistoryLoading] = useState(false);
     const [automaticBackupDownloadId, setAutomaticBackupDownloadId] = useState('');
+    const automaticBackupSelectAllRef = useRef(null);
     const restoreInputRef = useRef(null);
     
     const defaults = useMemo(() => ({
@@ -203,12 +209,14 @@ const Settings = () => {
 
         let cancelled = false;
         setIsAutomaticBackupHistoryLoading(true);
+        setAutomaticBackupHistoryError('');
         listAutomaticBackupHistoryApi()
             .then((backups) => {
                 if (!cancelled) setAutomaticBackupHistory(backups);
             })
             .catch((error) => {
                 if (!cancelled) {
+                    setAutomaticBackupHistoryError(error?.message || 'Unable to load automatic backup history.');
                     showPageLoadError(showToast, error, 'automatic-backup-history-load');
                 }
             })
@@ -584,6 +592,29 @@ const Settings = () => {
         return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
     };
 
+    const formatAutomaticBackupDateOnly = (value) => {
+        const date = new Date(value);
+        return Number.isNaN(date.getTime())
+            ? 'Unknown date'
+            : date.toLocaleDateString([], {
+                timeZone: 'Asia/Manila',
+                month: 'short',
+                day: 'numeric',
+                year: 'numeric',
+            });
+    };
+
+    const formatAutomaticBackupTimeOnly = (value) => {
+        const date = new Date(value);
+        return Number.isNaN(date.getTime())
+            ? 'Unknown time'
+            : date.toLocaleTimeString([], {
+                timeZone: 'Asia/Manila',
+                hour: 'numeric',
+                minute: '2-digit',
+            });
+    };
+
     const toPhilippineCalendarDate = (value) => {
         const date = new Date(value);
         if (Number.isNaN(date.getTime())) return '';
@@ -602,24 +633,78 @@ const Settings = () => {
         return `${parts.year}-${parts.month}-${parts.day}`;
     };
 
-    const filteredAutomaticBackupHistory = useMemo(() => (
-        automaticBackupHistoryDate
-            ? automaticBackupHistory.filter((backup) => toPhilippineCalendarDate(backup.createdAt) === automaticBackupHistoryDate)
-            : automaticBackupHistory
-    ), [automaticBackupHistory, automaticBackupHistoryDate]);
+    const getPhilippineDateDaysAgo = (calendarDate, days) => {
+        const date = new Date(`${calendarDate}T00:00:00Z`);
+        date.setUTCDate(date.getUTCDate() - days);
+        return date.toISOString().slice(0, 10);
+    };
 
-    const selectedDateAutomaticBackup = automaticBackupHistoryDate
-        ? filteredAutomaticBackupHistory[0] || null
-        : null;
+    const sortedAutomaticBackupHistory = useMemo(() => (
+        [...automaticBackupHistory].sort((left, right) => (
+            new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
+        ))
+    ), [automaticBackupHistory]);
 
-    const selectedAutomaticBackupDateLabel = automaticBackupHistoryDate
-        ? new Date(`${automaticBackupHistoryDate}T00:00:00+08:00`).toLocaleDateString([], {
-            timeZone: 'Asia/Manila',
-            month: 'short',
-            day: 'numeric',
-            year: 'numeric',
-        })
-        : '';
+    const isAutomaticBackupRangeActive = automaticBackupHistoryFilter !== 'all';
+
+    const filteredAutomaticBackupHistory = useMemo(() => {
+        const today = toPhilippineCalendarDate(new Date());
+        const weekAgo = getPhilippineDateDaysAgo(today, 7);
+        const currentMonth = today.slice(0, 7);
+        const currentYear = today.slice(0, 4);
+
+        return sortedAutomaticBackupHistory.filter((backup) => {
+            const backupDate = toPhilippineCalendarDate(backup.createdAt);
+            if (automaticBackupHistoryFilter === 'today') return backupDate === today;
+            if (automaticBackupHistoryFilter === 'week') return backupDate >= weekAgo;
+            if (automaticBackupHistoryFilter === 'month') return backupDate.slice(0, 7) === currentMonth;
+            if (automaticBackupHistoryFilter === 'year') return backupDate.slice(0, 4) === currentYear;
+            if (automaticBackupHistoryFilter === 'specific_date') {
+                return Boolean(automaticBackupHistorySpecificDate) && backupDate === automaticBackupHistorySpecificDate;
+            }
+            if (automaticBackupHistoryFilter === 'custom') {
+                return Boolean(automaticBackupHistoryCustomStartDate)
+                    && Boolean(automaticBackupHistoryCustomEndDate)
+                    && automaticBackupHistoryCustomStartDate <= automaticBackupHistoryCustomEndDate
+                    && backupDate >= automaticBackupHistoryCustomStartDate
+                    && backupDate <= automaticBackupHistoryCustomEndDate;
+            }
+            return true;
+        });
+    }, [
+        automaticBackupHistoryCustomEndDate,
+        automaticBackupHistoryCustomStartDate,
+        automaticBackupHistoryFilter,
+        automaticBackupHistorySpecificDate,
+        sortedAutomaticBackupHistory,
+    ]);
+
+    const visibleAutomaticBackupIds = useMemo(() => (
+        filteredAutomaticBackupHistory.map((backup) => backup.id || backup.fileName)
+    ), [filteredAutomaticBackupHistory]);
+
+    useEffect(() => {
+        const visibleIds = new Set(visibleAutomaticBackupIds);
+        setSelectedAutomaticBackupIds((current) => {
+            const next = new Set([...current].filter((id) => visibleIds.has(id)));
+            if (next.size === current.size && [...next].every((id) => current.has(id))) return current;
+            return next;
+        });
+    }, [visibleAutomaticBackupIds]);
+
+    const allVisibleAutomaticBackupsSelected = visibleAutomaticBackupIds.length > 0
+        && visibleAutomaticBackupIds.every((id) => selectedAutomaticBackupIds.has(id));
+    const someVisibleAutomaticBackupsSelected = visibleAutomaticBackupIds.some((id) => (
+        selectedAutomaticBackupIds.has(id)
+    ));
+
+    useEffect(() => {
+        if (automaticBackupSelectAllRef.current) {
+            automaticBackupSelectAllRef.current.indeterminate = (
+                someVisibleAutomaticBackupsSelected && !allVisibleAutomaticBackupsSelected
+            );
+        }
+    }, [allVisibleAutomaticBackupsSelected, someVisibleAutomaticBackupsSelected]);
 
     const automaticBackupStatusLabel = !settings.automaticBackupEnabled
         ? 'Disabled'
@@ -675,7 +760,7 @@ const Settings = () => {
         const fileName = String(backup?.fileName || '');
         if (!fileName) return;
 
-        setAutomaticBackupDownloadId(fileName);
+        setAutomaticBackupDownloadId(backup.id || fileName);
         try {
             const blob = await downloadAutomaticBackupApi(fileName);
             downloadAutomaticBackupFile(blob, fileName);
@@ -687,34 +772,51 @@ const Settings = () => {
         }
     };
 
-    const handleDownloadLatestAutomaticBackup = async () => {
-        const latestBackup = automaticBackupHistory[0];
-        if (!latestBackup?.fileName) {
-            showToast('No Automatic Backups', 'No automatic backups are available to download.', 'error');
-            return;
-        }
+    const toggleAutomaticBackupSelection = (backupId) => {
+        setSelectedAutomaticBackupIds((current) => {
+            const next = new Set(current);
+            if (next.has(backupId)) next.delete(backupId);
+            else next.add(backupId);
+            return next;
+        });
+    };
 
-        setAutomaticBackupDownloadId('latest');
+    const toggleAllVisibleAutomaticBackups = () => {
+        setSelectedAutomaticBackupIds((current) => {
+            const next = new Set(current);
+            if (allVisibleAutomaticBackupsSelected) {
+                visibleAutomaticBackupIds.forEach((id) => next.delete(id));
+            } else {
+                visibleAutomaticBackupIds.forEach((id) => next.add(id));
+            }
+            return next;
+        });
+    };
+
+    const handleDownloadSelectedAutomaticBackups = async () => {
+        const selectedBackups = filteredAutomaticBackupHistory.filter((backup) => (
+            selectedAutomaticBackupIds.has(backup.id || backup.fileName)
+        ));
+        if (selectedBackups.length === 0) return;
+
+        setAutomaticBackupDownloadId('selected');
+        let downloadedCount = 0;
         try {
-            const blob = await downloadLatestAutomaticBackupApi();
-            downloadAutomaticBackupFile(blob, latestBackup.fileName);
-            showToast('Automatic Backup Ready', 'Latest automatic backup downloaded successfully.', 'success');
+            for (const backup of selectedBackups) {
+                const blob = await downloadAutomaticBackupApi(backup.fileName);
+                downloadAutomaticBackupFile(blob, backup.fileName);
+                downloadedCount += 1;
+            }
+            showToast(
+                'Automatic Backups Ready',
+                `${downloadedCount} automatic backup${downloadedCount === 1 ? '' : 's'} downloaded successfully.`,
+                'success'
+            );
         } catch (error) {
-            showPageLoadError(showToast, error, 'automatic-backup-download-latest');
+            showPageLoadError(showToast, error, 'automatic-backup-download-selected');
         } finally {
             setAutomaticBackupDownloadId('');
         }
-    };
-
-    const handlePrimaryAutomaticBackupDownload = async () => {
-        if (automaticBackupHistoryDate) {
-            if (selectedDateAutomaticBackup) {
-                await handleDownloadAutomaticBackup(selectedDateAutomaticBackup);
-            }
-            return;
-        }
-
-        await handleDownloadLatestAutomaticBackup();
     };
 
     const openRestorePicker = () => {
@@ -1783,56 +1885,49 @@ const Settings = () => {
                                             <h4 className="text-sm font-semibold text-gray-900 dark:text-white">Automatic Backup History</h4>
                                             <p className="mt-1 text-xs text-gray-500">Download retained automatic backups stored securely in cloud storage.</p>
                                         </div>
-                                        <button
-                                            type="button"
-                                            onClick={handlePrimaryAutomaticBackupDownload}
-                                            disabled={
-                                                isAutomaticBackupHistoryLoading
-                                                || Boolean(automaticBackupDownloadId)
-                                                || (Boolean(automaticBackupHistoryDate) && !selectedDateAutomaticBackup)
-                                            }
-                                            className="inline-flex items-center gap-2 rounded-lg bg-gray-900 px-3 py-2 text-xs font-semibold text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
-                                        >
-                                            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v10m0 0 4-4m-4 4-4-4m-3 6v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2" /></svg>
-                                            {automaticBackupDownloadId
-                                                ? 'Downloading...'
-                                                : automaticBackupHistoryDate
-                                                    ? selectedDateAutomaticBackup
-                                                        ? `Download Backup for ${selectedAutomaticBackupDateLabel}`
-                                                        : 'No Backup Available for Selected Date'
-                                                    : 'Download Latest Automatic Backup'}
-                                        </button>
-                                    </div>
-
-                                    <div className="mt-4 flex flex-wrap items-end gap-2 border-t border-gray-100 pt-3 dark:border-gray-700">
-                                        <label className="block">
-                                            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-gray-500">Backup Date</span>
-                                            <input
-                                                type="date"
-                                                value={automaticBackupHistoryDate}
-                                                onChange={(event) => setAutomaticBackupHistoryDate(event.target.value)}
-                                                className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm font-medium text-gray-900 outline-none transition focus:ring-2 focus:ring-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
-                                            />
-                                        </label>
-                                        {automaticBackupHistoryDate && (
+                                        {selectedAutomaticBackupIds.size > 0 && (
                                             <button
                                                 type="button"
-                                                onClick={() => setAutomaticBackupHistoryDate('')}
-                                                className="rounded-lg border border-gray-200 px-3 py-2 text-xs font-semibold text-gray-700 transition hover:bg-gray-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
+                                                onClick={handleDownloadSelectedAutomaticBackups}
+                                                disabled={Boolean(automaticBackupDownloadId)}
+                                                className="inline-flex items-center gap-2 rounded-lg bg-gray-900 px-3 py-2 text-xs font-semibold text-white transition hover:bg-gray-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-500/50 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-white"
                                             >
-                                                Clear
+                                                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v10m0 0 4-4m-4 4-4-4m-3 6v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2 2v-2" /></svg>
+                                                {automaticBackupDownloadId === 'selected'
+                                                    ? 'Downloading...'
+                                                    : `Download Selected (${selectedAutomaticBackupIds.size})`}
                                             </button>
                                         )}
                                     </div>
 
-                                    <div className="mt-3 overflow-hidden rounded-lg border border-gray-100 dark:border-gray-700">
-                                        {isAutomaticBackupHistoryLoading ? (
+                                    <ReportsDateSelector
+                                        value={automaticBackupHistoryFilter}
+                                        onChange={setAutomaticBackupHistoryFilter}
+                                        specificDate={automaticBackupHistorySpecificDate}
+                                        onSpecificDateChange={setAutomaticBackupHistorySpecificDate}
+                                        customStartDate={automaticBackupHistoryCustomStartDate}
+                                        onCustomStartDateChange={setAutomaticBackupHistoryCustomStartDate}
+                                        customEndDate={automaticBackupHistoryCustomEndDate}
+                                        onCustomEndDateChange={setAutomaticBackupHistoryCustomEndDate}
+                                        disabled={isAutomaticBackupHistoryLoading}
+                                        className="mt-3 flex-wrap"
+                                        ariaLabel="Automatic backup history date range"
+                                    />
+
+                                    <div className="mt-4 overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+                                        {automaticBackupHistoryError ? (
+                                            <p role="alert" className="px-3 py-4 text-center text-xs text-rose-600 dark:text-rose-300">
+                                                {automaticBackupHistoryError}
+                                            </p>
+                                        ) : isAutomaticBackupHistoryLoading ? (
                                             <div className="space-y-2 p-3" aria-label="Loading automatic backups">
                                                 {Array.from({ length: 3 }).map((_, index) => (
                                                     <div key={`automatic-backup-skeleton-${index}`} className="flex items-center justify-between gap-3 animate-pulse">
-                                                        <div className="space-y-1.5">
-                                                            <div className="h-3 w-36 rounded bg-gray-200 dark:bg-gray-700" />
-                                                            <div className="h-2.5 w-24 rounded bg-gray-100 dark:bg-gray-700/70" />
+                                                        <div className="flex flex-1 items-center gap-3">
+                                                            <div className="h-4 w-4 rounded bg-gray-200 dark:bg-gray-700" />
+                                                            <div className="h-3 w-28 rounded bg-gray-200 dark:bg-gray-700" />
+                                                            <div className="h-3 w-16 rounded bg-gray-100 dark:bg-gray-700/70" />
+                                                            <div className="h-3 flex-1 rounded bg-gray-100 dark:bg-gray-700/70" />
                                                         </div>
                                                         <div className="h-7 w-20 rounded-lg bg-gray-200 dark:bg-gray-700" />
                                                     </div>
@@ -1840,29 +1935,65 @@ const Settings = () => {
                                             </div>
                                         ) : filteredAutomaticBackupHistory.length === 0 ? (
                                             <p className="px-3 py-4 text-center text-xs text-gray-500">
-                                                {automaticBackupHistoryDate ? 'No automatic backups were created on this Philippine calendar date.' : 'No automatic backups are available yet.'}
+                                                {automaticBackupHistory.length > 0 && isAutomaticBackupRangeActive
+                                                    ? 'No backups found for the selected date range.'
+                                                    : 'No automatic backups are available yet.'}
                                             </p>
                                         ) : (
-                                            <div className="divide-y divide-gray-100 dark:divide-gray-700">
-                                                {filteredAutomaticBackupHistory.map((backup) => (
-                                                    <div key={backup.id} className="flex flex-wrap items-center justify-between gap-3 px-3 py-3">
-                                                        <div className="min-w-0">
-                                                            <p className="text-xs font-semibold text-gray-800 dark:text-gray-100">{formatAutomaticBackupDate(backup.createdAt, 'Unknown backup time')}</p>
-                                                            <p className="mt-0.5 text-[11px] text-gray-500">{backup.fileName} · {formatAutomaticBackupSize(backup.size)} · Available</p>
-                                                        </div>
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => handleDownloadAutomaticBackup(backup)}
-                                                            disabled={Boolean(automaticBackupDownloadId)}
-                                                            aria-label={`Download ${backup.fileName}`}
-                                                            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs font-semibold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
-                                                        >
-                                                            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v10m0 0 4-4m-4 4-4-4m-3 6v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2" /></svg>
-                                                            {automaticBackupDownloadId === backup.id ? 'Downloading...' : 'Download'}
-                                                        </button>
-                                                    </div>
-                                                ))}
-                                            </div>
+                                            <table className="w-full min-w-[620px] table-fixed text-left">
+                                                <thead className="bg-gray-50 text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:bg-gray-900/35 dark:text-gray-400">
+                                                    <tr>
+                                                        <th className="w-10 px-3 py-2.5">
+                                                            <input
+                                                                ref={automaticBackupSelectAllRef}
+                                                                type="checkbox"
+                                                                checked={allVisibleAutomaticBackupsSelected}
+                                                                onChange={toggleAllVisibleAutomaticBackups}
+                                                                aria-label="Select all visible automatic backups"
+                                                                className="h-4 w-4 rounded border-gray-300 text-gray-900 focus:ring-gray-500 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+                                                            />
+                                                        </th>
+                                                        <th className="w-28 px-2 py-2.5">Backup Date</th>
+                                                        <th className="w-20 px-2 py-2.5">Time</th>
+                                                        <th className="px-2 py-2.5">File Name</th>
+                                                        <th className="w-16 px-2 py-2.5 text-right">Size</th>
+                                                        <th className="w-24 px-3 py-2.5 text-right">Action</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-gray-100 text-xs dark:divide-gray-700">
+                                                    {filteredAutomaticBackupHistory.map((backup) => {
+                                                        const backupId = backup.id || backup.fileName;
+                                                        return (
+                                                            <tr key={backupId} className="text-gray-700 dark:text-gray-200">
+                                                                <td className="px-3 py-2.5">
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        checked={selectedAutomaticBackupIds.has(backupId)}
+                                                                        onChange={() => toggleAutomaticBackupSelection(backupId)}
+                                                                        aria-label={`Select ${backup.fileName}`}
+                                                                        className="h-4 w-4 rounded border-gray-300 text-gray-900 focus:ring-gray-500 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+                                                                    />
+                                                                </td>
+                                                                <td className="whitespace-nowrap px-2 py-2.5 font-medium">{formatAutomaticBackupDateOnly(backup.createdAt)}</td>
+                                                                <td className="whitespace-nowrap px-2 py-2.5 text-gray-500 dark:text-gray-400">{formatAutomaticBackupTimeOnly(backup.createdAt)}</td>
+                                                                <td className="truncate px-2 py-2.5 text-[11px] text-gray-600 dark:text-gray-300" title={backup.fileName}>{backup.fileName}</td>
+                                                                <td className="whitespace-nowrap px-2 py-2.5 text-right text-gray-500 dark:text-gray-400">{formatAutomaticBackupSize(backup.size)}</td>
+                                                                <td className="px-3 py-2.5 text-right">
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => handleDownloadAutomaticBackup(backup)}
+                                                                        disabled={Boolean(automaticBackupDownloadId)}
+                                                                        aria-label={`Download ${backup.fileName}`}
+                                                                        className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-[11px] font-semibold text-gray-700 transition hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400/40 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
+                                                                    >
+                                                                        {automaticBackupDownloadId === backupId ? 'Downloading...' : 'Download'}
+                                                                    </button>
+                                                                </td>
+                                                            </tr>
+                                                        );
+                                                    })}
+                                                </tbody>
+                                            </table>
                                         )}
                                     </div>
                                 </div>
