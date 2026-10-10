@@ -1,6 +1,6 @@
 import { formatCurrency } from './numberFormat.js';
 
-const THERMAL_LINE_WIDTH = 32;
+const THERMAL_LINE_WIDTH = 30;
 const SEPARATOR = '-'.repeat(THERMAL_LINE_WIDTH);
 const ITEM_PRICE_COLUMNS_HEADER = 'QTY  UNIT PRICE  AMOUNT';
 
@@ -55,8 +55,6 @@ export const buildQuotationReceiptModel = (quotation = {}, settings = {}) => {
     const storeName = String(settings?.storeName || 'Quotation').trim();
     const storeAddress = String(settings?.storeAddress || '').trim();
     const contactPhone = String(settings?.contactPhone || '').trim();
-    const customerName = String(quotation?.customerName || '').trim();
-    const date = String(quotation?.date || '').trim();
     const items = Array.isArray(quotation?.items) ? quotation.items : [];
 
     const normalizedItems = items.map((item) => {
@@ -80,22 +78,22 @@ export const buildQuotationReceiptModel = (quotation = {}, settings = {}) => {
         storeAddress,
         contactPhone,
         title: 'QUOTATION',
-        customerName,
-        date,
         items: normalizedItems,
         total: Number(quotation?.total) || 0,
         footer: 'This quotation is for estimation purposes only. Prices are subject to change without prior notice.',
     };
 };
 
+const wrapPresentQuotationLine = (value) => (
+    String(value || '').trim() ? wrapQuotationLine(value) : []
+);
+
 export const buildQuotationPrintLines = (receipt = {}) => [
-    receipt.storeName,
-    receipt.storeAddress,
-    receipt.contactPhone ? `Contact: ${receipt.contactPhone}` : '',
+    ...wrapPresentQuotationLine(receipt.storeName),
+    ...wrapPresentQuotationLine(receipt.storeAddress),
+    ...wrapPresentQuotationLine(receipt.contactPhone ? `Contact: ${receipt.contactPhone}` : ''),
     SEPARATOR,
-    receipt.title,
-    `Customer: ${receipt.customerName}`,
-    `Date: ${receipt.date}`,
+    ...wrapPresentQuotationLine(receipt.title),
     SEPARATOR,
     'ITEM',
     ITEM_PRICE_COLUMNS_HEADER,
@@ -104,7 +102,7 @@ export const buildQuotationPrintLines = (receipt = {}) => [
         ...buildQuotationItemPriceLines(item),
     ]),
     SEPARATOR,
-    `TOTAL: ${formatCurrency(receipt.total)}`,
+    ...wrapQuotationLine(`TOTAL: ${formatCurrency(receipt.total)}`),
     '',
-    receipt.footer,
-].filter((line) => String(line || '').trim().length > 0);
+    ...wrapQuotationLine(receipt.footer),
+];

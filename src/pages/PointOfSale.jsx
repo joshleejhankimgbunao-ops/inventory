@@ -37,8 +37,6 @@ import {
 } from '../utils/posVariantSelection';
 
 const getProductImageUrl = (item) => String(item?.imageUrl || '').trim();
-const QUOTATION_NAME_MAX_LENGTH = 32;
-
 const sanitizeCashTenderedInput = (value) => {
     const source = String(value ?? '');
     return /^\d*(?:\.\d{0,2})?$/.test(source) ? source : '';
@@ -218,8 +216,6 @@ const PointOfSale = () => {
     const checkoutInFlightRef = useRef(false);
     
     // Quotation State
-    const [showQuotationInput, setShowQuotationInput] = useState(false);
-    const [quotationCustomerName, setQuotationCustomerName] = useState('');
     const [showQuotationPreview, setShowQuotationPreview] = useState(false);
     const [quotationData, setQuotationData] = useState(null);
 
@@ -1124,25 +1120,12 @@ const PointOfSale = () => {
     const [printStatus, setPrintStatus] = useState('idle'); // idle, printing, success
 
     const handleGenerateQuotation = () => {
-        if (!quotationCustomerName.trim()) {
-            showErrorDetails("Please enter customer name");
-            return;
-        }
-
-        if (quotationCustomerName.length > QUOTATION_NAME_MAX_LENGTH) {
-            showErrorDetails(`Quotation name cannot exceed ${QUOTATION_NAME_MAX_LENGTH} characters.`);
-            return;
-        }
-        
         const quoteData = {
-            customerName: quotationCustomerName,
-            date: new Date().toLocaleString(),
             items: [...cart],
             total: calculateTotal()
         };
 
         setQuotationData(quoteData);
-        setShowQuotationInput(false);
         setShowQuotationPreview(true);
     };
 
@@ -1179,7 +1162,6 @@ const PointOfSale = () => {
                 setTimeout(() => {
                     setShowQuotationPreview(false);
                     setPrintStatus('idle');
-                    setQuotationCustomerName('');
                     printLockRef.current = false;
                 }, 1500);
             })
@@ -2360,7 +2342,7 @@ const PointOfSale = () => {
                     <div className="flex gap-2 border-t border-slate-100 pt-2.5">
                         <div className={`relative group w-[34%] shrink-0 ${cart.length === 0 ? 'cursor-not-allowed' : ''}`}>
                             <button 
-                                onClick={() => setShowQuotationInput(true)}
+                                onClick={handleGenerateQuotation}
                                 disabled={cart.length === 0}
                                 className={`w-full py-2.5 rounded-lg border border-slate-300 bg-white text-[10px] font-semibold uppercase tracking-wider text-slate-700 flex items-center justify-center transition-colors duration-150 ${cart.length === 0 ? 'pointer-events-none opacity-50' : 'hover:bg-slate-50 hover:border-slate-400'}`}
                             >
@@ -3137,57 +3119,6 @@ const PointOfSale = () => {
             </div>
         )}
 
-        {/* Quotation Input Modal */}
-        {showQuotationInput && (
-            <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-                 <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xs md:max-w-sm overflow-hidden animate-in fade-in zoom-in duration-200">
-                    <div className="p-4 border-b border-gray-100 bg-gray-50 flex justify-between items-center">
-                        <div className="flex items-center gap-3">
-                            <svg className="w-5 h-5 text-gray-900" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path></svg>
-                            <h3 className="font-semibold text-base text-gray-900">Create Quotation</h3>
-                        </div>
-                        <button onClick={() => setShowQuotationInput(false)} className="text-gray-400 hover:text-gray-600">
-                             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-                        </button>
-                    </div>
-                    <div className="p-4">
-                        <label className="block text-xs font-semibold text-gray-700 mb-2 uppercase tracking-wide">Customer Name</label>
-                        <input 
-                            type="text" 
-                            autoFocus
-                            maxLength={QUOTATION_NAME_MAX_LENGTH}
-                            value={quotationCustomerName}
-                            onChange={(e) => setQuotationCustomerName(e.target.value)}
-                            className="w-full px-3 py-2 rounded-xl border border-gray-300 focus:ring-2 focus:ring-black focus:border-transparent outline-none transition-all text-sm"
-                            placeholder="Enter customer name..."
-                            onKeyDown={(e) => e.key === 'Enter' && handleGenerateQuotation()}
-                        />
-                        <p className="mt-1 text-right text-xs text-gray-500" aria-live="polite">
-                            {quotationCustomerName.length} / {QUOTATION_NAME_MAX_LENGTH}
-                        </p>
-                        <p className="text-xs text-gray-500 mt-2 italic">A quotation document will be generated without deducting inventory stock.</p>
-                    </div>
-                    <div className="px-4 pb-4 flex justify-end gap-3">
-                        <button 
-                            onClick={() => setShowQuotationInput(false)}
-                            className="px-4 py-2 font-semibold text-gray-600 hover:bg-gray-200 rounded-xl transition-colors"
-                        >
-                            Cancel
-                        </button>
-                        <button 
-                            onClick={handleGenerateQuotation}
-                            disabled={!quotationCustomerName.trim()}
-                            style={{ backgroundColor: '#111827', color: '#ffffff' }}
-                            className="px-5 py-2 font-semibold rounded-xl hover:opacity-90 transition-all shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-                        >
-                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2-4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path></svg>
-                            Generate
-                        </button>
-                    </div>
-                 </div>
-            </div>
-        )}
-
         {isQuickAddCreditCustomerOpen && (
             <div className="fixed inset-0 z-70 flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-labelledby="quick-add-credit-customer-title">
                 <form onSubmit={handleQuickAddCreditCustomer} className="w-full max-w-sm overflow-hidden rounded-2xl bg-white shadow-2xl">
@@ -3295,17 +3226,6 @@ const PointOfSale = () => {
                                             {quotationReceipt.contactPhone && <p>Contact: {quotationReceipt.contactPhone}</p>}
                                         </div>
                                         <p className="mt-3 text-xs font-semibold tracking-wider text-gray-900">{quotationReceipt.title}</p>
-                                    </div>
-
-                                    <div className="mb-4 border-y border-dashed border-gray-200 py-3">
-                                        <div className="mb-1 flex items-start justify-between gap-3">
-                                            <span className="shrink-0 text-gray-500">Customer:</span>
-                                            <span className="min-w-0 break-words text-right font-semibold text-gray-800">{quotationReceipt.customerName}</span>
-                                        </div>
-                                        <div className="flex items-start justify-between gap-3">
-                                            <span className="shrink-0 text-gray-500">Date:</span>
-                                            <span className="min-w-0 break-words text-right text-gray-800">{quotationReceipt.date}</span>
-                                        </div>
                                     </div>
 
                                     <div className="grid grid-cols-[minmax(0,1.95fr)_2rem_minmax(0,1fr)_minmax(0,1.1fr)] gap-x-2 border-b-2 border-gray-100 py-1.5 text-xs font-semibold text-gray-700">

@@ -21,24 +21,38 @@ test('quotation preview data and print lines share one normalized quotation mode
     contactPhone: '(049) 545-2166',
   });
 
-  assert.deepEqual(buildQuotationPrintLines(receipt).slice(0, 8), [
+  assert.deepEqual(buildQuotationPrintLines(receipt).slice(0, 6), [
     'Tableria La Confianza',
     'Calamba, Laguna',
     'Contact: (049) 545-2166',
-    '--------------------------------',
+    '------------------------------',
     'QUOTATION',
-    'Customer: Long Customer Name',
-    'Date: 9/5/2026, 10:30:00 AM',
-    '--------------------------------',
+    '------------------------------',
   ]);
   assert.equal(receipt.items[0].name, 'Long Product Name That Wraps On Thermal Paper');
   assert.equal(receipt.items[0].code, 'SKU-001');
   assert.equal(receipt.items[0].quantity, 12);
   assert.equal(receipt.items[0].amount.toFixed(2), '2450.00');
-  assert.deepEqual(buildQuotationPrintLines(receipt).slice(8, 10), ['ITEM', 'QTY  UNIT PRICE  AMOUNT']);
-  assert.ok(!buildQuotationPrintLines(receipt).some((line) => line.includes('Code: SKU-001')));
-  assert.ok(buildQuotationPrintLines(receipt).includes('TOTAL: ₱2,450.00'));
-  assert.equal(buildQuotationPrintLines(receipt).at(-1), 'This quotation is for estimation purposes only. Prices are subject to change without prior notice.');
+  const printLines = buildQuotationPrintLines(receipt);
+  assert.equal(Object.hasOwn(receipt, 'customerName'), false);
+  assert.equal(Object.hasOwn(receipt, 'date'), false);
+  assert.deepEqual(printLines.slice(6, 8), ['ITEM', 'QTY  UNIT PRICE  AMOUNT']);
+  assert.ok(!printLines.some((line) => line.includes('Code: SKU-001')));
+  assert.ok(!printLines.some((line) => line.startsWith('Customer:')));
+  assert.ok(!printLines.some((line) => line.startsWith('Date:')));
+  assert.ok(printLines.includes('TOTAL: ₱2,450.00'));
+  const totalIndex = printLines.indexOf('TOTAL: ₱2,450.00');
+  const disclaimerLines = printLines.slice(totalIndex + 2);
+
+  assert.equal(printLines[totalIndex + 1], '');
+  assert.deepEqual(disclaimerLines, [
+    'This quotation is for',
+    'estimation purposes only.',
+    'Prices are subject to change',
+    'without prior notice.',
+  ]);
+  assert.equal(disclaimerLines.join(' '), receipt.footer);
+  assert.ok(printLines.every((line) => line.length <= 30));
 });
 
 test('quotation model omits unavailable optional store lines without changing receipt order', async () => {
@@ -51,13 +65,11 @@ test('quotation model omits unavailable optional store lines without changing re
   }, { storeName: 'Store' });
 
   const printLines = buildQuotationPrintLines(receipt);
-  assert.deepEqual(printLines.slice(0, 6), [
+  assert.deepEqual(printLines.slice(0, 4), [
     'Store',
-    '--------------------------------',
+    '------------------------------',
     'QUOTATION',
-    'Customer: Customer',
-    'Date: Date',
-    '--------------------------------',
+    '------------------------------',
   ]);
   assert.ok(!printLines.some((line) => line.startsWith('Contact:')));
 });
@@ -79,7 +91,7 @@ test('quotation model keeps multiple items, two-digit quantities, and high amoun
     { name: 'Second Item', code: 'SECOND-02', quantity: 1, unitPrice: 3456.9, amount: 3456.9 },
   ]);
   const printLines = buildQuotationPrintLines(receipt);
-  assert.deepEqual(printLines.slice(6, 12), [
+  assert.deepEqual(printLines.slice(4, 10), [
     'ITEM',
     'QTY  UNIT PRICE  AMOUNT',
     'First Item',
