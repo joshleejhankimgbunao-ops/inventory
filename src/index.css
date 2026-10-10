@@ -138,6 +138,45 @@ body {
   opacity: 1 !important;
 }
 
+/* Archive toggles outside tables share the same restrained action treatment. */
+.archive-toggle-button {
+  display: inline-flex;
+  min-width: 2rem;
+  height: 2rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  overflow: visible;
+  border: 1px solid #d7dce3;
+  border-radius: 0.5rem;
+  background: #ffffff;
+  padding: 0;
+  color: #475569;
+  box-shadow: none;
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.archive-toggle-button:hover {
+  border-color: #aeb8c5;
+  background: #f8fafc;
+  color: #1e293b;
+}
+
+.archive-toggle-button:active {
+  background: #eef2f7;
+}
+
+.archive-toggle-button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgb(71 85 105 / 0.3);
+}
+
+.archive-toggle-button--active {
+  border-color: #aeb8c5;
+  background: #f8fafc;
+  color: #475569;
+}
+
 .table-action-tooltip {
   position: fixed;
   z-index: 100;
@@ -209,6 +248,19 @@ html.dark .main-data-table .table-action-button:disabled {
   border-color: #334155 !important;
   background: #202225 !important;
   color: #64748b !important;
+}
+
+html.dark .archive-toggle-button {
+  border-color: #475569;
+  background: #25282c;
+  color: #cbd5e1;
+}
+
+html.dark .archive-toggle-button:hover,
+html.dark .archive-toggle-button--active {
+  border-color: #64748b;
+  background: #30343a;
+  color: #f1f5f9;
 }
 
 /* Semantic row emphasis for records that still need action. */

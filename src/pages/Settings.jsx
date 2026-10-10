@@ -1323,13 +1323,14 @@ const Settings = () => {
                                            <button
                                                type="button"
                                                onClick={() => setShowArchivedCategories(prev => !prev)}
-                                               className={`group inline-flex shrink-0 items-center rounded-lg border px-2.5 py-2 transition-colors ${showArchivedCategories ? 'border-gray-300 bg-gray-100 text-gray-700 dark:border-gray-500 dark:bg-gray-700 dark:text-gray-200' : 'border-gray-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'}`}
+                                               className={`archive-toggle-button group shrink-0 text-xs font-semibold ${showArchivedCategories ? 'archive-toggle-button--active' : ''}`}
                                                title={showArchivedCategories ? 'Back to Active Categories' : 'View Archived Categories'}
+                                               aria-label={showArchivedCategories ? 'Back to Active Categories' : 'View Archived Categories'}
                                            >
                                                {showArchivedCategories ? (
                                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7" /></svg>
                                                ) : (
-                                                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10" /></svg>
+                                                   <ArchiveIcon className="w-4 h-4 shrink-0" />
                                                )}
                                                <span className={`ml-0 max-w-0 overflow-hidden whitespace-nowrap text-xs font-semibold opacity-0 transition-all duration-300 group-hover:ml-2 group-hover:opacity-100 ${showArchivedCategories ? 'group-hover:max-w-44' : 'group-hover:max-w-28'}`}>
                                                    {showArchivedCategories ? 'Back to Active' : 'View Archive'}

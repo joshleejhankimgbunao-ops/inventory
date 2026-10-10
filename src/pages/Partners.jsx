@@ -565,11 +565,8 @@ const Partners = ({ viewOnly = false }) => {
                                 <button
                                     onClick={() => setShowArchived(!showArchived)}
                                     title={showArchived ? `Back to Active ${activeTab === 'suppliers' ? 'Suppliers' : 'Customers'}` : `View Archived ${activeTab === 'suppliers' ? 'Suppliers' : 'Customers'}`}
-                                    className={`group/btn shrink-0 px-2.5 py-2 rounded-xl text-xs font-semibold inline-flex items-center transition-all border ${
-                                        showArchived 
-                                            ? 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100 hover:text-gray-700' 
-                                            : 'bg-orange-50 text-orange-600 border-orange-200 hover:bg-orange-100'
-                                    }`}
+                                    aria-label={showArchived ? `Back to Active ${activeTab === 'suppliers' ? 'Suppliers' : 'Customers'}` : `View Archived ${activeTab === 'suppliers' ? 'Suppliers' : 'Customers'}`}
+                                    className={`archive-toggle-button group/btn shrink-0 text-xs font-semibold ${showArchived ? 'archive-toggle-button--active' : ''}`}
                                 >
                                     {showArchived ? (
                                         <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7 7-7M3 12h13a5 5 0 010 10h-1"></path></svg>

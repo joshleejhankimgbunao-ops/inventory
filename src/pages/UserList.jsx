@@ -819,8 +819,9 @@ const UserList = () => {
                         <button
                             type="button"
                             onClick={() => setShowArchived(prev => !prev)}
-                            className={`group flex items-center rounded-lg border px-2.5 py-2 transition-all duration-300 ${showArchived ? 'border-gray-300 bg-gray-100 text-gray-700 dark:border-gray-500 dark:bg-gray-700 dark:text-gray-200' : 'border-orange-200 bg-orange-50 text-orange-600 dark:border-orange-800 dark:bg-orange-900/20 dark:text-orange-400'}`}
+                            className={`archive-toggle-button group text-xs font-semibold ${showArchived ? 'archive-toggle-button--active' : ''}`}
                             title={showArchived ? 'Back to Active Users' : 'View Archived Users'}
+                            aria-label={showArchived ? 'Back to Active Users' : 'View Archived Users'}
                         >
                             {showArchived ? (
                                 <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7 7-7M3 12h13a5 5 0 010 10h-1"></path></svg>
