@@ -160,6 +160,8 @@ test('buildPowerShellPrintScript uses a safe 58mm printable area and dynamic rec
   assert.match(script, /\$x = \[single\]\$printableArea\.Left \+ \[single\]\$centerOffset/);
   assert.match(script, /PRINT_LAYOUT: printableWidth=/);
   assert.match(script, /\$y = \$e\.MarginBounds\.Top/);
+  assert.match(script, /if \(\[string\]::IsNullOrEmpty\(\$text\)\)/);
+  assert.match(script, /\$y \+= \$lineHeight\s+continue/);
 });
 
 test('receipt copy payloads preserve one transaction as one customer receipt job', () => {
@@ -216,7 +218,7 @@ test('POS order confirmation prints its distinct heading and optional transactio
     receipt: {
       id: 'TRX-ABC12345', documentType: 'order-confirmation', transactionReference: 'REF-123',
       date: '2026-10-04', cashier: 'Cashier', paymentMethod: 'Cash',
-      items: [{ label: 'Item', qty: 1, unitPrice: 100, subtotal: 100 }],
+      items: [{ label: 'Item', code: 'ITEM-001', qty: 1, unitPrice: 100, subtotal: 100 }],
       netAmount: 89.29, vatAmount: 10.71, grossAmount: 100, total: 100, cash: 100, change: 0,
     },
   });
@@ -224,9 +226,100 @@ test('POS order confirmation prints its distinct heading and optional transactio
   assert.match(output, /ORDER CONFIRMATION/);
   assert.match(output, /Transaction Ref:\s+REF-123/);
   assert.match(output, /Transaction ID:\s+TRX-ABC12345/);
-  assert.match(output, /ITEM\nQTY  UNIT PRICE  AMOUNT/);
-  assert.match(output, /\n\s*1\s+₱100\.00\s+₱100\.00/);
+  const header = `${'QTY'.padStart(3)} ${'UNIT PRICE'.padStart(12)} ${'AMOUNT'.padStart(13)}`;
+  const valueRow = `${'1'.padStart(3)} ${'₱100.00'.padStart(12)} ${'₱100.00'.padStart(13)}`;
+  const codeIndex = lines.indexOf('Code: ITEM-001');
+  assert.match(output, /Code: ITEM-001\n\nQTY   UNIT PRICE        AMOUNT/);
+  assert.ok(lines.includes(header));
+  assert.ok(lines.includes(valueRow));
+  assert.equal(lines[codeIndex + 1], '');
+  assert.equal(lines[codeIndex + 2], header);
   assert.ok(lines.every((line) => line.length <= 30));
+});
+
+test('Order Confirmation repeats aligned thermal price columns for multiple item blocks', () => {
+  const lines = buildReceiptLines({
+    receipt: {
+      id: 'TRX-MULTI-001', documentType: 'order-confirmation',
+      date: '2026-10-09', cashier: 'Cashier', paymentMethod: 'Cash',
+      items: [
+        { label: 'PVC Pipe', code: 'ABC-001', qty: 2, unitPrice: 89, subtotal: 178 },
+        { label: 'GI Corrugated Sheet', code: 'GS-002', qty: 1, unitPrice: 450, subtotal: 450 },
+      ],
+      netAmount: 560.71, vatAmount: 67.29, grossAmount: 628, total: 628, cash: 700, change: 72,
+    },
+  });
+  const header = `${'QTY'.padStart(3)} ${'UNIT PRICE'.padStart(12)} ${'AMOUNT'.padStart(13)}`;
+
+  assert.equal(lines.filter((line) => line === header).length, 2);
+  assert.ok(lines.includes(`${'2'.padStart(3)} ${'₱89.00'.padStart(12)} ${'₱178.00'.padStart(13)}`));
+  assert.ok(lines.includes(`${'1'.padStart(3)} ${'₱450.00'.padStart(12)} ${'₱450.00'.padStart(13)}`));
+  ['Code: ABC-001', 'Code: GS-002'].forEach((codeLine) => {
+    const codeIndex = lines.indexOf(codeLine);
+    assert.equal(lines[codeIndex + 1], '');
+    assert.equal(lines[codeIndex + 2], header);
+  });
+});
+
+test('Order Confirmation handles long names, codes, quantities, and monetary ranges without column overlap', () => {
+  const lines = buildReceiptLines({
+    receipt: {
+      id: 'TRX-RANGES-001', documentType: 'order-confirmation',
+      date: '2026-10-09', cashier: 'Cashier', paymentMethod: 'Cash',
+      items: [
+        { label: 'Extra Long Galvanized Corrugated Roofing Sheet', code: 'A', qty: 1, unitPrice: 3.5, subtotal: 89 },
+        { label: 'PVC Pipe', code: 'PRODUCT-CODE-WITH-MORE-THAN-THIRTY-CHARACTERS', qty: 10, unitPrice: 4590, subtotal: 9180 },
+        { label: 'Premium Item', code: 'PREM-100', qty: 100, unitPrice: 12345, subtotal: 12345 },
+      ],
+      netAmount: 19298.21, vatAmount: 2315.79, grossAmount: 21614, total: 21614, cash: 22000, change: 386,
+    },
+  });
+  const output = lines.join('\n');
+
+  assert.match(output, /Extra Long Galvanized/);
+  assert.match(output, /Code:\nPRODUCT-CODE-WITH-MORE-THAN-TH/);
+  assert.match(output, /IRTY-CHARACTERS\n\nQTY   UNIT PRICE        AMOUNT/);
+  assert.ok(lines.includes(`${'1'.padStart(3)} ${'₱3.50'.padStart(12)} ${'₱89.00'.padStart(13)}`));
+  assert.ok(lines.includes(`${'10'.padStart(3)} ${'₱4,590.00'.padStart(12)} ${'₱9,180.00'.padStart(13)}`));
+  assert.ok(lines.includes(`${'100'.padStart(3)} ${'₱12,345.00'.padStart(12)} ${'₱12,345.00'.padStart(13)}`));
+  assert.ok(lines.every((line) => line.length <= 30));
+  assert.ok(lines.every((line) => !line.includes('\t')));
+});
+
+test('Order Confirmation gracefully stacks item values that exceed fixed thermal columns', () => {
+  const lines = buildReceiptLines({
+    receipt: {
+      id: 'TRX-FALLBACK-001', documentType: 'order-confirmation',
+      date: '2026-10-09', cashier: 'Cashier', paymentMethod: 'Cash',
+      items: [{ label: 'Industrial Equipment', code: 'IND-001', qty: 1000, unitPrice: 999999999.99, subtotal: 999999999990 }],
+      netAmount: 999999999990, vatAmount: 0, grossAmount: 999999999990, total: 999999999990,
+    },
+  });
+  const output = lines.join('\n');
+
+  assert.match(output, /Qty:\s+1000/);
+  assert.match(output, /Unit Price:/);
+  assert.match(output, /Amount:/);
+  assert.ok(lines.every((line) => line.length <= 30));
+});
+
+test('Order Confirmation totals and tender amounts share the same right boundary', () => {
+  const lines = buildReceiptLines({
+    receipt: {
+      id: 'TRX-TOTALS-001', documentType: 'order-confirmation',
+      date: '2026-10-09', cashier: 'Cashier', paymentMethod: 'Cash',
+      items: [{ label: 'GI Corrugated Sheet', code: 'GS-002', qty: 1, unitPrice: 450, subtotal: 450 }],
+      netAmount: 401.79, vatAmount: 48.21, grossAmount: 450, total: 450, cash: 450, change: 0,
+    },
+  });
+  const labels = ['Net:', 'VAT:', 'Gross:', 'TOTAL:', 'Cash:', 'Change:'];
+  const totalLines = labels.map((label) => lines.find((line) => line.startsWith(label)));
+
+  assert.ok(totalLines.every(Boolean));
+  assert.ok(totalLines.every((line) => line.length === 30));
+  assert.deepEqual(totalLines.map((line) => line.match(/₱[\d,.]+$/)?.[0]), [
+    '₱401.79', '₱48.21', '₱450.00', '₱450.00', '₱450.00', '₱0.00',
+  ]);
 });
 
 test('Sales History order confirmation print-again avoids receipt and reprint terminology', () => {

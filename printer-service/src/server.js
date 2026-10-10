@@ -139,15 +139,44 @@ const appendField = (lines, label, value, width = DEFAULT_WIDTH_CHARS) => {
 
 const formatReceiptAmount = (value) => `\u20b1${formatMoney(value)}`;
 
+const getItemPriceColumnLayout = (width = DEFAULT_WIDTH_CHARS) => {
+  const gap = 1;
+  const quantityWidth = 3;
+  const availablePriceWidth = width - quantityWidth - (gap * 2);
+  const unitPriceWidth = Math.max('UNIT PRICE'.length, Math.floor(availablePriceWidth / 2));
+  const amountWidth = availablePriceWidth - unitPriceWidth;
+
+  if (amountWidth < 'AMOUNT'.length) return null;
+
+  return {
+    gap: ' '.repeat(gap),
+    quantityWidth,
+    unitPriceWidth,
+    amountWidth,
+  };
+};
+
 const appendItemPriceColumns = (lines, item, width = DEFAULT_WIDTH_CHARS) => {
   const quantity = String(Number(item?.qty || 0));
   const unitPrice = formatReceiptAmount(item?.unitPrice || 0);
   const amount = formatReceiptAmount(item?.subtotal || 0);
-  const row = `${quantity.padStart(3)}  ${unitPrice.padStart(10)}  ${amount.padStart(10)}`;
+  const layout = getItemPriceColumnLayout(width);
 
-  if (row.length <= width) {
-    lines.push(row);
-    return;
+  if (layout) {
+    const { gap, quantityWidth, unitPriceWidth, amountWidth } = layout;
+    const header = `${'QTY'.padStart(quantityWidth)}${gap}${'UNIT PRICE'.padStart(unitPriceWidth)}${gap}${'AMOUNT'.padStart(amountWidth)}`;
+    lines.push(header);
+
+    if (
+      quantity.length <= quantityWidth
+      && unitPrice.length <= unitPriceWidth
+      && amount.length <= amountWidth
+    ) {
+      lines.push(
+        `${quantity.padStart(quantityWidth)}${gap}${unitPrice.padStart(unitPriceWidth)}${gap}${amount.padStart(amountWidth)}`,
+      );
+      return;
+    }
   }
 
   appendField(lines, 'Qty', quantity, width);
@@ -245,9 +274,6 @@ const buildReceiptLines = (payload = {}) => {
 
   lines.push(separator);
   lines.push(isOrderConfirmation ? 'ITEM' : 'ITEMS');
-  if (isOrderConfirmation) {
-    lines.push('QTY  UNIT PRICE  AMOUNT');
-  }
   lines.push('');
 
   items.forEach((item, index) => {
@@ -256,6 +282,9 @@ const buildReceiptLines = (payload = {}) => {
 
     if (item?.code) {
       wrapText(`Code: ${item.code}`).forEach((line) => lines.push(line));
+      if (isOrderConfirmation) {
+        lines.push('');
+      }
     }
 
     if (isOrderConfirmation) {
@@ -419,6 +448,10 @@ try {
       $y = $e.MarginBounds.Top
       foreach ($line in $lines) {
           $text = [string]$line
+          if ([string]::IsNullOrEmpty($text)) {
+              $y += $lineHeight
+              continue
+          }
           $e.Graphics.DrawString($text, $font, $brush, $x, $y)
           $y += $lineHeight
       }
