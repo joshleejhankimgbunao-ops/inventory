@@ -31,6 +31,7 @@ const INVENTORY_FALLBACK = {
     categories: [],
     setCategories: () => {},
     fetchCategories: () => {},
+    categoriesError: null,
     transactions: [],
     setTransactions: () => {},
     inventoryLogs: [],
@@ -162,8 +163,9 @@ export const InventoryProvider = ({ children }) => {
     }, [userRole, currentAuthUsername]);
 
      // Categories State
-         const [categories, setCategories] = useState([]);
+    const [categories, setCategories] = useState([]);
     const [isCategoriesLoading, setIsCategoriesLoading] = useState(true);
+    const [categoriesError, setCategoriesError] = useState(null);
 
      const fetchCategories = async () => {
          const token = getAuthToken();
@@ -171,8 +173,10 @@ export const InventoryProvider = ({ children }) => {
          try {
              const remoteCategories = await listCategoriesApi();
             setCategories(Array.isArray(remoteCategories) ? remoteCategories : []);
+            setCategoriesError(null);
          } catch (error) {
              console.error("Failed to fetch categories:", error);
+            setCategoriesError(error);
          }
      };
 
@@ -190,6 +194,7 @@ export const InventoryProvider = ({ children }) => {
 
             if (isMounted) {
                 setIsCategoriesLoading(true);
+                setCategoriesError(null);
             }
 
             try {
@@ -199,6 +204,9 @@ export const InventoryProvider = ({ children }) => {
                 }
             } catch (error) {
                 console.error("Failed to fetch categories:", error);
+                if (isMounted) {
+                    setCategoriesError(error);
+                }
             } finally {
                 if (isMounted) {
                     setIsCategoriesLoading(false);
@@ -920,6 +928,7 @@ export const InventoryProvider = ({ children }) => {
             categories,
             setCategories,
             fetchCategories,
+            categoriesError,
             renameUserReferences,
             syncUserIdentityReferences,
             removeUserReferences,

@@ -6,6 +6,7 @@ import { useInventory } from '../context/InventoryContext';
 import { formatCurrency, formatNumber } from '../utils/numberFormat';
 import ColoredPiePercentageLabel from '../components/ColoredPiePercentageLabel';
 import { ANALYTICS_PIE_COLORS, SALES_ANALYTICS_LINE_STYLE } from '../utils/analyticsChart';
+import { getConfiguredCategoryCount } from '../utils/categorySummary';
 import { listCreditTransactionsApi } from '../services/inventoryApi';
 import { getOutstandingCreditSummary } from '../utils/creditDueStatus';
 import { getDashboardComparisonPeriod, getMetricTrend, getPreviousPeriodMetrics } from '../utils/dashboardTrend';
@@ -91,7 +92,13 @@ const EmptyAnalyticsState = ({ title, subtitle, icon }) => (
 
 const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
     const { userRole, currentUserName, isAdminOrAbove, ROLES } = useAuth();
-    const { transactions = [], processedInventory = [] } = useInventory();
+    const {
+        transactions = [],
+        processedInventory = [],
+        categories = [],
+        isCategoriesLoading,
+        categoriesError,
+    } = useInventory();
 
     const [showFinancials, setShowFinancials] = useState(true);
     const [analyticsView, setAnalyticsView] = useState('sales');
@@ -294,13 +301,11 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
     );
     // non-sales metrics
     const totalProducts = processedInventory.length;
-    const totalCategories = useMemo(() => {
-        return new Set(
-            processedInventory
-                .map((item) => String(item?.category || '').trim())
-                .filter(Boolean)
-        ).size;
-    }, [processedInventory]);
+    const totalCategories = useMemo(
+        () => getConfiguredCategoryCount(categories),
+        [categories]
+    );
+    const totalCategoriesDisplay = isCategoriesLoading || categoriesError ? '—' : totalCategories;
     const cashierTransactionCount = useMemo(() => {
         return selectedDateTransactions.filter((t) => t.cashier === currentUserName).length;
     }, [selectedDateTransactions, currentUserName]);
@@ -453,7 +458,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                             />
                             <StatCard
                                 title="Total Categories"
-                                value={totalCategories.toString()}
+                                value={totalCategoriesDisplay.toString()}
                                 icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 7h6m-6 5h6m-6 5h6m6-10h4m-4 5h4m-4 5h4"/></svg>}
                                 color="indigo"
                                 onClick={() => onNavigate && onNavigate('Product Master List')}

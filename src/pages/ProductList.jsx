@@ -29,6 +29,7 @@ import {
     sanitizeMoneyInput,
     sanitizeWholeNumberInput,
 } from '../utils/numericInput';
+import { getActiveConfiguredCategories, getConfiguredCategoryCount } from '../utils/categorySummary';
 
 const ProductList = () => {
     const listContainerRef = useRef(null);
@@ -38,7 +39,16 @@ const ProductList = () => {
     const productCreateRequestIdRef = useRef('');
     const productArchiveInFlightRef = useRef(false);
     const { appSettings: settings, currentUserName, ROLES, isAdminOrAbove } = useAuth();
-    const { inventory, setInventory, logAction, logActivity, categories: customCategories = [], isInventoryLoading } = useInventory();
+    const {
+        inventory,
+        setInventory,
+        logAction,
+        logActivity,
+        categories: customCategories = [],
+        isInventoryLoading,
+        isCategoriesLoading,
+        categoriesError,
+    } = useInventory();
 
     const [searchTerm, setSearchTerm] = useState('');
     const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
@@ -202,8 +212,7 @@ const ProductList = () => {
     
     // Keep category list aligned with active custom categories from Settings.
     const CATEGORY_LIST = useMemo(() => {
-        const dynamicCats = customCategories
-            .filter((c) => c?.isActive !== false)
+        const dynamicCats = getActiveConfiguredCategories(customCategories)
             .map((c) => String(c?.name || '').trim())
             .filter(Boolean);
 
@@ -520,6 +529,11 @@ const ProductList = () => {
     };
 
     const categoryFilterOptions = ['All', ...Array.from(new Set(inventory.map(item => item.category).filter(Boolean))).sort((a, b) => a.localeCompare(b))];
+    const configuredCategoryCount = useMemo(
+        () => getConfiguredCategoryCount(customCategories),
+        [customCategories]
+    );
+    const categoryCountDisplay = isCategoriesLoading || categoriesError ? '—' : configuredCategoryCount;
     const filteredProductsBase = useMemo(() => {
         const normalizedQuery = debouncedSearchTerm.toLowerCase();
 
@@ -1125,7 +1139,12 @@ const ProductList = () => {
                 <div className="bg-white dark:bg-gray-900 p-3 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 flex items-center justify-between transition-colors">
                     <div>
                         <p className="text-xs text-gray-500 dark:text-gray-400 font-semibold uppercase tracking-wider">Categories</p>
-                        <h2 className="text-xl font-semibold text-gray-900 dark:text-white">{categoryFilterOptions.length - 1}</h2>
+                        <h2
+                            className="text-xl font-semibold text-gray-900 dark:text-white"
+                            aria-label={categoriesError ? 'Category count unavailable' : undefined}
+                        >
+                            {categoryCountDisplay}
+                        </h2>
                     </div>
                      <div className="bg-gray-900 dark:bg-gray-700 p-2 rounded-lg text-white">
                         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"></path></svg>
