@@ -13,11 +13,13 @@ import {
 const DEFAULT_APP_SETTINGS = {
     storeName: 'Tableria La Confianza Co., Inc.',
     storeAddress: 'Manila S Rd, Calamba, 4027 Laguna',
+    storeBusinessSubtitle: '',
     contactPhone: '0917-545-2166',
     contactPhoneSecondary: '(049) 545-2166',
     storePrimaryEmail: 'tableria@yahoo.com',
     storeSecondaryEmail: 'tableria1@gmail.com',
     storeMapLink: 'https://maps.app.goo.gl/9QdZo3bu4W62qTjQ8',
+    authorizedSignatoryName: '',
     currency: 'PHP',
     darkMode: false,
     autoSync: true,
@@ -475,6 +477,8 @@ export const AuthProvider = ({ children }) => {
     };
 
     const clearAuthenticatedSession = () => {
+        const alertUserId = String(currentAuthUserId || sessionStorage.getItem('authUserId') || '').trim();
+        if (alertUserId) sessionStorage.removeItem(`pending-void-request-alert-shown:${alertUserId}`);
         sessionStorage.removeItem('userRole');
         sessionStorage.removeItem('userName');
         sessionStorage.removeItem('userFullName');

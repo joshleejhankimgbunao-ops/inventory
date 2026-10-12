@@ -5,6 +5,7 @@ const {
 	register,
 	me,
 	updateMyPreferences,
+	completeFirstLoginSecuritySetup,
 	verifyMyCurrentPassword,
 	verifyMyCurrentPin,
 	updateMyProfile,
@@ -42,6 +43,7 @@ router.post('/forgot-pin', forgotPinLimiter, requestPinReset);
 router.post('/reset-pin', resetPinLimiter, resetPin);
 router.get('/me', requireAuth, me);
 router.patch('/me/preferences', requireAuth, updateMyPreferences);
+router.post('/me/complete-first-login-setup', requireAuth, completeFirstLoginSecuritySetup);
 router.post('/me/verify-password', requireAuth, verifyMyCurrentPassword);
 router.post('/me/verify-pin', requireAuth, verifyMyCurrentPin);
 router.patch('/me/profile', requireAuth, updateMyProfile);

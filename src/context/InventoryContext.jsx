@@ -87,6 +87,8 @@ const readTransactionsCache = (scope) => {
     }
 };
 
+// The hook is intentionally colocated with its provider so consumers share one context contract.
+// eslint-disable-next-line react-refresh/only-export-components
 export const useInventory = () => {
     const context = useContext(InventoryContext);
     if (!context) {
@@ -170,13 +172,16 @@ export const InventoryProvider = ({ children }) => {
      const fetchCategories = async () => {
          const token = getAuthToken();
          if (!token) return;
+         setIsCategoriesLoading(true);
+         setCategoriesError(null);
          try {
              const remoteCategories = await listCategoriesApi();
             setCategories(Array.isArray(remoteCategories) ? remoteCategories : []);
-            setCategoriesError(null);
          } catch (error) {
              console.error("Failed to fetch categories:", error);
             setCategoriesError(error);
+         } finally {
+            setIsCategoriesLoading(false);
          }
      };
 
@@ -460,13 +465,16 @@ export const InventoryProvider = ({ children }) => {
             void refreshInventoryLogs();
         };
 
-        const unsubscribeSaleCreated = subscribeRealtimeEvent('sale.created', onSaleCreated);
-        const unsubscribeSaleUpdated = subscribeRealtimeEvent('sale.updated', () => {
+        const refreshSaleRelatedState = () => {
             void refreshTransactions();
             void refreshInventory();
             void refreshActivityLogs();
             void refreshInventoryLogs();
-        });
+        };
+
+        const unsubscribeSaleCreated = subscribeRealtimeEvent('sale.created', onSaleCreated);
+        const unsubscribeSaleUpdated = subscribeRealtimeEvent('sale.updated', refreshSaleRelatedState);
+        const unsubscribeRealtimeResync = subscribeRealtimeEvent('realtime.resync', refreshSaleRelatedState);
         const unsubscribeInventoryUpdated = subscribeRealtimeEvent('inventory.updated', onInventoryUpdated);
         const unsubscribeActivityLogged = subscribeRealtimeEvent('activity.logged', onActivityLogged);
         const unsubscribeInventoryLogged = subscribeRealtimeEvent('inventory.logged', onInventoryLogged);
@@ -475,6 +483,7 @@ export const InventoryProvider = ({ children }) => {
             disposed = true;
             unsubscribeSaleCreated();
             unsubscribeSaleUpdated();
+            unsubscribeRealtimeResync();
             unsubscribeInventoryUpdated();
             unsubscribeActivityLogged();
             unsubscribeInventoryLogged();

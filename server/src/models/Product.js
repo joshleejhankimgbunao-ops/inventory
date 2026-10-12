@@ -44,6 +44,22 @@ const productSchema = new mongoose.Schema(
       default: 'General',
       trim: true,
     },
+    // Stable Category relationship introduced as an additive migration field.
+    // `category` remains the compatibility/display snapshot until all legacy
+    // products have been backfilled and the frontend no longer relies on it.
+    categoryRef: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Category',
+      default: null,
+      index: true,
+    },
+    // The primary unit used when this product is priced and stocked. It is
+    // selected from the owning Category's configured selling units.
+    sellingUnit: {
+      type: String,
+      default: '',
+      trim: true,
+    },
     stock: {
       type: Number,
       default: 0,

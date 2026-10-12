@@ -1106,7 +1106,7 @@ const Reports = () => {
     </div>
     {showExportMenu && (
       <div
-        className="pdf-exclude fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-[2px]"
+        className="app-modal-backdrop pdf-exclude fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-[2px]"
         role="presentation"
         onMouseDown={(event) => { if (event.target === event.currentTarget) closeExportModal(); }}
       >

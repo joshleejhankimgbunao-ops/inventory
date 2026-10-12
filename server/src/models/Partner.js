@@ -67,6 +67,21 @@ const partnerSchema = new mongoose.Schema(
       default: false,
       index: true,
     },
+    attentionName: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    attentionPosition: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    taxTreatment: {
+      type: String,
+      enum: ['standard', 'vat_zero_rated', 'exempt'],
+      default: 'standard',
+    },
     clientRequestId: {
       type: String,
       trim: true,

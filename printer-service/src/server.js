@@ -14,6 +14,12 @@ const DEFAULT_WIDTH_CHARS = Number.isFinite(configuredWidth)
   ? Math.min(30, Math.max(24, Math.trunc(configuredWidth)))
   : 30;
 const RECEIPT_COPY_COUNT = 1;
+const SUPPORTED_RECEIPT_DOCUMENT_TYPES = new Set([
+  '',
+  'order-confirmation',
+  'order-list',
+  'order-list-draft',
+]);
 let selectedPrinterName = DEFAULT_PRINTER_NAME;
 let printerSelectionSource = DEFAULT_PRINTER_NAME ? 'environment' : 'unresolved';
 
@@ -218,19 +224,25 @@ const buildReceiptLines = (payload = {}) => {
   const separator = '-'.repeat(DEFAULT_WIDTH_CHARS);
   const isCredit = String(receipt.paymentMethod || '').toLowerCase() === 'credit';
   const isOrderConfirmation = receipt.documentType === 'order-confirmation';
+  const isOrderList = receipt.documentType === 'order-list';
+  const isDraftOrderList = receipt.documentType === 'order-list-draft';
+  const isProductOnlyList = isOrderList || isDraftOrderList;
+  const usesOrderItemLayout = isOrderConfirmation || isOrderList;
   const isVoidedConfirmation = isOrderConfirmation
     && String(receipt.status || '').toLowerCase() === 'voided';
   const receiptDateTime = formatReceiptDateTime(receipt.date || '');
 
-  appendCenteredText(lines, store.name || 'Receipt');
-  if (store.address) {
-    appendCenteredText(lines, store.address);
-  }
-  if (store.contactPhone) {
-    appendCenteredText(lines, `Contact: ${store.contactPhone}`);
-  }
-  if (store.contactPhoneSecondary) {
-    appendCenteredText(lines, store.contactPhoneSecondary);
+  if (!isProductOnlyList) {
+    appendCenteredText(lines, store.name || 'Receipt');
+    if (store.address) {
+      appendCenteredText(lines, store.address);
+    }
+    if (store.contactPhone) {
+      appendCenteredText(lines, `Contact: ${store.contactPhone}`);
+    }
+    if (store.contactPhoneSecondary) {
+      appendCenteredText(lines, store.contactPhoneSecondary);
+    }
   }
 
   if (receipt.isReprint && receipt.documentType !== 'order-confirmation') {
@@ -247,19 +259,26 @@ const buildReceiptLines = (payload = {}) => {
     }
   }
 
+  if (isOrderList) {
+    appendCenteredText(lines, 'ORDER LIST');
+  }
+  if (isDraftOrderList) {
+    appendCenteredText(lines, 'ORDER LIST - DRAFT');
+  }
+
   lines.push('');
   lines.push(separator);
-  appendField(lines, isOrderConfirmation ? 'Transaction ID' : 'Receipt No', receipt.id);
-  if (receipt.transactionReference) {
+  if (!isDraftOrderList) appendField(lines, usesOrderItemLayout ? 'Transaction ID' : 'Receipt No', receipt.id);
+  if (!isProductOnlyList && receipt.transactionReference) {
     appendField(lines, 'Transaction Ref', receipt.transactionReference);
   }
-  if (receipt.specialOrderNumber) {
+  if (!isProductOnlyList && receipt.specialOrderNumber) {
     appendField(lines, 'Special Order', receipt.specialOrderNumber);
   }
-  if (receipt.orderReference) {
+  if (!isProductOnlyList && receipt.orderReference) {
     appendField(lines, 'Order Ref', receipt.orderReference);
   }
-  if (receipt.paymentReference) {
+  if (!isProductOnlyList && receipt.paymentReference) {
     appendField(lines, 'Payment Ref', receipt.paymentReference);
   }
   appendField(lines, 'Date', receiptDateTime.date);
@@ -267,13 +286,13 @@ const buildReceiptLines = (payload = {}) => {
     appendField(lines, 'Time', receiptDateTime.time);
   }
   appendField(lines, 'Cashier', receipt.cashier || '');
-  appendField(lines, 'Method', receipt.paymentMethod || 'Cash');
-  if (receipt.customerName) {
+  if (!isDraftOrderList) appendField(lines, isOrderList ? 'Payment Type' : 'Method', receipt.paymentMethod || 'Cash');
+  if (!isProductOnlyList && receipt.customerName) {
     appendField(lines, 'Customer', receipt.customerName);
   }
 
   lines.push(separator);
-  lines.push(isOrderConfirmation ? 'ITEM' : 'ITEMS');
+  lines.push(usesOrderItemLayout || isDraftOrderList ? 'ITEM' : 'ITEMS');
   lines.push('');
 
   items.forEach((item, index) => {
@@ -282,12 +301,14 @@ const buildReceiptLines = (payload = {}) => {
 
     if (item?.code) {
       wrapText(`Code: ${item.code}`).forEach((line) => lines.push(line));
-      if (isOrderConfirmation) {
+      if (usesOrderItemLayout) {
         lines.push('');
       }
     }
 
-    if (isOrderConfirmation) {
+    if (isDraftOrderList) {
+      appendPair(lines, `Qty: ${Number(item?.qty || 0)}`, `Unit: ${String(item?.sellingUnit || '').trim() || '-'}`);
+    } else if (usesOrderItemLayout) {
       appendItemPriceColumns(lines, item);
     } else {
       appendPair(
@@ -301,6 +322,11 @@ const buildReceiptLines = (payload = {}) => {
       lines.push('');
     }
   });
+
+  if (isProductOnlyList) {
+    lines.push(separator);
+    return lines;
+  }
 
   lines.push(separator);
   appendPair(lines, 'Net:', formatReceiptAmount(receipt.netAmount || 0));
@@ -584,8 +610,21 @@ const printReceipt = async (
   }
 
   const receipt = payload.receipt || {};
-  if (!receipt.id) {
+  const documentType = String(receipt.documentType || '').trim();
+  if (!SUPPORTED_RECEIPT_DOCUMENT_TYPES.has(documentType)) {
+    const error = new Error('Unsupported receipt document type.');
+    error.status = 400;
+    throw error;
+  }
+
+  const isDraftOrderList = documentType === 'order-list-draft';
+  if (!receipt.id && !isDraftOrderList) {
     const error = new Error('receipt.id is required.');
+    error.status = 400;
+    throw error;
+  }
+  if (isDraftOrderList && (!Array.isArray(receipt.items) || receipt.items.length === 0)) {
+    const error = new Error('receipt.items is required for a draft Order List.');
     error.status = 400;
     throw error;
   }
@@ -605,7 +644,9 @@ const printReceipt = async (
       completedCopies.push(copyNumber);
       logPrintTiming(timingId, 'COPY_PRINT_COMPLETED', `copy=${copyNumber}`);
     } catch (error) {
-      const message = 'The receipt could not be printed. The completed sale remains valid and was not repeated.';
+      const message = isDraftOrderList
+        ? 'Unable to print Order List. No transaction was created or changed.'
+        : 'The receipt could not be printed. The completed sale remains valid and was not repeated.';
       const copyError = new Error(`${message} ${error?.message || 'Unable to print receipt copy.'}`);
       copyError.status = Number(error?.status || 500);
       copyError.completedCopies = completedCopies;

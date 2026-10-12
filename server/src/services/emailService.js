@@ -81,7 +81,7 @@ const buildAccountCredentialsBody = ({ recipientName, username, password, pin, c
   }
 
   bodyLines.push('');
-  bodyLines.push('Please change your password after your first login.');
+  bodyLines.push('Please change your password and PIN after your first login.');
 
   return bodyLines.join('\n');
 };

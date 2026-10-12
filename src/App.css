@@ -36,6 +36,12 @@
   color: #888;
 }
 
+/* Shared backdrop for standard application dialogs. */
+.app-modal-backdrop {
+  background-color: rgb(15 23 42 / 0.5) !important;
+  backdrop-filter: blur(4px) !important;
+}
+
 @keyframes toast-progress {
   from { width: 100%; }
   to { width: 0%; }
@@ -70,6 +76,45 @@
   }
   body {
     background: white !important;
+  }
+
+  @page formal-quotation {
+    size: A4 portrait;
+    margin: 12mm;
+  }
+
+  body.printing-formal-quotation * {
+    visibility: hidden !important;
+  }
+
+  body.printing-formal-quotation #formal-price-quotation-paper,
+  body.printing-formal-quotation #formal-price-quotation-paper * {
+    visibility: visible !important;
+  }
+
+  body.printing-formal-quotation #formal-price-quotation-paper {
+    page: formal-quotation;
+    position: absolute;
+    inset: 0 auto auto 0;
+    width: 186mm !important;
+    max-width: none !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+  }
+
+  body.printing-formal-quotation #formal-price-quotation-paper header {
+    display: block !important;
+  }
+
+  body.printing-formal-quotation .formal-quotation-table-head {
+    display: table-header-group;
+  }
+
+  body.printing-formal-quotation tr,
+  body.printing-formal-quotation .formal-quotation-closing {
+    break-inside: avoid;
+    page-break-inside: avoid;
   }
 }
 

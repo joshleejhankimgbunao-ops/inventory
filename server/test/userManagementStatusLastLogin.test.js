@@ -160,3 +160,18 @@ test('User Management last-login formatting uses Asia/Manila and a clean Never f
   assert.equal(formatUserLastLogin('not-a-date'), 'Never');
   assert.match(formatUserLastLogin(date), /Aug 31, 2026.*12:30\s*AM/i);
 });
+
+test('Add New User keeps its generated username read-only and credentials editable with separate regenerate controls', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const source = fs.readFileSync(path.resolve(__dirname, '../../src/pages/UserList.jsx'), 'utf8');
+
+  assert.match(source, /const autoUsername = `USER-\$\{String\(nextId\)\.padStart\(6, '0'\)\}`/);
+  assert.match(source, /readOnly=\{modalMode === 'add'\}/);
+  assert.match(source, /aria-label="Generate new password"/);
+  assert.match(source, /aria-label="Generate new PIN"/);
+  assert.match(source, /setFormData\(\(prev\) => \(\{ \.\.\.prev, password: generatePassword\(\) \}\)\)/);
+  assert.match(source, /setFormData\(\(prev\) => \(\{ \.\.\.prev, pin: generatePin\(\) \}\)\)/);
+  assert.match(source, /pattern="\[0-9\]\{6\}"/);
+  assert.doesNotMatch(source, /Number\(formData\.pin\)/);
+});

@@ -1,11 +1,14 @@
 import { apiRequest, getAuthToken } from './apiClient';
 
 const REALTIME_RECONNECT_DELAY_MS = 3000;
+const REALTIME_RESYNC_EVENT = 'realtime.resync';
 
 let eventSource = null;
 let reconnectTimer = null;
 let shouldStayConnected = false;
 let ticketRequestController = null;
+let connectedDispatcher = null;
+let hasConnectedOnce = false;
 
 const subscribers = new Map();
 const dispatchers = new Map();
@@ -29,6 +32,11 @@ const cancelTicketRequest = () => {
 const closeEventSource = () => {
   if (!eventSource) {
     return;
+  }
+
+  if (connectedDispatcher) {
+    eventSource.removeEventListener('connected', connectedDispatcher);
+    connectedDispatcher = null;
   }
 
   dispatchers.forEach((dispatcher, eventName) => {
@@ -56,7 +64,7 @@ const dispatchEventToSubscribers = (eventName, event) => {
 };
 
 const bindEventDispatcher = (eventName) => {
-  if (!eventSource || dispatchers.has(eventName)) {
+  if (!eventSource || dispatchers.has(eventName) || eventName === REALTIME_RESYNC_EVENT) {
     return;
   }
 
@@ -121,6 +129,14 @@ const ensureRealtimeConnection = async () => {
     const source = new EventSource(streamUrl);
 
     eventSource = source;
+    connectedDispatcher = (event) => {
+      const shouldResynchronize = hasConnectedOnce;
+      hasConnectedOnce = true;
+      if (shouldResynchronize) {
+        dispatchEventToSubscribers(REALTIME_RESYNC_EVENT, event);
+      }
+    };
+    source.addEventListener('connected', connectedDispatcher);
     bindAllDispatchers();
 
     source.onerror = () => {
@@ -163,6 +179,7 @@ const stopRealtimeIfIdle = () => {
   }
 
   shouldStayConnected = false;
+  hasConnectedOnce = false;
   clearReconnectTimer();
   cancelTicketRequest();
   closeEventSource();
@@ -226,6 +243,7 @@ export const resumeRealtime = () => {
 
 export const stopRealtime = () => {
   shouldStayConnected = false;
+  hasConnectedOnce = false;
   clearReconnectTimer();
   cancelTicketRequest();
   closeEventSource();

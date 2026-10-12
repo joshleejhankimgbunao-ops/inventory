@@ -20,11 +20,13 @@ const BACKUP_TIME_RULE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 const ALLOWED_UPDATE_FIELDS = new Set([
   'storeName',
   'storeAddress',
+  'storeBusinessSubtitle',
   'contactPhone',
   'contactPhoneSecondary',
   'storePrimaryEmail',
   'storeSecondaryEmail',
   'storeMapLink',
+  'authorizedSignatoryName',
   'currency',
   'darkMode',
   'autoSync',
@@ -253,11 +255,13 @@ const updateSettings = async (req, res, next) => {
 
     if ('storeName' in payload) payload.storeName = normalizeHumanReadable(payload.storeName);
     if ('storeAddress' in payload) payload.storeAddress = normalizeHumanReadable(payload.storeAddress);
+    if ('storeBusinessSubtitle' in payload) payload.storeBusinessSubtitle = normalizeHumanReadable(payload.storeBusinessSubtitle);
     if ('contactPhone' in payload) payload.contactPhone = normalizeString(payload.contactPhone);
     if ('contactPhoneSecondary' in payload) payload.contactPhoneSecondary = normalizeString(payload.contactPhoneSecondary);
     if ('storePrimaryEmail' in payload) payload.storePrimaryEmail = normalizeEmail(payload.storePrimaryEmail);
     if ('storeSecondaryEmail' in payload) payload.storeSecondaryEmail = normalizeEmail(payload.storeSecondaryEmail);
     if ('storeMapLink' in payload) payload.storeMapLink = normalizeString(payload.storeMapLink);
+    if ('authorizedSignatoryName' in payload) payload.authorizedSignatoryName = normalizeHumanReadable(payload.authorizedSignatoryName);
     if ('currency' in payload && typeof payload.currency === 'string') payload.currency = payload.currency.trim().toUpperCase();
     if ('adminUser' in payload && typeof payload.adminUser === 'string') payload.adminUser = payload.adminUser.trim().toLowerCase();
     if ('adminDisplayName' in payload) payload.adminDisplayName = normalizeHumanReadable(payload.adminDisplayName);

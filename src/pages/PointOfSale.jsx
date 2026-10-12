@@ -22,13 +22,18 @@ import {
 } from '../utils/numericInput';
 import { formatCurrency } from '../utils/numberFormat';
 import { buildQuotationPrintLines, buildQuotationReceiptModel } from '../utils/quotationReceipt';
+import { hasUsableTransactionReference } from '../utils/transactionReference';
 import { normalizeHumanReadable } from '../utils/textNormalization';
 import { createClientRequestId } from '../utils/clientRequestId';
 import { removeSelectedCartItems, toggleAllCartItemSelections, toggleCartItemSelection } from '../utils/cartSelection';
 import { ROLES } from '../constants/roles';
 import TransactionReferenceModal from '../components/TransactionReferenceModal';
 import ViewportTooltip from '../components/ViewportTooltip';
+import FormalPriceQuotationModal from '../components/FormalPriceQuotationModal';
 import { ORDER_CONFIRMATION_PREVIEW_SIZE } from '../constants/orderConfirmationPreview';
+import { buildFormalQuotationModel } from '../utils/formalQuotation';
+import { productAttributeValues } from '../utils/productAttributes';
+import { formatProductAttributeValue } from '../utils/productFamilies';
 import {
     getPosVariantSelectionModel,
     getPosVariantValueKey,
@@ -48,6 +53,11 @@ const isEligibleCreditCustomer = (row) => {
     const customerType = String(row?.customerType || 'regular').toLowerCase();
     const isVerifiedCustomer = row?.isVerifiedCustomer !== false;
     return row?.type === 'customer' && !row?.isArchived && customerType === 'regular' && isVerifiedCustomer;
+};
+
+const isActiveRegularCustomer = (row) => {
+    const customerType = String(row?.customerType || 'regular').toLowerCase();
+    return row?.type === 'customer' && !row?.isArchived && customerType === 'regular';
 };
 
 const getCashChangeCentavos = (cashValue, payableTotal) => {
@@ -142,11 +152,24 @@ const PointOfSale = () => {
         syncQueue,
         isOnline,
     } = useInventory();
-    const { appSettings: settings, userPreferences, currentUserName, currentUserFullName, userRole } = useAuth();
+    const { appSettings: settings, currentUserName, currentUserFullName, userRole } = useAuth();
     const canQuickAddCreditCustomer = userRole === ROLES.SUPER_ADMIN || userRole === ROLES.ADMIN;
 
     const showErrorDetails = (message, title = 'Action Failed') => {
         showToast(title, message, 'error', 'pos-action-error');
+    };
+
+    const showTransactionCompletionToast = (transaction) => {
+        const transactionId = String(transaction?.id || '').trim();
+        showToast(
+            'Transaction Completed',
+            transactionId
+                ? `Transaction ${transactionId} has been completed successfully.`
+                : 'The sale has been recorded successfully.',
+            'success',
+            'pos-transaction-reference-complete',
+            { duration: 4000 }
+        );
     };
 
     const [enlargedProductImage, setEnlargedProductImage] = useState(null);
@@ -200,10 +223,12 @@ const PointOfSale = () => {
     const [paymentType, setPaymentType] = useState('cash');
     const [cashAmount, setCashAmount] = useState(''); // Use string for input handling
     const [selectedVatMode, setSelectedVatMode] = useState('vatable');
+    const [regularCustomers, setRegularCustomers] = useState([]);
     const [creditCustomers, setCreditCustomers] = useState([]);
     const [selectedCreditCustomerId, setSelectedCreditCustomerId] = useState('');
     const [creditCustomerSearchQuery, setCreditCustomerSearchQuery] = useState('');
     const [isCreditCustomerComboboxOpen, setIsCreditCustomerComboboxOpen] = useState(false);
+    const [highlightedCreditCustomerIndex, setHighlightedCreditCustomerIndex] = useState(-1);
     const [isQuickAddCreditCustomerOpen, setIsQuickAddCreditCustomerOpen] = useState(false);
     const [quickAddCreditCustomerName, setQuickAddCreditCustomerName] = useState('');
     const [isSavingQuickAddCreditCustomer, setIsSavingQuickAddCreditCustomer] = useState(false);
@@ -216,14 +241,24 @@ const PointOfSale = () => {
     const checkoutInFlightRef = useRef(false);
     
     // Quotation State
+    const [quotationType, setQuotationType] = useState(null);
+    const [showQuotationTypeChooser, setShowQuotationTypeChooser] = useState(false);
+    const [showQuotationCustomerSelector, setShowQuotationCustomerSelector] = useState(false);
+    const [showQuotationDetails, setShowQuotationDetails] = useState(false);
+    const [quotationCustomerQuery, setQuotationCustomerQuery] = useState('');
+    const [selectedQuotationCustomer, setSelectedQuotationCustomer] = useState(null);
+    const [quotationDetails, setQuotationDetails] = useState({ attentionName: '', attentionPosition: '', authorizedSignatoryName: '' });
     const [showQuotationPreview, setShowQuotationPreview] = useState(false);
     const [quotationData, setQuotationData] = useState(null);
+    const [formalQuotationData, setFormalQuotationData] = useState(null);
 
     // Receipt Modal State
     const [showReceipt, setShowReceipt] = useState(false);
     const [lastTransaction, setLastTransaction] = useState(null);
     const [pendingReferenceSaleId, setPendingReferenceSaleId] = useState('');
     const [pendingOfflineCheckout, setPendingOfflineCheckout] = useState(null);
+    const [checkoutPhase, setCheckoutPhase] = useState(null);
+    const [checkoutOpenedAt, setCheckoutOpenedAt] = useState('');
 
     const creditPaymentModeRef = useRef(null);
     const creditCustomerComboboxRef = useRef(null);
@@ -303,20 +338,28 @@ const PointOfSale = () => {
     });
     const [variantModal, setVariantModal] = useState(createClosedVariantModalState);
 
+    const variantModalSelectedVariant = useMemo(() => {
+        if (!variantModal.isOpen || !variantModal.group || variantModal.step !== 'variants') return null;
+
+        const variants = variantModal.group.variants.filter((variant) => (
+            !variantModal.selectedBrand || getPosVariantValueKey(variant, 'brand') === variantModal.selectedBrand
+        ));
+        return getPosVariantSelectionModel(variants, {
+            size: variantModal.selectedSize,
+            color: variantModal.selectedColor,
+        }, variantModal.selectedVariantCode, variantModal.group.variantDimensions?.filter((dimension) => dimension !== 'brand')).matchedVariant;
+    }, [variantModal]);
+
     const variantModalImageItem = useMemo(() => {
         if (!variantModal.isOpen || !variantModal.group) return null;
 
         const variants = variantModal.group.variants.filter((variant) => (
             !variantModal.selectedBrand || getPosVariantValueKey(variant, 'brand') === variantModal.selectedBrand
         ));
-        const selectedVariant = getPosVariantSelectionModel(variants, {
-            size: variantModal.selectedSize,
-            color: variantModal.selectedColor,
-        }, variantModal.selectedVariantCode, variantModal.group.variantDimensions?.filter((dimension) => dimension !== 'brand')).matchedVariant;
         const brandRepresentative = variants.find((variant) => getProductImageUrl(variant)) || null;
 
-        return getProductImageUrl(selectedVariant) ? selectedVariant : brandRepresentative;
-    }, [variantModal]);
+        return getProductImageUrl(variantModalSelectedVariant) ? variantModalSelectedVariant : brandRepresentative;
+    }, [variantModal, variantModalSelectedVariant]);
 
     const normalizeTransactionId = (value) => {
         return String(value || '').trim().toUpperCase();
@@ -429,9 +472,11 @@ const PointOfSale = () => {
                 const rows = await listPartnersApi({ type: 'customer', includeArchived: false });
                 if (!isMounted) return;
 
-                const eligible = (Array.isArray(rows) ? rows : []).filter(isEligibleCreditCustomer);
+                const activeRegularCustomers = (Array.isArray(rows) ? rows : []).filter(isActiveRegularCustomer);
+                const eligible = activeRegularCustomers.filter(isEligibleCreditCustomer);
 
-                    setCreditCustomers(eligible);
+                setRegularCustomers(activeRegularCustomers);
+                setCreditCustomers(eligible);
 
                 if (eligible.length === 0) {
                     setSelectedCreditCustomerId('');
@@ -440,6 +485,7 @@ const PointOfSale = () => {
             } catch {
                 if (isMounted) {
                     setCreditCustomers([]);
+                    setRegularCustomers([]);
                     setSelectedCreditCustomerId('');
                 }
             }
@@ -452,12 +498,30 @@ const PointOfSale = () => {
         };
     }, []);
 
-    const computedCreditDueDate = useMemo(() => {
-        const base = new Date();
-        base.setHours(0, 0, 0, 0);
-        base.setDate(base.getDate() + Number(selectedCreditTermDays || MIN_CREDIT_TERM_DAYS));
-        return base;
+    const parsedCreditTermDays = useMemo(() => {
+        if (!isWholeNumberInput(selectedCreditTermDays, {
+            min: MIN_CREDIT_TERM_DAYS,
+            max: MAX_CREDIT_TERM_DAYS,
+        })) {
+            return null;
+        }
+
+        return Number(selectedCreditTermDays);
     }, [selectedCreditTermDays]);
+
+    const creditInvoiceDate = useMemo(() => {
+        const checkoutDate = checkoutOpenedAt ? new Date(checkoutOpenedAt) : new Date();
+        return Number.isNaN(checkoutDate.getTime()) ? new Date() : checkoutDate;
+    }, [checkoutOpenedAt]);
+
+    const computedCreditDueDate = useMemo(() => {
+        if (parsedCreditTermDays === null) return null;
+
+        const base = new Date(creditInvoiceDate);
+        base.setHours(0, 0, 0, 0);
+        base.setDate(base.getDate() + parsedCreditTermDays);
+        return base;
+    }, [creditInvoiceDate, parsedCreditTermDays]);
 
     const selectedCreditCustomer = useMemo(() => {
         return creditCustomers.find((row) => String(row?._id || row?.id || '') === String(selectedCreditCustomerId || '')) || null;
@@ -469,17 +533,74 @@ const PointOfSale = () => {
         return creditCustomers.filter((customer) => String(customer?.name || '').toLowerCase().includes(normalizedQuery));
     }, [creditCustomers, creditCustomerSearchQuery]);
 
+    useEffect(() => {
+        if (!isCreditCustomerComboboxOpen || filteredCreditCustomers.length === 0) {
+            setHighlightedCreditCustomerIndex(-1);
+            return;
+        }
+
+        setHighlightedCreditCustomerIndex((currentIndex) => (
+            currentIndex >= 0 && currentIndex < filteredCreditCustomers.length ? currentIndex : -1
+        ));
+    }, [filteredCreditCustomers, isCreditCustomerComboboxOpen]);
+
+    useEffect(() => {
+        if (!isCreditCustomerComboboxOpen || highlightedCreditCustomerIndex < 0) return;
+        creditCustomerComboboxRef.current
+            ?.querySelector(`[data-customer-index="${highlightedCreditCustomerIndex}"]`)
+            ?.scrollIntoView({ block: 'nearest' });
+    }, [highlightedCreditCustomerIndex, isCreditCustomerComboboxOpen]);
+
+    const filteredQuotationCustomers = useMemo(() => {
+        const normalizedQuery = String(quotationCustomerQuery || '').trim().toLowerCase();
+        if (!normalizedQuery) return regularCustomers;
+        return regularCustomers.filter((customer) => [customer?.name, customer?.email, customer?.contact, customer?.address]
+            .some((value) => String(value || '').toLowerCase().includes(normalizedQuery)));
+    }, [regularCustomers, quotationCustomerQuery]);
+
+    const hasQuotationSignatoryName = String(quotationDetails.authorizedSignatoryName || '').trim().length > 0;
+
     const selectCreditCustomer = (customer) => {
         const customerId = String(customer?._id || customer?.id || '');
         const customerName = String(customer?.name || '').trim();
         setSelectedCreditCustomerId(customerId);
         setCreditCustomerSearchQuery(customerName);
         setIsCreditCustomerComboboxOpen(false);
+        setHighlightedCreditCustomerIndex(-1);
     };
 
     const clearCreditCustomerSelection = () => {
         setSelectedCreditCustomerId('');
         setCreditCustomerSearchQuery('');
+        setHighlightedCreditCustomerIndex(-1);
+    };
+
+    const handleCreditCustomerKeyDown = (event) => {
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            setIsCreditCustomerComboboxOpen(false);
+            setHighlightedCreditCustomerIndex(-1);
+            return;
+        }
+
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault();
+            setIsCreditCustomerComboboxOpen(true);
+            setHighlightedCreditCustomerIndex((currentIndex) => {
+                if (filteredCreditCustomers.length === 0) return -1;
+                if (event.key === 'ArrowDown') {
+                    return currentIndex < filteredCreditCustomers.length - 1 ? currentIndex + 1 : 0;
+                }
+                return currentIndex > 0 ? currentIndex - 1 : filteredCreditCustomers.length - 1;
+            });
+            return;
+        }
+
+        if (event.key === 'Enter' && isCreditCustomerComboboxOpen && highlightedCreditCustomerIndex >= 0) {
+            event.preventDefault();
+            const highlightedCustomer = filteredCreditCustomers[highlightedCreditCustomerIndex];
+            if (highlightedCustomer) selectCreditCustomer(highlightedCustomer);
+        }
     };
 
     const quickAddCreditCustomerMatches = useMemo(() => {
@@ -533,7 +654,9 @@ const PointOfSale = () => {
             });
             const createdCustomerId = String(createdCustomer?._id || createdCustomer?.id || '');
             const refreshedCustomers = await listPartnersApi({ type: 'customer', includeArchived: false });
-            const eligibleCustomers = (Array.isArray(refreshedCustomers) ? refreshedCustomers : []).filter(isEligibleCreditCustomer);
+            const activeRegularCustomers = (Array.isArray(refreshedCustomers) ? refreshedCustomers : []).filter(isActiveRegularCustomer);
+            const eligibleCustomers = activeRegularCustomers.filter(isEligibleCreditCustomer);
+            setRegularCustomers(activeRegularCustomers);
             setCreditCustomers(eligibleCustomers);
 
             const eligibleCreatedCustomer = eligibleCustomers.find((customer) => String(customer?._id || customer?.id || '') === createdCustomerId);
@@ -555,28 +678,27 @@ const PointOfSale = () => {
         }
     };
 
-    const normalizeCreditTerm = (value) => {
-        if (!isWholeNumberInput(value, { min: MIN_CREDIT_TERM_DAYS, max: MAX_CREDIT_TERM_DAYS })) {
-            return MIN_CREDIT_TERM_DAYS;
-        }
-        return Number(value);
-    };
-
     const handleCreditTermInputChange = (value) => {
-        if (value === '') {
-            setSelectedCreditTermDays(MIN_CREDIT_TERM_DAYS);
-            return;
-        }
-
-        setSelectedCreditTermDays(normalizeCreditTerm(value));
+        setSelectedCreditTermDays(sanitizeWholeNumberInput(value));
     };
 
     const incrementCreditTerm = () => {
-        setSelectedCreditTermDays((prev) => normalizeCreditTerm(Math.min(MAX_CREDIT_TERM_DAYS, Number(prev || MIN_CREDIT_TERM_DAYS) + 1)));
+        setSelectedCreditTermDays((previousValue) => {
+            if (previousValue === '') return MIN_CREDIT_TERM_DAYS;
+            if (!isWholeNumberInput(previousValue, { min: MIN_CREDIT_TERM_DAYS, max: MAX_CREDIT_TERM_DAYS })) {
+                return previousValue;
+            }
+            return Math.min(MAX_CREDIT_TERM_DAYS, Number(previousValue) + 1);
+        });
     };
 
     const decrementCreditTerm = () => {
-        setSelectedCreditTermDays((prev) => normalizeCreditTerm(Math.max(MIN_CREDIT_TERM_DAYS, Number(prev || MIN_CREDIT_TERM_DAYS) - 1)));
+        setSelectedCreditTermDays((previousValue) => {
+            if (!isWholeNumberInput(previousValue, { min: MIN_CREDIT_TERM_DAYS, max: MAX_CREDIT_TERM_DAYS })) {
+                return previousValue;
+            }
+            return Math.max(MIN_CREDIT_TERM_DAYS, Number(previousValue) - 1);
+        });
     };
 
     const resolveCreditPaymentModeLabel = () => {
@@ -906,9 +1028,9 @@ const PointOfSale = () => {
         setCart([]);
         setCashAmount('');
         setLastTransaction(referencedTransaction);
-        setShowReceipt(true);
+        setShowReceipt(false);
+        setCheckoutPhase('confirmation');
         logActivity(currentUserName, 'Processed Sale', `Transaction ${referencedTransaction.id} — ${formatCurrency(total)}`);
-        showToast('Transaction Complete', 'Sale recorded successfully.', 'success', 'pos-checkout');
         return referencedTransaction;
     };
 
@@ -950,6 +1072,9 @@ const PointOfSale = () => {
         } else if (isCreditCheckout && !resolveCreditPaymentModeLabel()) {
             showErrorDetails('Please select a payment method for credit checkout.');
             return;
+        } else if (isCreditCheckout && parsedCreditTermDays === null) {
+            showErrorDetails(`Enter a whole-number credit term from ${MIN_CREDIT_TERM_DAYS} to ${MAX_CREDIT_TERM_DAYS} days.`);
+            return;
         }
 
         checkoutInFlightRef.current = true;
@@ -979,8 +1104,8 @@ const PointOfSale = () => {
                 ? (selectedCreditCustomer?.name || '')
                 : '',
             creditPaymentMode: isCreditCheckout ? resolveCreditPaymentModeLabel() : '',
-            termDays: isCreditCheckout ? Number(selectedCreditTermDays || MIN_CREDIT_TERM_DAYS) : null,
-            dueDate: isCreditCheckout ? computedCreditDueDate.toISOString() : null,
+            termDays: isCreditCheckout ? parsedCreditTermDays : null,
+            dueDate: isCreditCheckout && computedCreditDueDate ? computedCreditDueDate.toISOString() : null,
             cashier: currentUserFullName || currentUserName,
             cashierRole: String(userRole || '').toLowerCase(),
         };
@@ -1018,7 +1143,7 @@ const PointOfSale = () => {
                                 customerName: selectedCreditCustomer?.name || '',
                                 creditPaymentMode: selectedCreditPaymentMode,
                                 creditPaymentModeOther: selectedCreditPaymentMode === 'other' ? customCreditPaymentMode : '',
-                                termDays: Number(selectedCreditTermDays || MIN_CREDIT_TERM_DAYS),
+                                termDays: parsedCreditTermDays,
                                 notes: `Preferred mode of payment: ${resolveCreditPaymentModeLabel()}`,
                                 vatMode: normalizeVatMode(selectedVatMode),
                             }
@@ -1082,18 +1207,10 @@ const PointOfSale = () => {
                     setCart([]);
                     setCashAmount('');
                     setLastTransaction(remoteTransaction);
-                    if (remoteTransaction.sourceId) {
-                        setPendingReferenceSaleId(remoteTransaction.sourceId);
-                        setShowReceipt(false);
-                    } else {
-                        setShowReceipt(true);
-                    }
-                    showToast(
-                        isCreditCheckout ? 'Credit Order Created' : 'Transaction Complete',
-                        isCreditCheckout ? 'Credit sale recorded with pending payment.' : 'Sale recorded successfully.',
-                        'success',
-                        'pos-checkout'
-                    );
+                    setPendingReferenceSaleId('');
+                    setShowReceipt(false);
+                    setCheckoutPhase('confirmation');
+                    // Completion feedback waits until the required Transaction Reference save succeeds.
                     return;
                 } catch (error) {
                     if (!isApiConnectionFailure(error) || isCreditCheckout) {
@@ -1109,6 +1226,7 @@ const PointOfSale = () => {
 
             // Offline Cash Sales require a Reference No. before any local stock,
             // history, or sync-queue mutation is applied.
+            setCheckoutPhase(null);
             setPendingOfflineCheckout({ transactionData, cartSnapshot, canSyncOnline, total });
             return;
         } finally {
@@ -1119,14 +1237,89 @@ const PointOfSale = () => {
 
     const [printStatus, setPrintStatus] = useState('idle'); // idle, printing, success
 
+    const openOrderList = () => {
+        if (cart.length === 0 || isCheckoutProcessing) return;
+        setCheckoutOpenedAt(new Date().toLocaleString());
+        setCheckoutPhase('order-list');
+    };
+
     const handleGenerateQuotation = () => {
+        setQuotationType(null);
+        setFormalQuotationData(null);
+        setSelectedQuotationCustomer(null);
+        setQuotationDetails({ attentionName: '', attentionPosition: '', authorizedSignatoryName: '' });
+        setShowQuotationDetails(false);
+        setShowQuotationTypeChooser(true);
+    };
+
+    const openWalkInQuotation = () => {
         const quoteData = {
+            quotationType: 'walk_in',
             items: [...cart],
             total: calculateTotal()
         };
 
+        setQuotationType('walk_in');
+        setShowQuotationTypeChooser(false);
         setQuotationData(quoteData);
         setShowQuotationPreview(true);
+    };
+
+    const openRegularCustomerSelector = () => {
+        setQuotationType('regular_customer');
+        setQuotationCustomerQuery('');
+        setSelectedQuotationCustomer(null);
+        setFormalQuotationData(null);
+        setShowQuotationDetails(false);
+        setShowQuotationTypeChooser(false);
+        setShowQuotationCustomerSelector(true);
+    };
+
+    const openQuotationDetails = (customer) => {
+        setSelectedQuotationCustomer(customer);
+        setQuotationDetails({
+            attentionName: String(customer?.attentionName || ''),
+            attentionPosition: String(customer?.attentionPosition || ''),
+            authorizedSignatoryName: String(settings?.authorizedSignatoryName || ''),
+        });
+        setShowQuotationCustomerSelector(false);
+        setShowQuotationDetails(true);
+    };
+
+    const returnToQuotationCustomerSelector = () => {
+        setShowQuotationDetails(false);
+        setShowQuotationCustomerSelector(true);
+    };
+
+    const previewFormalQuotation = (event) => {
+        event.preventDefault();
+        if (!selectedQuotationCustomer) {
+            showErrorDetails('Select a valid regular customer.');
+            return;
+        }
+
+        const authorizedSignatoryName = normalizeHumanReadable(quotationDetails.authorizedSignatoryName);
+        if (!authorizedSignatoryName) {
+            showErrorDetails('Authorized Signatory Name is required.', 'Quotation Details');
+            return;
+        }
+
+        const quotationSpecificDetails = {
+            ...quotationDetails,
+            authorizedSignatoryName,
+        };
+
+        const quotation = buildFormalQuotationModel({
+            items: cart,
+            customer: selectedQuotationCustomer,
+            settings,
+            quotationDetails: quotationSpecificDetails,
+            categories: categoryDefinitions,
+            date: new Date(),
+        });
+        setQuotationType('regular_customer');
+        setFormalQuotationData(quotation);
+        setShowQuotationDetails(false);
     };
 
     const handlePrintQuotationDoc = () => {
@@ -1172,8 +1365,20 @@ const PointOfSale = () => {
             });
     };
 
-    const handlePrint = async () => {
-        if (!lastTransaction || printStatus === 'printing' || printLockRef.current) {
+    const completeOrderConfirmationPreview = () => {
+        setShowReceipt(false);
+        setCheckoutPhase(null);
+
+        if (
+            lastTransaction?.sourceId
+            && !hasUsableTransactionReference({ existingReference: lastTransaction.transactionReference })
+        ) {
+            setPendingReferenceSaleId(lastTransaction.sourceId);
+        }
+    };
+
+    const handlePrintOrderList = async () => {
+        if (cart.length === 0 || printStatus === 'printing' || printLockRef.current) {
             return;
         }
 
@@ -1181,9 +1386,13 @@ const PointOfSale = () => {
         setPrintStatus('printing');
         try {
             const result = await printReceipt({
-                transaction: { ...lastTransaction, documentType: 'order-confirmation' },
+                transaction: {
+                    date: checkoutOpenedAt || new Date().toLocaleString(),
+                    cashier: currentUserFullName || currentUserName,
+                    items: [...cart],
+                    documentType: 'order-list-draft',
+                },
                 settings,
-                elementId: 'receipt-content',
                 paperWidthMm: 58,
             });
 
@@ -1191,59 +1400,60 @@ const PointOfSale = () => {
             showToast(
                 'Print Success',
                 result.source === 'local-service'
-                    ? 'Order confirmation sent to the thermal printer.'
-                    : 'Order confirmation printed successfully!',
+                    ? 'Draft order list sent to the thermal printer.'
+                    : 'Draft order list printed successfully!',
                 'success',
                 'pos-print-receipt'
             );
 
-            setTimeout(() => {
-                setShowReceipt(false);
+            window.setTimeout(() => {
                 setPrintStatus('idle');
                 printLockRef.current = false;
             }, 1500);
         } catch (error) {
             printLockRef.current = false;
             setPrintStatus('idle');
-            showErrorDetails(error?.message || 'Unable to print order confirmation.');
+            console.error('Unable to print draft Order List:', error);
+            showErrorDetails('Unable to print Order List. Please try again.');
         }
     };
 
-    // Auto-Print Receipt Effect
-    useEffect(() => {
-        if (!userPreferences?.autoPrintReceipts || !showReceipt || !lastTransaction) {
-            return undefined;
-        }
-
-        // Slight delay to ensure modal DOM is fully rendered before printing.
-        const autoPrintTimer = window.setTimeout(() => {
-            void handlePrint();
-        }, 500);
-
-        return () => window.clearTimeout(autoPrintTimer);
-    }, [userPreferences?.autoPrintReceipts, showReceipt, lastTransaction]);
-
-    const receiptPaymentMethod = String(lastTransaction?.paymentMethod || 'Cash').trim();
-    const isCreditReceipt = receiptPaymentMethod.toLowerCase() === 'credit';
     const receiptTitle = 'Order Confirmation';
-    const receiptContextLine = 'For transaction reference only';
     const payableTotalForChange = calculateTotal();
     const changeCentavosForDisplay = getCashChangeCentavos(cashAmount, payableTotalForChange);
     const isCashAmountTooLarge = paymentType === 'cash' && isMoneyInputTooLarge(cashAmount);
-    const isCheckoutDisabled = cart.length === 0
+    const isCheckoutDisabled = cart.length === 0 || isCheckoutProcessing;
+    const isConfirmationPaymentDisabled = cart.length === 0
         || isCheckoutProcessing
         || (paymentType === 'cash' && !cashAmount)
         || isCashAmountTooLarge
-        || (paymentType === 'credit' && (!selectedCreditCustomer || !resolveCreditPaymentModeLabel()));
+        || (paymentType === 'credit' && (
+            !selectedCreditCustomer
+            || !resolveCreditPaymentModeLabel()
+            || parsedCreditTermDays === null
+        ));
+    const creditDateFormatOptions = { year: 'numeric', month: 'long', day: 'numeric' };
+    const creditInvoiceDateLabel = creditInvoiceDate.toLocaleDateString(undefined, creditDateFormatOptions);
+    const creditDueDateLabel = computedCreditDueDate
+        ? computedCreditDueDate.toLocaleDateString(undefined, creditDateFormatOptions)
+        : '—';
+    const creditTermValidationMessage = parsedCreditTermDays === null
+        ? `Enter a whole number from ${MIN_CREDIT_TERM_DAYS} to ${MAX_CREDIT_TERM_DAYS}.`
+        : '';
     const checkoutDisabledMessage = cart.length === 0
         ? 'Add item first'
         : isCheckoutProcessing
             ? 'Processing payment...'
-            : isCashAmountTooLarge
-                ? 'Amount is too large. Please enter a smaller value.'
-            : paymentType === 'credit'
-                ? (!selectedCreditCustomer ? 'Select an eligible regular customer first' : 'Select payment method first')
-                : 'Enter cash first';
+            : 'Review the order first';
+    const getSellingUnit = (item) => String(item?.sellingUnit || item?.unit || '').trim();
+    const confirmationItems = lastTransaction?.items || cart;
+    const confirmationVat = lastTransaction
+        ? { netAmount: lastTransaction.netAmount, vatAmount: lastTransaction.vatAmount, grossAmount: lastTransaction.grossAmount }
+        : calculateVatBreakdown();
+    const confirmationTotal = lastTransaction?.total ?? calculateTotal();
+    const confirmationDate = lastTransaction?.date || checkoutOpenedAt;
+    const confirmationCash = lastTransaction ? lastTransaction.cash : (changeCentavosForDisplay === null ? 0 : moneyFromCentavos(parseMoneyToCentavos(formatMoneyInput(cashAmount)) || 0));
+    const confirmationChange = lastTransaction ? lastTransaction.change : (changeCentavosForDisplay === null ? 0 : moneyFromCentavos(changeCentavosForDisplay));
     const selectedCartItemCount = selectedCartItemCodes.filter((code) => cart.some((item) => item.code === code)).length;
     const areAllCartItemsSelected = cart.length > 0 && selectedCartItemCount === cart.length;
 
@@ -1263,13 +1473,17 @@ const PointOfSale = () => {
                         ...pendingOfflineCheckout,
                         referenceNumber,
                     })}
-                    onSaved={() => setPendingOfflineCheckout(null)}
+                    onSaved={(completedTransaction) => {
+                        setPendingOfflineCheckout(null);
+                        showTransactionCompletionToast(completedTransaction);
+                    }}
                 />
             )}
             {pendingReferenceSaleId && lastTransaction && (
                 <TransactionReferenceModal
                     saleId={pendingReferenceSaleId}
                     requiredFlow
+                    saveLabel="Save Reference"
                     onSaved={(updated) => {
                         const nextTransaction = { ...lastTransaction, transactionReference: updated.transactionReference };
                         setLastTransaction(nextTransaction);
@@ -1277,54 +1491,232 @@ const PointOfSale = () => {
                             setTransactions((previous) => upsertTransactionByIdentity(previous, nextTransaction));
                         }
                         setPendingReferenceSaleId('');
-                        setShowReceipt(true);
+                        showTransactionCompletionToast(nextTransaction);
                     }}
                 />
             )}
-            {/* Receipt Modal */}
+            {checkoutPhase === 'order-list' && (
+                <div className="app-modal-backdrop fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="order-list-title">
+                    <div className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+                        <header className="flex items-center justify-between border-b border-slate-100 bg-slate-50 px-5 py-4"><div><h3 id="order-list-title" className="text-xl font-semibold text-slate-900">Order List</h3><p className="mt-0.5 text-xs text-slate-500">Review and adjust products before payment.</p></div><button type="button" onClick={() => setCheckoutPhase(null)} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Back to POS cart">×</button></header>
+                        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-4 sm:p-5">
+                            {cart.length === 0 ? (
+                                <div className="flex min-h-[16rem] flex-col items-center justify-center px-4 py-8 text-center">
+                                    <span className="flex h-12 w-12 items-center justify-center rounded-full bg-slate-100 text-slate-400" aria-hidden="true">
+                                        <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" d="M3 3h2l1.7 9.1a2 2 0 002 1.6h7.9a2 2 0 001.9-1.4L21 6H6m3 11.5h.01m7.99 0h.01" />
+                                        </svg>
+                                    </span>
+                                    <h4 className="mt-3 text-sm font-semibold text-slate-800">No products in this order yet.</h4>
+                                    <p className="mt-1 text-xs text-slate-500">Add items from the product list to continue.</p>
+                                </div>
+                            ) : cart.map((item) => (
+                                <div key={item.code} className="flex items-center gap-3 rounded-xl border border-slate-100 px-3 py-2.5"><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-slate-900">{item.brand ? `${item.brand} ` : ''}{item.name}{item.color ? ` â€” ${item.color}` : ''}</p><p className="mt-0.5 text-[11px] text-slate-500">{item.code}{getSellingUnit(item) ? ` · ${getSellingUnit(item)}` : ''}</p></div><div className="flex items-center gap-1.5"><button type="button" onClick={() => updateQuantity(item.code, item.qty - 1)} className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" aria-label={`Decrease ${item.name} quantity`}>−</button><span className="w-7 text-center text-sm font-semibold text-slate-900">{item.qty}</span><button type="button" onClick={() => updateQuantity(item.code, item.qty + 1)} className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-900 text-white hover:bg-slate-800" aria-label={`Increase ${item.name} quantity`}>+</button></div><button type="button" onClick={() => removeFromCart(item.code)} className="rounded-lg p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600" aria-label={`Remove ${item.name}`}>×</button></div>
+                            ))}
+                        </div>
+                        <footer className="grid grid-cols-3 gap-2 border-t border-slate-100 bg-slate-50 p-3 sm:p-4"><button type="button" onClick={() => setCheckoutPhase(null)} className="rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">Back to Cart</button><button type="button" onClick={handlePrintOrderList} disabled={printStatus === 'printing' || cart.length === 0} className="rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">{printStatus === 'printing' ? 'Printing…' : 'Print Order List'}</button><button type="button" onClick={() => setCheckoutPhase('payment')} disabled={cart.length === 0} className="rounded-xl bg-slate-900 px-3 py-2.5 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50">Proceed to Payment</button></footer>
+                    </div>
+                </div>
+            )}
+            {(checkoutPhase === 'payment' || (checkoutPhase === 'confirmation' && lastTransaction)) && !isQuickAddCreditCustomerOpen && (
+                <div className="app-modal-backdrop fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="order-confirmation-title">
+                    <div className={`flex ${ORDER_CONFIRMATION_PREVIEW_SIZE.modal} max-h-[92vh] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl`}>
+                        <header className="flex items-center justify-between border-b border-slate-100 bg-slate-50 px-5 py-4">
+                            <h3 id="order-confirmation-title" className="text-xl font-semibold text-slate-900">{lastTransaction ? 'Order Confirmation' : 'Payment'}</h3>
+                            {!lastTransaction && <button type="button" onClick={() => setCheckoutPhase('order-list')} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Back to order list">×</button>}
+                        </header>
+                        <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-5"><div className="space-y-5 text-xs text-slate-600 sm:text-[13px]">
+                            {!lastTransaction && (
+                                <section className="space-y-4">
+                                    <div>
+                                        <label className="mb-1.5 block text-xs font-medium text-slate-600">Payment Method</label>
+                                        <div className="inline-flex w-full rounded-lg border border-slate-200 bg-slate-100 p-1">
+                                            <button type="button" onClick={() => handlePaymentTypeChange('cash')} className={`flex-1 rounded-md py-2 text-xs font-semibold ${paymentType === 'cash' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Cash</button>
+                                            <button type="button" onClick={() => handlePaymentTypeChange('credit')} className={`flex-1 rounded-md py-2 text-xs font-semibold ${paymentType === 'credit' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Credit</button>
+                                        </div>
+                                    </div>
+                                    {paymentType === 'cash' ? (
+                                        <>
+                                            <div className="grid gap-3 sm:grid-cols-2">
+                                                <label className="block text-xs font-medium text-slate-600">Cash Tendered<input type="text" inputMode="decimal" value={cashAmount} onKeyDown={preventInvalidMoneyKeyDown} onPaste={preventInvalidMoneyPaste} onChange={(event) => setCashAmount(sanitizeCashTenderedInput(event.target.value))} onBlur={() => setCashAmount((value) => formatMoneyInput(value))} placeholder="0.00" className="mt-1.5 h-10 w-full rounded-lg border border-slate-300 px-3 text-right text-sm text-slate-900" /></label>
+                                                <label className="block text-xs font-medium text-slate-600">VAT Mode<select value={selectedVatMode} onChange={(event) => setSelectedVatMode(event.target.value)} className="mt-1.5 h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-900">{VAT_MODE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+                                            </div>
+                                            <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3.5">
+                                                <div className="flex items-center justify-between"><span className="font-medium text-slate-500">Total Due</span><span className="text-lg font-semibold text-slate-900">{formatCurrency(confirmationTotal)}</span></div>
+                                                <div className="flex items-center justify-between border-t border-slate-200 pt-2"><span className="font-medium text-slate-500">Change</span><span className="font-semibold text-slate-900">{formatCurrency(confirmationChange)}</span></div>
+                                            </div>
+                                        </>
+                                    ) : (
+                                        <div className="space-y-3">
+                                            <div ref={creditCustomerComboboxRef} className="relative">
+                                                <label htmlFor="credit-customer-search" className="block text-xs font-medium text-slate-600">Regular Customer</label>
+                                                <div className="relative mt-1.5">
+                                                    <input
+                                                        id="credit-customer-search"
+                                                        type="text"
+                                                        value={creditCustomerSearchQuery}
+                                                        onFocus={() => setIsCreditCustomerComboboxOpen(true)}
+                                                        onChange={(event) => {
+                                                            setCreditCustomerSearchQuery(event.target.value);
+                                                            if (selectedCreditCustomerId) setSelectedCreditCustomerId('');
+                                                            setHighlightedCreditCustomerIndex(-1);
+                                                            setIsCreditCustomerComboboxOpen(true);
+                                                        }}
+                                                        onKeyDown={handleCreditCustomerKeyDown}
+                                                        onBlur={() => window.setTimeout(() => setIsCreditCustomerComboboxOpen(false), 150)}
+                                                        placeholder="Search or select customer..."
+                                                        role="combobox"
+                                                        aria-autocomplete="list"
+                                                        aria-controls="credit-customer-options"
+                                                        aria-expanded={isCreditCustomerComboboxOpen}
+                                                        aria-activedescendant={highlightedCreditCustomerIndex >= 0
+                                                            ? `credit-customer-option-${highlightedCreditCustomerIndex}`
+                                                            : undefined}
+                                                        className="h-10 w-full rounded-lg border border-slate-300 bg-white px-3 pr-9 text-sm text-slate-900 focus:border-slate-500 focus:outline-none"
+                                                    />
+                                                    {(creditCustomerSearchQuery || selectedCreditCustomerId) && (
+                                                        <button
+                                                            type="button"
+                                                            onMouseDown={(event) => event.preventDefault()}
+                                                            onClick={clearCreditCustomerSelection}
+                                                            className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-slate-400 hover:text-slate-700"
+                                                            aria-label="Clear regular customer"
+                                                        >
+                                                            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18 18 6M6 6l12 12" /></svg>
+                                                        </button>
+                                                    )}
+                                                </div>
+                                                {isCreditCustomerComboboxOpen && (
+                                                    <div id="credit-customer-options" className="absolute z-30 mt-1 max-h-44 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white py-1 shadow-lg" role="listbox">
+                                                        {creditCustomers.length === 0 ? (
+                                                            <p className="px-3 py-2 text-xs text-slate-500">No eligible regular customers available.</p>
+                                                        ) : filteredCreditCustomers.length === 0 ? (
+                                                            <p className="px-3 py-2 text-xs text-slate-500">No matching customers found.</p>
+                                                        ) : filteredCreditCustomers.map((customer, index) => {
+                                                            const customerId = String(customer?._id || customer?.id || '');
+                                                            return (
+                                                                <button
+                                                                    id={`credit-customer-option-${index}`}
+                                                                    data-customer-index={index}
+                                                                    key={customerId}
+                                                                    type="button"
+                                                                    role="option"
+                                                                    aria-selected={customerId === selectedCreditCustomerId}
+                                                                    onMouseDown={(event) => event.preventDefault()}
+                                                                    onMouseEnter={() => setHighlightedCreditCustomerIndex(index)}
+                                                                    onClick={() => selectCreditCustomer(customer)}
+                                                                    className={`block w-full px-3 py-2 text-left text-sm font-medium transition-colors ${index === highlightedCreditCustomerIndex || customerId === selectedCreditCustomerId ? 'bg-amber-50 text-amber-800' : 'text-slate-700 hover:bg-slate-50'}`}
+                                                                >
+                                                                    {customer.name}
+                                                                </button>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                )}
+                                                {canQuickAddCreditCustomer && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={openQuickAddCreditCustomer}
+                                                        className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition-colors hover:border-slate-400 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-300"
+                                                    >
+                                                        <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 5v14m7-7H5" /></svg>
+                                                        Add Regular Customer
+                                                    </button>
+                                                )}
+                                            </div>
+                                            <div className="grid gap-3 sm:grid-cols-2">
+                                                <label className="block text-xs font-medium text-slate-600">Payment Method<select value={selectedCreditPaymentMode} onChange={(event) => { setSelectedCreditPaymentMode(event.target.value); if (event.target.value !== 'other') setCustomCreditPaymentMode(''); }} className="mt-1.5 h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-900"><option value="">Select payment method</option>{CREDIT_PAYMENT_MODES.map((mode) => <option key={mode} value={mode}>{formatCreditPaymentModeLabel(mode)}</option>)}</select></label>
+                                                <label className="block text-xs font-medium text-slate-600">VAT Mode<select value={selectedVatMode} onChange={(event) => setSelectedVatMode(event.target.value)} className="mt-1.5 h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-900">{VAT_MODE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+                                            </div>
+                                            {selectedCreditPaymentMode === 'other' && <label className="block text-xs font-medium text-slate-600">Other Payment Method<input type="text" value={customCreditPaymentMode} onChange={(event) => setCustomCreditPaymentMode(event.target.value)} className="mt-1.5 h-10 w-full rounded-lg border border-slate-300 px-3 text-sm text-slate-900" /></label>}
+                                            <div>
+                                                <label htmlFor="credit-term-days" className="block text-xs font-medium text-slate-600">Credit Term (Days)</label>
+                                                <div className="mt-1.5 grid grid-cols-[2.5rem_minmax(5rem,1fr)_2.5rem] gap-2 sm:max-w-xs">
+                                                    <button
+                                                        type="button"
+                                                        onClick={decrementCreditTerm}
+                                                        disabled={parsedCreditTermDays === null || parsedCreditTermDays <= MIN_CREDIT_TERM_DAYS}
+                                                        className="flex h-10 items-center justify-center rounded-lg border border-slate-300 bg-white text-lg font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                                        aria-label="Decrease credit term by one day"
+                                                    >
+                                                        &minus;
+                                                    </button>
+                                                    <input
+                                                        id="credit-term-days"
+                                                        type="text"
+                                                        inputMode="numeric"
+                                                        pattern="[0-9]*"
+                                                        value={selectedCreditTermDays}
+                                                        onKeyDown={preventInvalidWholeNumberKeyDown}
+                                                        onPaste={preventInvalidWholeNumberPaste}
+                                                        onChange={(event) => handleCreditTermInputChange(event.target.value)}
+                                                        aria-invalid={parsedCreditTermDays === null}
+                                                        aria-describedby={creditTermValidationMessage ? 'credit-term-error' : 'credit-date-preview'}
+                                                        className={`h-10 min-w-0 rounded-lg border bg-white px-3 text-center text-sm font-semibold leading-10 text-slate-900 focus:outline-none ${parsedCreditTermDays === null ? 'border-rose-400 focus:border-rose-500' : 'border-slate-300 focus:border-slate-500'}`}
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        onClick={incrementCreditTerm}
+                                                        disabled={(selectedCreditTermDays !== '' && parsedCreditTermDays === null) || parsedCreditTermDays >= MAX_CREDIT_TERM_DAYS}
+                                                        className="flex h-10 items-center justify-center rounded-lg border border-slate-300 bg-white text-lg font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                                        aria-label="Increase credit term by one day"
+                                                    >
+                                                        +
+                                                    </button>
+                                                </div>
+                                                {creditTermValidationMessage && <p id="credit-term-error" role="alert" className="mt-1.5 text-xs font-medium text-rose-600">{creditTermValidationMessage}</p>}
+                                                <dl id="credit-date-preview" className="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 rounded-xl bg-slate-50 px-3.5 py-3 text-xs">
+                                                    <dt className="text-slate-500">Invoice Date</dt>
+                                                    <dd className="text-right font-medium text-slate-800">{creditInvoiceDateLabel}</dd>
+                                                    <dt className="text-slate-500">Due Date</dt>
+                                                    <dd className="text-right font-semibold text-slate-900">{creditDueDateLabel}</dd>
+                                                </dl>
+                                            </div>
+                                            <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/70 p-3.5"><span className="font-medium text-slate-500">Total Due</span><span className="text-lg font-semibold text-slate-900">{formatCurrency(confirmationTotal)}</span></div>
+                                        </div>
+                                    )}
+                                </section>
+                            )}
+                            {lastTransaction && (<>
+                            {lastTransaction && <div className="flex justify-between border-b border-slate-100 pb-2"><span>Transaction ID</span><span className="font-mono font-semibold text-slate-900">{lastTransaction.id}</span></div>}<div className="grid grid-cols-2 gap-x-5 gap-y-1.5 border-b border-slate-100 pb-3"><span>Date &amp; Time</span><span className="text-right text-slate-900">{confirmationDate}</span><span>Cashier</span><span className="text-right text-slate-900">{lastTransaction?.cashier || currentUserFullName || currentUserName}</span><span>Payment Type</span><span className="text-right text-slate-900">{lastTransaction?.paymentMethod || (paymentType === 'credit' ? 'Credit' : 'Cash')}</span></div>
+                            <section className="space-y-3"><p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Order Summary</p><table className="w-full table-fixed"><colgroup><col className="w-[40%]"/><col className="w-[10%]"/><col className="w-[12%]"/><col className="w-[18%]"/><col className="w-[20%]"/></colgroup><thead><tr className="border-b border-slate-100"><th className="py-1.5 text-left font-semibold text-slate-700">Item</th><th className="py-1.5 text-center font-semibold text-slate-700">Qty</th><th className="py-1.5 text-center font-semibold text-slate-700">Unit</th><th className="py-1.5 text-right font-semibold text-slate-700">Unit Price</th><th className="py-1.5 text-right font-semibold text-slate-700">Amount</th></tr></thead><tbody>{confirmationItems.map((item, index) => <tr key={`${item.code}-${index}`} className="border-b border-slate-50"><td className="py-2"><div className="font-semibold text-slate-900">{item.name}</div><div className="text-[11px] text-slate-500">{item.code}</div></td><td className="py-2 text-center">{item.qty}</td><td className="py-2 text-center">{getSellingUnit(item) || '—'}</td><td className="py-2 text-right whitespace-nowrap">{formatCurrency(item.price)}</td><td className="py-2 text-right whitespace-nowrap">{formatCurrency(item.price * item.qty)}</td></tr>)}</tbody></table><div className="space-y-1.5 border-t border-slate-200 pt-3"><div className="flex justify-between"><span>Net Amount</span><span>{formatCurrency(confirmationVat?.netAmount || 0)}</span></div><div className="flex justify-between"><span>{formatVatModeLabel(lastTransaction?.vatMode || selectedVatMode)}</span><span>{formatCurrency(confirmationVat?.vatAmount || 0)}</span></div><div className="mt-2 flex justify-between border-t border-slate-900 pt-2 text-lg font-semibold text-slate-900"><span>TOTAL</span><span>{formatCurrency(confirmationTotal)}</span></div>{lastTransaction && <><div className="flex justify-between pt-1 font-semibold uppercase"><span>Payment Status</span><span>{lastTransaction.paymentStatus}</span></div><div className="flex justify-between"><span>Cash Received</span><span>{lastTransaction.paymentMethod === 'Cash' ? formatCurrency(confirmationCash) : '—'}</span></div><div className="flex justify-between"><span>Change</span><span>{lastTransaction.paymentMethod === 'Cash' ? formatCurrency(confirmationChange) : '—'}</span></div></>}</div></section>
+                            </>)}
+                        </div></div>
+                        <footer className="grid grid-cols-2 gap-2 border-t border-slate-100 bg-slate-50 p-3 sm:p-4">{lastTransaction ? <button type="button" onClick={completeOrderConfirmationPreview} className="col-span-2 rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-semibold text-white hover:bg-slate-800">Continue to Reference</button> : <><button type="button" onClick={() => setCheckoutPhase('order-list')} disabled={isCheckoutProcessing} className="rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-xs font-semibold text-slate-700">Back to Order List</button><button type="button" onClick={handleCheckout} disabled={isConfirmationPaymentDisabled} className="rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-semibold text-white disabled:opacity-50">{isCheckoutProcessing ? 'Processing…' : 'Confirm & Process Payment'}</button></>}</footer>
+                    </div>
+                </div>
+            )}
+            {/* Legacy post-sale preview kept inactive; checkout uses the staged workflow above. */}
             {showReceipt && lastTransaction && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                <div className="app-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
                     <div className={`flex ${ORDER_CONFIRMATION_PREVIEW_SIZE.modal} flex-col overflow-hidden rounded-2xl bg-white shadow-2xl`}>
                         <div className="flex items-center justify-between border-b border-gray-100 bg-gray-50 px-4 py-3.5 sm:px-5 sm:py-4">
                             <div>
                                 <h3 className="text-xl font-semibold text-gray-800 sm:text-2xl">{receiptTitle}</h3>
-                                <p className="mt-1 text-xs text-gray-500">{receiptContextLine}</p>
                             </div>
-                            <button onClick={() => setShowReceipt(false)} className="rounded-lg p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600" aria-label="Close Order Confirmation preview">
+                            <button onClick={completeOrderConfirmationPreview} className="rounded-lg p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600" aria-label="Close Order List preview">
                                 <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                             </button>
                         </div>
 
                         <div className="flex-1 overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5" id="receipt-content">
                             <div className={`${ORDER_CONFIRMATION_PREVIEW_SIZE.content} px-1 text-xs leading-relaxed text-gray-600 sm:text-[13px]`}>
-                            <div className="mb-5 text-center">
-                                <p className="mb-1 text-lg font-semibold leading-tight text-gray-900">{settings?.storeName || 'Tableria La Confianza'}</p>
-                                <div className="mt-1.5 space-y-0.5 text-[11px] leading-relaxed text-gray-400 sm:text-xs">
-                                    <p>{settings?.storeAddress || 'Manila S Rd, Calamba, 4027 Laguna'}</p>
-                                    <p>Contact: {settings?.contactPhone || '0917-545-2166'}</p>
-                                </div>
-                                <p className="mt-3 text-xs font-semibold tracking-wider text-gray-900">ORDER CONFIRMATION</p>
-                                <p className="text-[11px] text-gray-500">For transaction reference only</p>
-                            </div>
-                            
                             <div className="mb-4 border-y border-dashed border-gray-200 py-3">
                                 <div className="mb-1 flex justify-between gap-3">
                                     <span className="text-gray-500">Transaction ID:</span>
                                     <span className="font-mono font-semibold text-gray-800">{lastTransaction.id}</span>
                                 </div>
-                                {lastTransaction.transactionReference?.referenceNumber && (
-                                    <div className="mb-1 flex justify-between gap-3">
-                                        <span className="shrink-0 text-gray-500">Transaction Reference:</span>
-                                        <span className="min-w-0 break-all text-right text-gray-800">{lastTransaction.transactionReference.referenceNumber}</span>
-                                    </div>
-                                )}
                                 <div className="mb-1 flex justify-between gap-3">
-                                    <span className="text-gray-500">Date:</span>
+                                    <span className="text-gray-500">Date &amp; Time:</span>
                                     <span className="text-gray-800">{lastTransaction.date}</span>
                                 </div>
                                 <div className="flex justify-between gap-3">
                                     <span className="text-gray-500">Cashier:</span>
                                     <span className="text-gray-800">{lastTransaction.cashier}</span>
+                                </div>
+                                <div className="mt-1 flex justify-between gap-3">
+                                    <span className="text-gray-500">Payment Type:</span>
+                                    <span className="text-gray-800">{lastTransaction.paymentMethod || 'Cash'}</span>
                                 </div>
                             </div>
 
@@ -1358,66 +1750,19 @@ const PointOfSale = () => {
                                 </tbody>
                             </table>
 
-                            <div className="space-y-1.5 border-t border-gray-200 pt-3 text-right text-xs leading-relaxed sm:text-[13px]">
-                                {lastTransaction.vatAmount > 0 && (
-                                    <>
-                                        <div className="flex justify-between text-gray-600">
-                                            <span>Net Amount</span>
-                                            <span>{formatCurrency(lastTransaction.netAmount)}</span>
-                                        </div>
-                                        <div className="flex justify-between text-gray-600">
-                                            <span>{formatVatModeLabel(lastTransaction.vatMode)}</span>
-                                            <span>{formatCurrency(lastTransaction.vatAmount)}</span>
-                                        </div>
-                                    </>
-                                )}
-                                <div className="mt-2 flex justify-between border-t border-gray-900 pt-2 text-lg font-semibold text-gray-900">
-                                    <span>TOTAL</span>
-                                    <span>{formatCurrency(lastTransaction.total)}</span>
-                                </div>
-                                <div className="flex justify-between pt-1 text-xs font-semibold uppercase text-gray-600 sm:text-[13px]">
-                                    <span>{isCreditReceipt ? 'Credit Status' : 'Cash Received'}</span>
-                                    <span>{isCreditReceipt ? (lastTransaction.paymentStatus || 'Pending') : formatCurrency(lastTransaction.cash)}</span>
-                                </div>
-
-                                {isCreditReceipt ? (
-                                    <>
-                                        <div className="flex justify-between text-gray-500">
-                                            <span>Due Date</span>
-                                            <span>{lastTransaction.dueDate ? new Date(lastTransaction.dueDate).toLocaleDateString() : '-'}</span>
-                                        </div>
-                                        {lastTransaction.creditPaymentMode && (
-                                            <div className="flex justify-between text-gray-500">
-                                                <span>Payment Method</span>
-                                                <span>{lastTransaction.creditPaymentMode}</span>
-                                            </div>
-                                        )}
-                                    </>
-                                ) : (
-                                    <div className="flex justify-between text-gray-500">
-                                        <span>Change</span>
-                                        <span>{formatCurrency(lastTransaction.change)}</span>
-                                    </div>
-                                )}
-                            </div>
-
-                            <div className="mt-5 text-center text-[11px] leading-relaxed text-gray-400 sm:text-xs">
-                                <p>Thank you for your business.</p>
-                                <p>Please keep this confirmation for reference.</p>
-                            </div>
                             </div>
                         </div>
 
                         <div className="grid grid-cols-2 gap-2 border-t border-gray-100 bg-gray-50 p-3 sm:p-4">
                             <button 
-                                onClick={() => setShowReceipt(false)}
+                                onClick={completeOrderConfirmationPreview}
                                 className="flex items-center justify-center gap-2 rounded-xl bg-white px-4 py-2.5 text-xs font-semibold tracking-widest text-gray-600 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:bg-gray-100"
                                 style={{ border: '2px solid #e5e7eb' }}
                             >
                                 Close
                             </button>
                             <button 
-                                onClick={handlePrint}
+                                onClick={handlePrintOrderList}
                                 disabled={printStatus === 'printing'}
                                 className={`flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-xs font-semibold tracking-widest shadow-sm transition-all duration-300 ${printStatus === 'printing' ? 'cursor-wait opacity-80' : 'hover:-translate-y-0.5 hover:opacity-90'}`}
                                 style={{ backgroundColor: printStatus === 'success' ? '#10B981' : '#111827', color: '#ffffff', border: printStatus === 'success' ? '2px solid #10B981' : '2px solid #111827' }}
@@ -1988,7 +2333,7 @@ const PointOfSale = () => {
                     </div>
 
                     <AnimatePresence initial={false}>
-                    {!isOrderSummaryDetailsCollapsed && (
+                    {isOrderSummaryDetailsCollapsed && !isOrderSummaryDetailsCollapsed && (
                     <MotionDiv
                         key="order-summary-details"
                         initial={{ height: 0, opacity: 0, y: -6 }}
@@ -2359,11 +2704,11 @@ const PointOfSale = () => {
                         </div>
                         <div className={`relative group flex-1 ${isCheckoutDisabled ? 'cursor-not-allowed' : ''}`}>
                             <button 
-                                onClick={handleCheckout}
+                                onClick={openOrderList}
                                 disabled={isCheckoutDisabled}
                                 className={`w-full py-2.5 rounded-lg border border-slate-900 bg-slate-900 text-[10px] font-semibold uppercase tracking-wider text-white flex items-center justify-center shadow-sm transition-colors duration-150 ${isCheckoutDisabled ? 'pointer-events-none opacity-50' : 'hover:bg-slate-800'}`}
                             >
-                                {isCheckoutProcessing ? 'Processing...' : (paymentType === 'credit' ? 'Create Credit Order' : 'Process Payment')}
+                                Review Order
                             </button>
                             {isCheckoutDisabled && (
                                 <div className="pointer-events-none absolute -top-11 right-0 z-30 hidden w-max max-w-[260px] group-hover:block group-focus-within:block">
@@ -2379,9 +2724,9 @@ const PointOfSale = () => {
             </div>
         </div>
         
-        {productDetailsItem && (
+        {productDetailsItem && !enlargedProductImage && (
             <div
-                className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
+                className="app-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
                 onClick={() => setProductDetailsItem(null)}
             >
                 <div
@@ -2449,7 +2794,7 @@ const PointOfSale = () => {
         )}
 
         {recommendationChooserItem && (
-            <div className="recommendation-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm" onClick={() => setRecommendationChooserItem(null)}>
+            <div className="app-modal-backdrop recommendation-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm" onClick={() => setRecommendationChooserItem(null)}>
                 <div role="dialog" aria-modal="true" aria-labelledby="recommendation-type-title" className="recommendation-modal recommendation-chooser-modal w-full max-w-sm overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
                     <div className="recommendation-modal-header flex items-start justify-between border-b border-slate-100 px-4 py-3">
                         <div className="min-w-0 pr-3">
@@ -2480,7 +2825,7 @@ const PointOfSale = () => {
 
         {/* Recommendation Modal */}
         {recommendationModal.isOpen && (
-            <div className="recommendation-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm" onClick={() => setRecommendationModal({ isOpen: false, item: null, alternatives: [] })}>
+            <div className="app-modal-backdrop recommendation-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm" onClick={() => setRecommendationModal({ isOpen: false, item: null, alternatives: [] })}>
                 <div className="recommendation-modal recommendation-results-modal w-full max-w-2xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl animate-in fade-in zoom-in duration-200" onClick={(event) => event.stopPropagation()}>
                     <div className="recommendation-modal-header border-b border-slate-100 bg-white px-4 py-3">
                         <div className="flex items-center justify-between">
@@ -2672,38 +3017,44 @@ const PointOfSale = () => {
             </div>
         )}
         {/* Variant Picker Modal */}
-        {variantModal.isOpen && variantModal.group && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-md transition-all">
+        {variantModal.isOpen && variantModal.group && !enlargedProductImage && !recommendationModal.isOpen && !recommendationChooserItem && (
+            <div className="app-modal-backdrop fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-md transition-all">
                 <div className="flex w-full max-w-lg flex-col overflow-hidden rounded-2xl bg-slate-50 shadow-[0_16px_44px_-20px_rgba(15,23,42,0.28)] ring-1 ring-slate-900/10 max-h-[82vh] animate-in fade-in zoom-in-95 duration-300">
-                    <div className="relative z-10 flex flex-col gap-2 border-b border-slate-200 bg-white/95 px-4 py-3">
-                        <div className="w-full">
-                            <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+                    <div className="relative z-10 border-b border-slate-200 bg-white/95 px-4 py-3">
+                        <div className="flex items-center gap-3 pr-9">
+                            {variantModal.step === 'variants' && (
+                                <ProductThumbnail item={variantModalImageItem} className="h-12 w-12" onPreview={handleProductImagePreviewClick} fit="contain" />
+                            )}
+                            <div className="min-w-0 flex-1">
                                 {variantModal.step === 'variants' && variantModal.group.brandOptions?.length > 1 && (
-                                    <button 
+                                    <button
+                                        type="button"
                                         onClick={() => setVariantModal(prev => ({ ...prev, step: 'brand', selectedBrand: null, selectedSize: null, selectedColor: null, selectedVariantCode: null, quantity: 1 }))}
-                                        className="text-[10px] font-semibold text-slate-600 hover:text-slate-900 bg-white border border-slate-200 hover:border-slate-300 hover:bg-slate-50 px-2 py-0.5 rounded-full shadow-sm flex items-center gap-1 transition-all"
+                                        className="mb-1 inline-flex items-center gap-1 text-[10px] font-semibold text-slate-500 transition-colors hover:text-slate-900"
                                     >
-                                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7" /></svg>
-                                        Back to Brands
+                                        <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7" /></svg>
+                                        Brands
                                     </button>
                                 )}
-                                <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[9px] font-semibold tracking-wide text-slate-600">{variantModal.step === 'brand' ? 'Select Brand' : 'Product Group'}</span>
-                                {variantModal.step === 'variants' && variantModal.selectedBrand && <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[9px] font-medium text-slate-500">{variantModal.group.brandOptions?.find((option) => option.key === variantModal.selectedBrand)?.label || variantModal.selectedBrand}</span>}
-                                {variantModal.step === 'variants' && !variantModal.selectedBrand && variantModal.group.brand && variantModal.group.brand !== 'Multiple Brands' && <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[9px] font-medium text-slate-500">{variantModal.group.brand}</span>}
+                                <h3 className="truncate text-base font-semibold leading-tight tracking-tight text-slate-900">
+                                    {variantModal.group.name}
+                                </h3>
+                                <p className="mt-1 truncate text-[10px] font-medium text-slate-500">
+                                    {variantModal.step === 'brand'
+                                        ? 'Select a brand'
+                                        : [
+                                            variantModal.group.brandOptions?.find((option) => option.key === variantModal.selectedBrand)?.label
+                                                || (variantModal.group.brand !== 'Multiple Brands' ? variantModal.group.brand : ''),
+                                            variantModalSelectedVariant?.code,
+                                        ].filter(Boolean).join(' · ') || 'Select product options'}
+                                </p>
                             </div>
-                            <h3 className="text-center text-lg font-semibold leading-tight tracking-tight text-slate-900">
-                                {variantModal.group.name}
-                            </h3>
-                            {variantModal.group.color && variantModal.group.color !== 'Multiple Colors' && <p className="mt-0.5 text-center text-[11px] font-medium text-slate-500">Base Color: <span className="font-semibold text-slate-800">{variantModal.group.color}</span></p>}
-                            {variantModal.step === 'variants' && (
-                                <div className="mt-2 flex justify-center">
-                                    <ProductThumbnail item={variantModalImageItem} className="h-16 w-16" onPreview={handleProductImagePreviewClick} fit="contain" />
-                                </div>
-                            )}
                         </div>
-                        <button 
+                        <button
+                            type="button"
                             onClick={() => setVariantModal(createClosedVariantModalState())}
                             className="absolute right-4 top-3 rounded-lg bg-slate-50 p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
+                            aria-label="Close product options"
                         >
                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M6 18L18 6M6 6l12 12" /></svg>
                         </button>
@@ -2782,7 +3133,29 @@ const PointOfSale = () => {
                                     const maxSelectableQty = Math.max(1, Number(matchedVariant?.stock) || 1);
                                     const selectedQuantity = Math.min(Math.max(1, Number(variantModal.quantity) || 1), maxSelectableQty);
                                     const selectedUnitPrice = Number(matchedVariant?.price || 0);
-                                    const selectedTotalPrice = selectedUnitPrice * selectedQuantity;
+                                    const selectedSellingUnit = matchedVariant ? getSellingUnit(matchedVariant) : '';
+                                    const selectedStockStatus = matchedVariant ? getStockStatus(matchedVariant, settings) : '';
+                                    const selectedAttributeValues = matchedVariant
+                                        ? productAttributeValues(matchedVariant, variantModal.group.attributeDefinitions || [])
+                                        : {};
+                                    const selectedAttributes = (variantModal.group.attributeDefinitions || [])
+                                        .map((definition) => ({
+                                            key: definition.key,
+                                            name: definition.name,
+                                            rawValue: selectedAttributeValues[definition.key],
+                                            value: formatProductAttributeValue(definition, selectedAttributeValues[definition.key]),
+                                            distinctValueCount: new Set(filteredVariants.map((variant) => {
+                                                const values = productAttributeValues(variant, [definition]);
+                                                const value = values[definition.key];
+                                                return value === undefined || value === null ? '' : String(value).trim().toLowerCase();
+                                            })).size,
+                                        }))
+                                        .filter(({ rawValue, distinctValueCount }) => (
+                                            distinctValueCount > 1
+                                            && rawValue !== undefined
+                                            && rawValue !== null
+                                            && String(rawValue).trim() !== ''
+                                        ));
                                     const selectorDimensions = variantModal.group.variantDimensions?.filter((dimension) => dimension !== 'brand');
                                     const handleUnavailableVariantOption = (dimension, optionKey) => {
                                         const nextSelections = updatePosVariantSelection(filteredVariants, {
@@ -2821,58 +3194,50 @@ const PointOfSale = () => {
                                     return (
                                         <div className="flex h-full min-h-0 flex-col overflow-hidden bg-slate-50/70">
                                             <div className="flex-1 overflow-y-auto p-4 no-scrollbar">
-                                                <div className="mb-4 flex items-start justify-between gap-3 rounded-xl border border-slate-200 bg-white p-3">
-                                                    <div>
-                                                        <h4 className="text-xl font-semibold tracking-tight text-slate-900">
-                                                            {matchedVariant 
-                                                                ? formatCurrency(selectedTotalPrice)
-                                                                : (Math.min(...filteredVariants.map(v => v.price)) === Math.max(...filteredVariants.map(v => v.price)) 
-                                                                    ? formatCurrency(Math.min(...filteredVariants.map(v => v.price))) 
-                                                                    : `${formatCurrency(Math.min(...filteredVariants.map(v => v.price)))} - ${formatCurrency(Math.max(...filteredVariants.map(v => v.price)))}`)}
-                                                        </h4>
-                                                        {matchedVariant && (
-                                                            <p className="text-[10px] font-semibold text-slate-500 mt-1">
-                                                                {formatCurrency(selectedUnitPrice)} x {selectedQuantity}
-                                                            </p>
-                                                        )}
-                                                        <div className="mt-1 flex items-center gap-1.5">
-                                                            {!isAllSelected ? (
-                                                                <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-md uppercase tracking-widest border border-amber-100">Select options</span>
-                                                            ) : !matchedVariant ? (
-                                                                <span className="text-[10px] font-semibold text-rose-700 bg-rose-50 px-2 py-0.5 rounded-md uppercase tracking-widest border border-rose-100">Combination Not Found</span>
-                                                            ) : (
-                                                                (() => {
-                                                                    const status = getStockStatus(matchedVariant, settings);
-
-                                                                    if (status === 'Out of Stock') {
-                                                                        return (
-                                                                            <span className="text-[10px] font-semibold text-rose-700 bg-rose-50 px-2 py-0.5 rounded-md uppercase tracking-widest border border-rose-100">
-                                                                                Out of Stock (0)
-                                                                            </span>
-                                                                        );
-                                                                    }
-
-                                                                    if (status === 'Low Stock') {
-                                                                        return (
-                                                                            <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-md uppercase tracking-widest border border-amber-100">
-                                                                                {matchedVariant.stock} left (Low Stock)
-                                                                            </span>
-                                                                        );
-                                                                    }
-
-                                                                    return (
-                                                                        <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md uppercase tracking-widest border border-emerald-100">
-                                                                            {matchedVariant.stock} in stock
-                                                                        </span>
-                                                                    );
-                                                                })()
+                                                <div className="mb-4 border-b border-slate-200 pb-3">
+                                                    {matchedVariant ? (
+                                                        <>
+                                                            <div className="flex items-end justify-between gap-4">
+                                                                <div className="min-w-0">
+                                                                    <p className="text-[9px] font-semibold uppercase tracking-wider text-slate-400">
+                                                                        {selectedSellingUnit ? `Price per ${selectedSellingUnit}` : 'Price'}
+                                                                    </p>
+                                                                    <p className="mt-0.5 text-lg font-semibold tracking-tight text-slate-900">{formatCurrency(selectedUnitPrice)}</p>
+                                                                </div>
+                                                                <div className="shrink-0 text-right">
+                                                                    <p className="text-[9px] font-semibold uppercase tracking-wider text-slate-400">Available Stock</p>
+                                                                    <p className={`mt-0.5 text-sm font-semibold ${
+                                                                        selectedStockStatus === 'Out of Stock'
+                                                                            ? 'text-rose-600'
+                                                                            : selectedStockStatus === 'Low Stock'
+                                                                                ? 'text-amber-600'
+                                                                                : 'text-slate-800'
+                                                                    }`}>
+                                                                        {matchedVariant.stock}{selectedSellingUnit ? ` ${selectedSellingUnit}` : ''}
+                                                                    </p>
+                                                                </div>
+                                                            </div>
+                                                            {selectedAttributes.length > 0 && (
+                                                                <dl className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
+                                                                    {selectedAttributes.map((attribute) => (
+                                                                        <div key={attribute.key} className="flex min-w-0 items-baseline gap-1.5 text-[11px]">
+                                                                            <dt className="font-medium text-slate-500">{attribute.name}:</dt>
+                                                                            <dd className="font-semibold text-slate-800">{attribute.value}</dd>
+                                                                        </div>
+                                                                    ))}
+                                                                </dl>
                                                             )}
-                                                        </div>
-                                                    </div>
-                                                    {matchedVariant && (
-                                                        <div className="text-right">
-                                                            <p className="text-[9px] font-semibold tracking-widest text-slate-400 uppercase mb-1">SKU</p>
-                                                            <p className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold text-slate-700">{matchedVariant.code}</p>
+                                                        </>
+                                                    ) : (
+                                                        <div className="flex items-center justify-between gap-3">
+                                                            <h4 className="text-lg font-semibold tracking-tight text-slate-900">
+                                                                {Math.min(...filteredVariants.map(v => v.price)) === Math.max(...filteredVariants.map(v => v.price))
+                                                                    ? formatCurrency(Math.min(...filteredVariants.map(v => v.price)))
+                                                                    : `${formatCurrency(Math.min(...filteredVariants.map(v => v.price)))} - ${formatCurrency(Math.max(...filteredVariants.map(v => v.price)))}`}
+                                                            </h4>
+                                                            <p className={`text-[10px] font-semibold ${isAllSelected ? 'text-rose-600' : 'text-slate-500'}`}>
+                                                                {isAllSelected ? 'Combination not found' : 'Select options'}
+                                                            </p>
                                                         </div>
                                                     )}
                                                 </div>
@@ -3026,8 +3391,9 @@ const PointOfSale = () => {
                                                 {canAddSelectedVariant && (
                                                     <div className="mb-4 flex items-center justify-between gap-3">
                                                         <div className="min-w-0">
-                                                            <p className="text-[10px] font-semibold text-slate-700 uppercase tracking-widest">Quantity</p>
-                                                            <p className="text-[10px] text-slate-500">Max {maxSelectableQty} available</p>
+                                                            <p className="text-[10px] font-semibold text-slate-700 uppercase tracking-widest">
+                                                                {selectedSellingUnit ? `Quantity (${selectedSellingUnit})` : 'Quantity'}
+                                                            </p>
                                                         </div>
                                                         <div className="inline-flex shrink-0 items-center overflow-hidden rounded-lg border border-slate-200 bg-white">
                                                             <button
@@ -3120,7 +3486,7 @@ const PointOfSale = () => {
         )}
 
         {isQuickAddCreditCustomerOpen && (
-            <div className="fixed inset-0 z-70 flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-labelledby="quick-add-credit-customer-title">
+            <div className="app-modal-backdrop fixed inset-0 z-70 flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-labelledby="quick-add-credit-customer-title">
                 <form onSubmit={handleQuickAddCreditCustomer} className="w-full max-w-sm overflow-hidden rounded-2xl bg-white shadow-2xl">
                     <div className="flex items-center justify-between border-b border-gray-100 bg-gray-50 px-4 py-3">
                         <div>
@@ -3202,9 +3568,179 @@ const PointOfSale = () => {
             </div>
         )}
 
+        {/* Quotation Type Chooser */}
+        {showQuotationTypeChooser && (
+            <div className="app-modal-backdrop fixed inset-0 z-70 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="quotation-type-title">
+                <div className="w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
+                    <header className="flex items-center justify-between border-b border-slate-200 bg-white px-5 py-4 dark:border-slate-700 dark:bg-slate-800">
+                        <div>
+                            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Create Quotation</p>
+                            <h2 id="quotation-type-title" className="mt-0.5 text-base font-semibold text-slate-900 dark:text-white">Choose customer type</h2>
+                        </div>
+                        <button type="button" onClick={() => setShowQuotationTypeChooser(false)} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:hover:bg-slate-700 dark:hover:text-white" aria-label="Close quotation type chooser">
+                            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="m6 6 12 12M18 6 6 18" /></svg>
+                        </button>
+                    </header>
+                    <div className="space-y-2 p-4">
+                        <button type="button" onClick={openWalkInQuotation} className="flex w-full items-center justify-between rounded-xl border border-slate-200 bg-white px-4 py-3 text-left transition-colors hover:border-slate-400 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:hover:border-slate-500 dark:hover:bg-slate-700">
+                            <span>
+                                <span className="block text-sm font-semibold text-slate-900 dark:text-white">Walk-in Customer</span>
+                                <span className="mt-0.5 block text-[11px] text-slate-500 dark:text-slate-400">Quick quotation</span>
+                            </span>
+                            <svg className="h-4 w-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="m9 18 6-6-6-6" /></svg>
+                        </button>
+                        <button type="button" onClick={openRegularCustomerSelector} className="flex w-full items-center justify-between rounded-xl border border-slate-200 bg-white px-4 py-3 text-left transition-colors hover:border-slate-400 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:hover:border-slate-500 dark:hover:bg-slate-700">
+                            <span>
+                                <span className="block text-sm font-semibold text-slate-900 dark:text-white">Regular Customer</span>
+                                <span className="mt-0.5 block text-[11px] text-slate-500 dark:text-slate-400">Formal A4 quotation</span>
+                            </span>
+                            <svg className="h-4 w-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="m9 18 6-6-6-6" /></svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        {/* Regular Customer Quotation Selector */}
+        {showQuotationCustomerSelector && (
+            <div className="app-modal-backdrop fixed inset-0 z-70 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="quotation-customer-title">
+                <div className="flex max-h-[82vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
+                    <header className="flex items-center justify-between border-b border-slate-200 bg-white px-5 py-4 dark:border-slate-700 dark:bg-slate-800">
+                        <div>
+                            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Regular Customer</p>
+                            <h2 id="quotation-customer-title" className="mt-0.5 text-base font-semibold text-slate-900 dark:text-white">Select customer</h2>
+                        </div>
+                        <button type="button" onClick={() => setShowQuotationCustomerSelector(false)} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:hover:bg-slate-700 dark:hover:text-white" aria-label="Close regular customer selector">
+                            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="m6 6 12 12M18 6 6 18" /></svg>
+                        </button>
+                    </header>
+                    <div className="border-b border-slate-200 bg-white px-4 py-3 dark:border-slate-700 dark:bg-slate-800">
+                        <label className="sr-only" htmlFor="quotation-customer-search">Search regular customers</label>
+                        <div className="relative">
+                            <svg className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="m21 21-4.35-4.35m2.35-5.65a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z" /></svg>
+                            <input id="quotation-customer-search" type="search" value={quotationCustomerQuery} onChange={(event) => setQuotationCustomerQuery(event.target.value)} placeholder="Search name, email, contact, or address" className="h-10 w-full rounded-lg border border-slate-300 bg-white pl-9 pr-3 text-xs text-slate-900 outline-none focus:ring-2 focus:ring-slate-400 dark:border-slate-600 dark:bg-slate-700 dark:text-white" autoFocus />
+                        </div>
+                    </div>
+                    <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                        {filteredQuotationCustomers.length === 0 ? (
+                            <div className="flex flex-col items-center px-4 py-10 text-center">
+                                <svg className="h-8 w-8 text-slate-300 dark:text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2m7-10a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm13 10v-2a4 4 0 0 0-3-3.87m-2-7.96a4 4 0 0 1 0 7.75" /></svg>
+                                <p className="mt-2 text-xs font-semibold text-slate-700 dark:text-slate-200">No regular customers found</p>
+                                <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">Only active regular customer records appear here.</p>
+                            </div>
+                        ) : (
+                            <div className="space-y-1.5">
+                                {filteredQuotationCustomers.map((customer) => (
+                                    <button key={customer._id || customer.id} type="button" onClick={() => openQuotationDetails(customer)} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-left transition-colors hover:border-slate-400 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:hover:border-slate-500 dark:hover:bg-slate-700">
+                                        <span className="block truncate text-xs font-semibold text-slate-900 dark:text-white">{customer.name}</span>
+                                        <span className="mt-1 block truncate text-[10px] text-slate-500 dark:text-slate-400">{[customer.address, customer.contact, customer.email].filter(Boolean).join(' · ') || 'No contact details provided'}</span>
+                                    </button>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                    <footer className="flex justify-between border-t border-slate-200 bg-white px-4 py-3 dark:border-slate-700 dark:bg-slate-800">
+                        <button type="button" onClick={() => { setShowQuotationCustomerSelector(false); setShowQuotationTypeChooser(true); }} className="h-9 rounded-lg border border-slate-300 bg-white px-4 text-xs font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700">Back</button>
+                        <button type="button" onClick={() => setShowQuotationCustomerSelector(false)} className="h-9 rounded-lg bg-slate-900 px-4 text-xs font-semibold text-white hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:bg-slate-100 dark:text-slate-900">Cancel</button>
+                    </footer>
+                </div>
+            </div>
+        )}
+
+        {/* Regular Customer Quotation Details */}
+        {showQuotationDetails && selectedQuotationCustomer && (
+            <div className="app-modal-backdrop fixed inset-0 z-70 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="quotation-details-title">
+                <div className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
+                    <header className="flex items-center justify-between border-b border-slate-200 bg-white px-5 py-4 dark:border-slate-700 dark:bg-slate-800">
+                        <div>
+                            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Regular Customer</p>
+                            <h2 id="quotation-details-title" className="mt-0.5 text-base font-semibold text-slate-900 dark:text-white">Quotation Details</h2>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={returnToQuotationCustomerSelector}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:hover:bg-slate-700 dark:hover:text-white"
+                            aria-label="Close quotation details"
+                        >
+                            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="m6 6 12 12M18 6 6 18" /></svg>
+                        </button>
+                    </header>
+
+                    <form onSubmit={previewFormalQuotation} className="flex min-h-0 flex-1 flex-col">
+                        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
+                            <section>
+                                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">Customer</p>
+                                <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">{selectedQuotationCustomer.name}</p>
+                                {selectedQuotationCustomer.address && <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">{selectedQuotationCustomer.address}</p>}
+                            </section>
+
+                            <section className="space-y-2.5 border-t border-slate-200 pt-4 dark:border-slate-700">
+                                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">ATTN.</p>
+                                <div>
+                                    <label className="mb-1 block text-[11px] font-medium text-slate-600 dark:text-slate-300" htmlFor="quotation-attention-name">Name</label>
+                                    <input
+                                        id="quotation-attention-name"
+                                        type="text"
+                                        value={quotationDetails.attentionName}
+                                        onChange={(event) => setQuotationDetails((previous) => ({ ...previous, attentionName: event.target.value }))}
+                                        placeholder="Optional"
+                                        className="h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-xs text-slate-900 outline-none transition-colors focus:border-slate-400 focus:ring-2 focus:ring-slate-300 dark:border-slate-600 dark:bg-slate-800 dark:text-white dark:focus:ring-slate-600"
+                                        autoFocus
+                                    />
+                                </div>
+                                <div>
+                                    <label className="mb-1 block text-[11px] font-medium text-slate-600 dark:text-slate-300" htmlFor="quotation-attention-position">Position / Department</label>
+                                    <input
+                                        id="quotation-attention-position"
+                                        type="text"
+                                        value={quotationDetails.attentionPosition}
+                                        onChange={(event) => setQuotationDetails((previous) => ({ ...previous, attentionPosition: event.target.value }))}
+                                        placeholder="Optional"
+                                        className="h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-xs text-slate-900 outline-none transition-colors focus:border-slate-400 focus:ring-2 focus:ring-slate-300 dark:border-slate-600 dark:bg-slate-800 dark:text-white dark:focus:ring-slate-600"
+                                    />
+                                </div>
+                            </section>
+
+                            <section className="border-t border-slate-200 pt-4 dark:border-slate-700">
+                                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">Authorized Signatory</p>
+                                <label className="mb-1 mt-2 block text-[11px] font-medium text-slate-600 dark:text-slate-300" htmlFor="quotation-signatory-name">Name</label>
+                                <input
+                                    id="quotation-signatory-name"
+                                    type="text"
+                                    value={quotationDetails.authorizedSignatoryName}
+                                    onChange={(event) => setQuotationDetails((previous) => ({ ...previous, authorizedSignatoryName: event.target.value }))}
+                                    placeholder="Enter signatory name"
+                                    required
+                                    aria-invalid={!hasQuotationSignatoryName}
+                                    aria-describedby={!hasQuotationSignatoryName ? 'quotation-signatory-name-error' : undefined}
+                                    className="h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-xs text-slate-900 outline-none transition-colors focus:border-slate-400 focus:ring-2 focus:ring-slate-300 aria-[invalid=true]:border-rose-400 aria-[invalid=true]:focus:border-rose-500 aria-[invalid=true]:focus:ring-rose-200 dark:border-slate-600 dark:bg-slate-800 dark:text-white dark:aria-[invalid=true]:border-rose-500 dark:aria-[invalid=true]:focus:ring-rose-950"
+                                />
+                                {!hasQuotationSignatoryName && (
+                                    <p id="quotation-signatory-name-error" role="alert" className="mt-1 text-[11px] text-rose-600 dark:text-rose-300">Authorized Signatory Name is required to preview this quotation.</p>
+                                )}
+                            </section>
+                        </div>
+
+                        <footer className="grid grid-cols-2 gap-2 border-t border-slate-200 bg-white px-5 py-4 dark:border-slate-700 dark:bg-slate-800">
+                            <button
+                                type="button"
+                                onClick={returnToQuotationCustomerSelector}
+                                className="h-10 rounded-lg border border-slate-300 bg-white px-4 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+                            >
+                                Cancel
+                            </button>
+                            <button type="submit" disabled={!hasQuotationSignatoryName} className="h-10 rounded-lg bg-slate-900 px-4 text-xs font-semibold text-white transition-colors hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white">
+                                Preview Quotation
+                            </button>
+                        </footer>
+                    </form>
+                </div>
+            </div>
+        )}
+
         {/* Quotation Preview Modal */}
         {showQuotationPreview && quotationData && (
-            <div className="fixed inset-0 z-70 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+            <div className="app-modal-backdrop fixed inset-0 z-70 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
                 <div className={`flex ${ORDER_CONFIRMATION_PREVIEW_SIZE.modal} flex-col overflow-hidden rounded-2xl bg-white shadow-2xl`}>
                     <div className="flex items-center justify-between border-b border-gray-100 bg-gray-50 px-4 py-3.5 sm:px-5 sm:py-4">
                         <h3 className="text-xl font-semibold text-gray-800 sm:text-2xl">Quotation Preview</h3>
@@ -3299,9 +3835,19 @@ const PointOfSale = () => {
                 </div>
             </div>
         )}
+
+        {quotationType === 'regular_customer' && formalQuotationData && (
+            <FormalPriceQuotationModal
+                quotation={formalQuotationData}
+                onClose={() => {
+                    setFormalQuotationData(null);
+                    setShowQuotationDetails(true);
+                }}
+            />
+        )}
         {isBulkRemoveConfirmationOpen && (
             <div
-                className="fixed inset-0 z-70 flex items-center justify-center bg-slate-900/35 p-4 backdrop-blur-sm"
+                className="app-modal-backdrop fixed inset-0 z-70 flex items-center justify-center bg-slate-900/35 p-4 backdrop-blur-sm"
                 onClick={() => setIsBulkRemoveConfirmationOpen(false)}
             >
                 <div

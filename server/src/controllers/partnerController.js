@@ -19,6 +19,11 @@ const normalizeCustomerType = (value) => {
   return 'regular';
 };
 
+const normalizeTaxTreatment = (value, fallback = 'standard') => {
+  const normalized = normalizeString(value).toLowerCase().replace(/[\s-]+/g, '_');
+  return ['standard', 'vat_zero_rated', 'exempt'].includes(normalized) ? normalized : fallback;
+};
+
 const parseBool = (value, fallback) => {
   if (value === undefined || value === null || value === '') return fallback;
   if (typeof value === 'boolean') return value;
@@ -108,6 +113,9 @@ const createPartner = async (req, res, next, dependencies = {}) => {
     const supplierCapabilities = normalizeSupplierCapabilities(req.body?.supplierCapabilities);
     const customerType = normalizeCustomerType(req.body?.customerType);
     const isVerifiedCustomer = parseBool(req.body?.isVerifiedCustomer, true);
+    const attentionName = normalizeHumanReadable(req.body?.attentionName);
+    const attentionPosition = normalizeHumanReadable(req.body?.attentionPosition);
+    const taxTreatment = normalizeTaxTreatment(req.body?.taxTreatment);
 
     if (!isValidType(type)) {
       return res.status(400).json({ message: "type is required and must be 'supplier' or 'customer'." });
@@ -131,7 +139,10 @@ const createPartner = async (req, res, next, dependencies = {}) => {
       supplierCapabilities: type === 'supplier' ? supplierCapabilities : [],
       customerType: type === 'customer' ? customerType : 'regular',
       isVerifiedCustomer: type === 'customer' ? isVerifiedCustomer : true,
-      isVatExempt: false,
+      isVatExempt: type === 'customer' ? taxTreatment === 'exempt' : false,
+      attentionName: type === 'customer' ? attentionName : '',
+      attentionPosition: type === 'customer' ? attentionPosition : '',
+      taxTreatment: type === 'customer' ? taxTreatment : 'standard',
       ...(clientRequestId ? { clientRequestId } : {}),
     });
 
@@ -185,6 +196,16 @@ const updatePartner = async (req, res, next) => {
     if (req.body?.isVerifiedCustomer !== undefined) {
       payload.isVerifiedCustomer = parseBool(req.body.isVerifiedCustomer, true);
     }
+    if (req.body?.attentionName !== undefined) {
+      payload.attentionName = normalizeHumanReadable(req.body.attentionName);
+    }
+    if (req.body?.attentionPosition !== undefined) {
+      payload.attentionPosition = normalizeHumanReadable(req.body.attentionPosition);
+    }
+    if (req.body?.taxTreatment !== undefined) {
+      payload.taxTreatment = normalizeTaxTreatment(req.body.taxTreatment, existing.taxTreatment || 'standard');
+      payload.isVatExempt = payload.taxTreatment === 'exempt';
+    }
 
     if (req.body?.type !== undefined) {
       const nextType = normalizeString(req.body.type).toLowerCase();
@@ -210,6 +231,9 @@ const updatePartner = async (req, res, next) => {
       payload.customerType = 'regular';
       payload.isVerifiedCustomer = true;
       payload.isVatExempt = false;
+      payload.attentionName = '';
+      payload.attentionPosition = '';
+      payload.taxTreatment = 'standard';
     }
 
     existing.set(payload);

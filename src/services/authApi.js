@@ -59,6 +59,13 @@ export const updateMyPreferencesApi = async (preferences) => {
   });
 };
 
+export const completeFirstLoginSecuritySetupApi = async ({ newPassword, newPin }) => {
+  return apiRequest('/api/auth/me/complete-first-login-setup', {
+    method: 'POST',
+    body: JSON.stringify({ newPassword, newPin }),
+  });
+};
+
 export const updateUserByUsernameApi = async (username, payload) => {
   return apiRequest(`/api/auth/users/${encodeURIComponent(username)}`, {
     method: 'PATCH',

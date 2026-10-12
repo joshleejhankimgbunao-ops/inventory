@@ -1,6 +1,10 @@
+const mongoose = require('mongoose');
 const Category = require('../models/Category');
+const Product = require('../models/Product');
 const { normalizeHumanReadable } = require('../../../shared/textNormalization.cjs');
 const { getEffectiveDefinitions, normalizeDefinitions } = require('../utils/productAttributes');
+const { categoryNameCondition } = require('../utils/categoryResolution');
+const { propagateCategoryRename } = require('../services/categoryAssociationService');
 
 const normalizeUnits = (units) => {
   if (!Array.isArray(units)) return undefined;
@@ -10,6 +14,38 @@ const normalizeUnits = (units) => {
     .filter(Boolean);
 
   return [...new Set(normalized)];
+};
+
+const applyCategoryUpdates = (category, {
+  normalizedName,
+  description,
+  isActive,
+  showBrand,
+  requireBrand,
+  showColor,
+  requireColor,
+  showSize,
+  requireSize,
+  sizeUnits,
+  productAttributes,
+}) => {
+  if (normalizedName !== undefined) category.name = normalizedName;
+  if (description !== undefined) category.description = description;
+  if (isActive !== undefined) category.isActive = isActive;
+  if (showBrand !== undefined) category.showBrand = showBrand;
+  if (requireBrand !== undefined) category.requireBrand = requireBrand;
+  if (showColor !== undefined) category.showColor = showColor;
+  if (requireColor !== undefined) category.requireColor = requireColor;
+  if (showSize !== undefined) category.showSize = showSize;
+  if (requireSize !== undefined) category.requireSize = requireSize;
+
+  const normalizedUnits = normalizeUnits(sizeUnits);
+  if (normalizedUnits !== undefined) category.sizeUnits = normalizedUnits;
+  if (productAttributes !== undefined) {
+    category.productAttributes = normalizeDefinitions(productAttributes);
+    category.attributeSchemaVersion = 1;
+  }
+  category.showSupplier = true;
 };
 
 // @desc    Get all categories
@@ -118,34 +154,57 @@ const updateCategory = async (req, res, next) => {
           throw new Error('Category already exists');
         }
 
-        category.name = normalizedName;
       }
-      if (description !== undefined) category.description = description;
-      if (isActive !== undefined) category.isActive = isActive;
-      
-      if (showBrand !== undefined) category.showBrand = showBrand;
-      if (requireBrand !== undefined) category.requireBrand = requireBrand;
-      if (showColor !== undefined) category.showColor = showColor;
-      if (requireColor !== undefined) category.requireColor = requireColor;
-      if (showSize !== undefined) category.showSize = showSize;
-      if (requireSize !== undefined) category.requireSize = requireSize;
-      const normalizedUnits = normalizeUnits(sizeUnits);
-      if (normalizedUnits !== undefined) {
-        category.sizeUnits = normalizedUnits;
-      }
-      if (productAttributes !== undefined) {
-        category.productAttributes = normalizeDefinitions(productAttributes);
-        category.attributeSchemaVersion = 1;
-      }
-      category.showSupplier = true;
+      const previousName = category.name;
+      const nameChanged = normalizedName !== undefined && normalizedName !== previousName;
+      const updates = {
+        normalizedName,
+        description,
+        isActive,
+        showBrand,
+        requireBrand,
+        showColor,
+        requireColor,
+        showSize,
+        requireSize,
+        sizeUnits,
+        productAttributes,
+      };
 
-      const updatedCategory = await category.save();
+      let updatedCategory;
+      if (nameChanged) {
+        const session = await mongoose.startSession();
+        try {
+          await session.withTransaction(async () => {
+            const transactionalCategory = await Category.findById(categoryId, null, { session });
+            if (!transactionalCategory) {
+              const missingError = new Error('Category not found');
+              missingError.statusCode = 404;
+              throw missingError;
+            }
+            applyCategoryUpdates(transactionalCategory, updates);
+            updatedCategory = await transactionalCategory.save({ session });
+            await propagateCategoryRename({
+              categoryId: transactionalCategory._id,
+              previousName,
+              nextName: transactionalCategory.name,
+              session,
+            });
+          });
+        } finally {
+          await session.endSession();
+        }
+      } else {
+        applyCategoryUpdates(category, updates);
+        updatedCategory = await category.save();
+      }
       res.json({ ...updatedCategory.toObject(), productAttributes: getEffectiveDefinitions(updatedCategory) });
     } else {
       res.status(404);
       throw new Error('Category not found');
     }
   } catch (error) {
+    if (error?.statusCode) res.status(error.statusCode);
     if (error?.code === 'INVALID_PRODUCT_ATTRIBUTES') {
       res.status(400);
       return next(error);
@@ -167,6 +226,17 @@ const deleteCategory = async (req, res, next) => {
     const category = await Category.findById(categoryId);
 
     if (category) {
+      const referenceExists = await Product.exists({
+        $or: [
+          { categoryRef: category._id },
+          { category: categoryNameCondition(category.name) },
+        ],
+      });
+      if (referenceExists) {
+        return res.status(409).json({
+          message: 'Category is still used by products. Archive it instead of deleting it.',
+        });
+      }
       await category.deleteOne();
       res.json({ message: 'Category removed' });
     } else {
@@ -174,6 +244,7 @@ const deleteCategory = async (req, res, next) => {
       throw new Error('Category not found');
     }
   } catch (error) {
+    if (error?.statusCode) res.status(error.statusCode);
     next(error);
   }
 };

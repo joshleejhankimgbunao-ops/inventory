@@ -39,9 +39,19 @@ const executeSaleVoid = async ({
   const runTransaction = dependencies.runTransaction || withAuditedTransaction;
   const findSale = dependencies.findSale || (async (id, session) => Sale.findById(id).session(session));
   const checkEligibility = dependencies.checkEligibility || checkSaleVoidEligibility;
-  const claimSale = dependencies.claimSale || ((id, voidInfo, session) => Sale.findOneAndUpdate(
+  const claimSale = dependencies.claimSale || ((id, voidInfo, session, voidRequestReview) => Sale.findOneAndUpdate(
     { _id: id, status: { $ne: 'voided' } },
-    { $set: { status: 'voided', voidInfo } },
+    { $set: {
+      status: 'voided',
+      voidInfo,
+      ...(voidRequestReview ? {
+        'voidRequest.status': 'approved',
+        'voidRequest.reviewedBy': voidRequestReview.reviewedBy,
+        'voidRequest.reviewedByName': voidRequestReview.reviewedByName,
+        'voidRequest.reviewedAt': voidRequestReview.reviewedAt,
+        'voidRequest.declineReason': '',
+      } : {}),
+    } },
     { new: true, runValidators: true, session }
   ));
   const restoreProduct = dependencies.restoreProduct || ((id, quantity, session) => Product.findOneAndUpdate(
@@ -72,6 +82,9 @@ const executeSaleVoid = async ({
     }
 
     const now = new Date();
+    const effectiveSupportingProof = supportingProof
+      || (sale.voidRequest?.status === 'pending' ? sale.voidRequest.supportingProof : null)
+      || null;
     const voidInfo = {
       reason,
       voidedAt: now,
@@ -79,9 +92,14 @@ const executeSaleVoid = async ({
       voidedByName: actorName(user),
       authorizationMethod: 'role_authorized',
       requestId,
-      supportingProof,
+      supportingProof: effectiveSupportingProof,
     };
-    const voidedSale = await claimSale(saleId, voidInfo, session);
+    const voidRequestReview = sale.voidRequest?.status === 'pending' ? {
+      reviewedBy: user._id,
+      reviewedByName: actorName(user),
+      reviewedAt: now,
+    } : null;
+    const voidedSale = await claimSale(saleId, voidInfo, session, voidRequestReview);
     if (!voidedSale) {
       const error = new Error('Sale lifecycle changed while the void was being processed. Refresh and retry.');
       error.status = 409;
@@ -123,12 +141,16 @@ const executeSaleVoid = async ({
     await writeActivityLog({
       user,
       action: 'SALE_VOIDED',
-      details: `${saleLabel} voided. Reason: ${reason}. Supporting proof: ${supportingProof ? 'attached' : 'none'}. Restored: ${restoredSummary}.`,
+      details: `${saleLabel} voided. Reason: ${reason}. Supporting proof: ${effectiveSupportingProof ? 'attached' : 'none'}. Restored: ${restoredSummary}.`,
       ipAddress,
       userAgent,
     });
 
-    afterCommit(() => publishSale({ saleId: voidedSale._id, cashierId: voidedSale.cashier }));
+    afterCommit(() => publishSale({
+      saleId: voidedSale._id,
+      cashierId: voidedSale.cashier,
+      changeType: voidRequestReview ? 'sale.void-request.approved' : 'sale.voided',
+    }));
     afterCommit(() => publishInventory({
       reason: 'sale.voided',
       productCodes: restorations.map((entry) => entry.code).filter(Boolean),

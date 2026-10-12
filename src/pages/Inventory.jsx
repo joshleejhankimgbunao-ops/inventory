@@ -644,7 +644,7 @@ const Inventory = () => {
             </div>
 
             {isStockModalOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+                <div className="app-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
                     <div className="w-full max-w-xs overflow-hidden rounded-2xl bg-white shadow-2xl transition-all dark:bg-gray-800 sm:max-w-sm">
                         <div className="flex items-center justify-between border-b-2 border-gray-200 px-4 py-4 dark:border-gray-700 sm:px-6">
                             <div className="min-w-0">

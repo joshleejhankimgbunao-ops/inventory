@@ -5,6 +5,7 @@ import ArchiveIcon from '../components/ArchiveIcon';
 import EditIcon from '../components/EditIcon';
 import TableActionButton from '../components/TableActionButton';
 import CategoryAttributesEditor from '../components/CategoryAttributesEditor';
+import CategorySellingUnitsEditor from '../components/CategorySellingUnitsEditor';
 import ReportsDateSelector from '../components/ReportsDateSelector';
 import { getEffectiveProductAttributes } from '../utils/productAttributes';
 import { useAuth } from '../context/AuthContext';
@@ -102,7 +103,9 @@ const Settings = () => {
     const defaults = useMemo(() => ({
         storeName: 'Tableria La Confianza Co., Inc.',
         storeAddress: 'Manila S Rd, Calamba, 4027 Laguna',
+        storeBusinessSubtitle: '',
         contactPhone: '0917-123-4567',
+        authorizedSignatoryName: '',
         currency: 'PHP',
         darkMode: false,
         autoSync: true, // Default to Auto-Sync ON
@@ -134,11 +137,13 @@ const Settings = () => {
     const generalSettingKeys = useMemo(() => ([
         'storeName',
         'storeAddress',
+        'storeBusinessSubtitle',
         'storeMapLink',
         'storePrimaryEmail',
         'storeSecondaryEmail',
         'contactPhone',
-        'contactPhoneSecondary'
+        'contactPhoneSecondary',
+        'authorizedSignatoryName'
     ]), []);
 
     const isGeneralModified = useMemo(() => {
@@ -350,8 +355,8 @@ const Settings = () => {
         )];
     };
 
-    const addUnitToNewCategory = () => {
-        const value = String(newCategoryUnitInput || '').trim();
+    const addUnitToNewCategory = (candidate = newCategoryUnitInput) => {
+        const value = String(candidate || '').trim();
         if (!value) return;
 
         if ((newCategoryRules.sizeUnits || []).some((unit) => unit.toLowerCase() === value.toLowerCase())) {
@@ -373,8 +378,8 @@ const Settings = () => {
         }));
     };
 
-    const addUnitToEditingCategory = () => {
-        const value = String(editingCategory?.unitInput || '').trim();
+    const addUnitToEditingCategory = (candidate = editingCategory?.unitInput) => {
+        const value = String(candidate || '').trim();
         if (!value || !editingCategory) return;
 
         if ((editingCategory.sizeUnits || []).some((unit) => unit.toLowerCase() === value.toLowerCase())) {
@@ -872,7 +877,7 @@ const Settings = () => {
             {/* Header */}
             <div className="relative z-20 bg-slate-200/50 p-4 sm:p-5 rounded-2xl shadow-inner border border-slate-300 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shrink-0">
                 <div className="min-w-0">
-                    <p className="text-3xl md:text-4xl font-semibold tracking-tight text-gray-900 leading-tight">System Configuration</p>
+                    <p className="text-3xl md:text-4xl font-semibold tracking-tight text-gray-900 leading-tight">System Settings</p>
                     <p className="text-gray-500 dark:text-gray-400 text-[11px] md:text-xs font-medium mt-0.5">Customize application behavior and preferences</p>
                 </div>
                 {activeTab === 'general' && (
@@ -946,6 +951,16 @@ const Settings = () => {
                                         />
                                     </div>
                                     <div>
+                                        <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1 uppercase tracking-wide">Business Subtitle</label>
+                                        <input
+                                            type="text"
+                                            value={settings.storeBusinessSubtitle || ''}
+                                            onChange={(e) => setSettings({...settings, storeBusinessSubtitle: e.target.value})}
+                                            placeholder="e.g. Lumber, Hardware & Electrical Supplies"
+                                            className="w-full p-2.5 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm font-normal text-gray-900 dark:text-white focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all"
+                                        />
+                                    </div>
+                                    <div>
                                         <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1 uppercase tracking-wide">Store Location / Address</label>
                                         <input 
                                             type="text" 
@@ -1014,6 +1029,16 @@ const Settings = () => {
                                                 placeholder="Enter landline or alternate number"
                                             />
                                         </div>
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1 uppercase tracking-wide">Authorized Signatory Name</label>
+                                        <input
+                                            type="text"
+                                            value={settings.authorizedSignatoryName || ''}
+                                            onChange={(e) => setSettings({...settings, authorizedSignatoryName: e.target.value})}
+                                            placeholder="Optional"
+                                            className="w-full p-2.5 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm font-normal text-gray-900 dark:text-white focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all"
+                                        />
                                     </div>
                                 </div>
                              </div>
@@ -1306,8 +1331,8 @@ const Settings = () => {
 
                                <div className="mb-6 overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
                                    <div className="border-b border-gray-100 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
-                                       <div className="flex items-center gap-3">
-                                           <div className="relative flex-1 min-w-0 sm:flex-[0_1_78%]">
+                                        <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:gap-4">
+                                            <div className="relative min-w-0 flex-1">
                                                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                                                     <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
                                                 </div>
@@ -1323,7 +1348,7 @@ const Settings = () => {
                                            <button
                                                type="button"
                                                onClick={() => setShowArchivedCategories(prev => !prev)}
-                                               className={`archive-toggle-button group shrink-0 text-xs font-semibold ${showArchivedCategories ? 'archive-toggle-button--active' : ''}`}
+                                                className={`archive-toggle-button group shrink-0 self-start text-xs font-semibold sm:self-auto ${showArchivedCategories ? 'archive-toggle-button--active' : ''}`}
                                                title={showArchivedCategories ? 'Back to Active Categories' : 'View Archived Categories'}
                                                aria-label={showArchivedCategories ? 'Back to Active Categories' : 'View Archived Categories'}
                                            >
@@ -1418,7 +1443,7 @@ const Settings = () => {
 
                    {isCreateCategoryModalOpen && (
                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-                           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm transition-opacity" onClick={() => {setIsCreateCategoryModalOpen(false); resetNewCategoryForm();}}></div>
+                           <div className="app-modal-backdrop absolute inset-0 bg-black/60 backdrop-blur-sm transition-opacity" onClick={() => {setIsCreateCategoryModalOpen(false); resetNewCategoryForm();}}></div>
                            
                            <div className="relative w-full max-w-md bg-white dark:bg-gray-800 rounded-2xl shadow-2xl overflow-visible animate-in fade-in zoom-in-95 duration-200 border border-transparent dark:border-gray-700 flex flex-col max-h-[90vh]">
                                <div className="px-5 py-3.5 border-b border-gray-100 dark:border-gray-700 bg-gradient-to-r from-gray-50 to-white dark:from-gray-800 dark:to-gray-800 flex items-center justify-between shrink-0 rounded-t-2xl">
@@ -1501,48 +1526,14 @@ const Settings = () => {
                                        </div>
                                    </div>
 
-                                   <div>
-                                       <p className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-2">Selling Units</p>
-                                       <p className="mb-2 text-[10px] text-gray-500 dark:text-gray-400">Units available when stocking or selling products in this category. Separate from product attribute units.</p>
-                                       <div className="flex gap-2.5 items-center mb-2">
-                                           <input
-                                               type="text"
-                                               value={newCategoryUnitInput}
-                                               onChange={(e) => setNewCategoryUnitInput(e.target.value)}
-                                               onKeyDown={(e) => {
-                                                   if (e.key === 'Enter') {
-                                                       e.preventDefault();
-                                                       addUnitToNewCategory();
-                                                   }
-                                               }}
-                                               placeholder="e.g. pcs"
-                                               className="flex-1 p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
-                                           />
-                                           <button
-                                               type="button"
-                                               onClick={addUnitToNewCategory}
-                                               className="px-4 py-2 rounded-lg text-[10px] font-semibold uppercase tracking-widest bg-gray-100 border border-gray-200 text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-600 transition-all shrink-0"
-                                           >
-                                               Add
-                                           </button>
-                                       </div>
-                                       <div className="flex flex-wrap gap-1.5 p-2.5 min-h-[46px] border border-dashed border-gray-200 dark:border-gray-700 rounded-lg bg-slate-50/50 dark:bg-gray-900/30">
-                                           {(newCategoryRules.sizeUnits || []).length === 0 ? (
-                                               <span className="text-[10px] text-gray-400 font-medium italic">No units added yet.</span>
-                                           ) : (newCategoryRules.sizeUnits || []).map((unit) => (
-                                               <span key={unit} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-white dark:bg-gray-800 text-[10px] font-semibold text-gray-700 dark:text-gray-300 shadow-sm border border-gray-100 dark:border-gray-700">
-                                                   {unit}
-                                                   <button
-                                                       type="button"
-                                                       onClick={() => removeUnitFromNewCategory(unit)}
-                                                       className="text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 rounded p-0.5 transition-colors"
-                                                   >
-                                                       <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M6 18L18 6M6 6l12 12" /></svg>
-                                                   </button>
-                                               </span>
-                                           ))}
-                                       </div>
-                                   </div>
+                                    <CategorySellingUnitsEditor
+                                        units={newCategoryRules.sizeUnits || []}
+                                        customUnit={newCategoryUnitInput}
+                                        onCustomUnitChange={setNewCategoryUnitInput}
+                                        onAddUnit={addUnitToNewCategory}
+                                        onRemoveUnit={removeUnitFromNewCategory}
+                                        disabled={isCategoryLoading}
+                                    />
                                </div>
 
                                <div className="px-5 py-4 border-t border-gray-100 dark:border-gray-700 bg-slate-50/50 dark:bg-gray-800/50 flex gap-3 shrink-0 rounded-b-2xl">
@@ -1572,7 +1563,7 @@ const Settings = () => {
 
                    {editingCategory && (
                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-                           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm transition-opacity" onClick={() => setEditingCategory(null)}></div>
+                           <div className="app-modal-backdrop absolute inset-0 bg-black/60 backdrop-blur-sm transition-opacity" onClick={() => setEditingCategory(null)}></div>
 
                            <div className="relative w-full max-w-md bg-white dark:bg-gray-800 rounded-2xl shadow-2xl overflow-visible animate-in fade-in zoom-in-95 duration-200 border border-transparent dark:border-gray-700 flex flex-col max-h-[90vh]">
                                <div className="px-5 py-3.5 border-b border-gray-100 dark:border-gray-700 bg-gradient-to-r from-gray-50 to-white dark:from-gray-800 dark:to-gray-800 flex items-center justify-between shrink-0 rounded-t-2xl">
@@ -1608,8 +1599,8 @@ const Settings = () => {
                                        />
                                    </div>
 
-                                   <div>
-                                       <p className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-2">Visible & Required Fields</p>
+                                    <div className="hidden">
+                                        <p className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-2">Visible & Required Fields</p>
                                        <div className="grid grid-cols-2 gap-2.5">
                                            <div className="space-y-1.5 p-2 bg-slate-50 dark:bg-gray-900/50 rounded-lg border border-gray-100 dark:border-gray-700">
                                                <label className="flex items-center justify-between cursor-pointer group">
@@ -1652,38 +1643,14 @@ const Settings = () => {
                                        disabled={isCategoryLoading}
                                    />
 
-                                   <div className="space-y-2">
-                                       <p className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-2">Selling Units</p>
-                                       <p className="mb-2 text-[10px] text-gray-500 dark:text-gray-400">Units available when stocking or selling products in this category. Separate from product attribute units.</p>
-                                       <div className="flex gap-2.5 items-center mb-2">
-                                           <input
-                                               type="text"
-                                               value={editingCategory.unitInput || ''}
-                                               onChange={(e) => setEditingCategory((prev) => ({ ...prev, unitInput: e.target.value }))}
-                                               onKeyDown={(e) => {
-                                                   if (e.key === 'Enter') {
-                                                       e.preventDefault();
-                                                       addUnitToEditingCategory();
-                                                   }
-                                               }}
-                                               placeholder="e.g. pcs"
-                                               className="flex-1 p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
-                                           />
-                                           <button type="button" onClick={addUnitToEditingCategory} className="px-4 py-2 rounded-lg text-[10px] font-semibold uppercase tracking-widest bg-gray-100 border border-gray-200 text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-600 transition-all shrink-0">Add</button>
-                                       </div>
-                                       <div className="flex flex-wrap gap-1.5 p-2.5 min-h-[46px] border border-dashed border-gray-200 dark:border-gray-700 rounded-lg bg-slate-50/50 dark:bg-gray-900/30">
-                                           {(editingCategory.sizeUnits || []).length === 0 ? (
-                                               <span className="text-[10px] text-gray-400 font-medium italic">No units added yet.</span>
-                                           ) : (editingCategory.sizeUnits || []).map((unit) => (
-                                               <span key={unit} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-white dark:bg-gray-800 text-[10px] font-semibold text-gray-700 dark:text-gray-300 shadow-sm border border-gray-100 dark:border-gray-700">
-                                                   {unit}
-                                                   <button type="button" onClick={() => removeUnitFromEditingCategory(unit)} className="text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 rounded p-0.5 transition-colors">
-                                                       <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M6 18L18 6M6 6l12 12" /></svg>
-                                                   </button>
-                                               </span>
-                                           ))}
-                                       </div>
-                                   </div>
+                                   <CategorySellingUnitsEditor
+                                       units={editingCategory.sizeUnits || []}
+                                       customUnit={editingCategory.unitInput || ''}
+                                       onCustomUnitChange={(unitInput) => setEditingCategory((prev) => ({ ...prev, unitInput }))}
+                                       onAddUnit={addUnitToEditingCategory}
+                                       onRemoveUnit={removeUnitFromEditingCategory}
+                                       disabled={isCategoryLoading}
+                                   />
                                </div>
 
                                <div className="px-5 py-4 border-t border-gray-100 dark:border-gray-700 bg-slate-50/50 dark:bg-gray-800/50 flex gap-3 shrink-0 rounded-b-2xl">
@@ -1709,7 +1676,7 @@ const Settings = () => {
                    )}
 
                    {isDeleteCategoryModalOpen && categoryToDelete && (
-                       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                       <div className="app-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
                            <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-sm md:max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
                                <div className="p-6 text-center">
                                    <div className={`mx-auto flex items-center justify-center mb-4 ${categoryToDelete?.isActive === false ? 'text-emerald-600' : 'text-orange-600'}`}>

@@ -35,9 +35,40 @@ test('historical cash payload uses the saved transaction snapshot and aliases', 
   assert.deepEqual(payload.receipt.items, [{
     label: 'Saved Product Name',
     code: 'SAVED-001',
+    sellingUnit: '',
     qty: 2,
     unitPrice: 56,
     subtotal: 112,
+  }]);
+});
+
+test('draft Order List payload matches the printer-service receipt contract without a finalized id', async () => {
+  const { buildReceiptPrintPayload } = await loadReceiptPrinter();
+  const payload = buildReceiptPrintPayload({
+    documentType: 'order-list-draft',
+    date: '2026-10-12T13:45:00.000Z',
+    cashier: 'Cashier User',
+    items: [{
+      name: 'Concrete Nails',
+      code: 'CMT-001',
+      qty: 2,
+      sellingUnit: 'pack',
+      price: 50,
+      subtotal: 100,
+    }],
+  }, { storeName: 'Tableria La Confianza' });
+
+  assert.equal(payload.receipt.id, '');
+  assert.equal(payload.receipt.documentType, 'order-list-draft');
+  assert.equal(payload.receipt.date, '2026-10-12T13:45:00.000Z');
+  assert.equal(payload.receipt.cashier, 'Cashier User');
+  assert.deepEqual(payload.receipt.items, [{
+    label: 'Concrete Nails',
+    code: 'CMT-001',
+    sellingUnit: 'pack',
+    qty: 2,
+    unitPrice: 50,
+    subtotal: 100,
   }]);
 });
 

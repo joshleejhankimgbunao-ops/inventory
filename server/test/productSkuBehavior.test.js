@@ -166,24 +166,100 @@ test('manual SKU creation saves the supplied normalized SKU instead of generatin
 
   Product.findOne = async () => null;
   Product.find = async () => [];
-  Category.findOne = async () => null;
+  Category.findOne = async () => ({
+    _id: '507f1f77bcf86cd799439011',
+    name: 'Paints',
+    isActive: true,
+    sizeUnits: ['pcs'],
+  });
   Product.create = async (payload) => {
     createdPayload = payload;
     return { _id: 'product-manual', ...payload };
   };
 
   try {
-    const req = makeRequest({ name: 'Manual SKU Product', sku: '  sup-12345 ', category: 'Paints', stock: 0, price: 100 });
+    const req = makeRequest({ name: 'Manual SKU Product', sku: '  sup-12345 ', category: 'Paints', stock: 0, price: 100, sellingUnit: 'pcs' });
     const res = makeResponse();
     await createProduct(req, res, assert.fail);
 
     assert.equal(res.statusCode, 201);
     assert.equal(createdPayload.sku, 'SUP-12345');
+    assert.equal(createdPayload.sellingUnit, 'pcs');
     assert.equal(res.body.sku, 'SUP-12345');
   } finally {
     Product.findOne = originalFindOne;
     Product.find = originalFind;
     Product.create = originalCreate;
+    Category.findOne = originalCategoryFindOne;
+  }
+});
+
+test('product creation requires and persists a category-configured selling unit', async () => {
+  const originalFindOne = Product.findOne;
+  const originalFind = Product.find;
+  const originalCreate = Product.create;
+  const originalCategoryFindOne = Category.findOne;
+  let createdPayload = null;
+
+  Product.findOne = async () => null;
+  Product.find = async () => [];
+  Category.findOne = async () => ({
+    _id: '507f1f77bcf86cd799439011',
+    name: 'Fasteners',
+    isActive: true,
+    sizeUnits: ['pcs', 'box', 'pack'],
+  });
+  Product.create = async (payload) => {
+    createdPayload = payload;
+    return { _id: 'product-selling-unit', ...payload };
+  };
+
+  try {
+    const validResponse = makeResponse();
+    await createProduct(makeRequest({
+      name: 'Concrete Nails', sku: 'FAST-001', category: 'Fasteners', stock: 20, price: 150, sellingUnit: 'PACK',
+    }), validResponse, assert.fail);
+    assert.equal(validResponse.statusCode, 201);
+    assert.equal(createdPayload.sellingUnit, 'pack');
+
+    const missingResponse = makeResponse();
+    await createProduct(makeRequest({
+      name: 'Concrete Nails', sku: 'FAST-002', category: 'Fasteners', stock: 20, price: 150,
+    }), missingResponse, assert.fail);
+    assert.equal(missingResponse.statusCode, 400);
+    assert.match(missingResponse.body.message, /select a selling unit/i);
+
+    const invalidResponse = makeResponse();
+    await createProduct(makeRequest({
+      name: 'Concrete Nails', sku: 'FAST-003', category: 'Fasteners', stock: 20, price: 150, sellingUnit: 'kg',
+    }), invalidResponse, assert.fail);
+    assert.equal(invalidResponse.statusCode, 400);
+    assert.match(invalidResponse.body.message, /not configured/i);
+  } finally {
+    Product.findOne = originalFindOne;
+    Product.find = originalFind;
+    Product.create = originalCreate;
+    Category.findOne = originalCategoryFindOne;
+  }
+});
+
+test('product creation rejects a category with no configured selling units', async () => {
+  const originalCategoryFindOne = Category.findOne;
+  Category.findOne = async () => ({
+    _id: '507f1f77bcf86cd799439011',
+    name: 'Unconfigured Category',
+    isActive: true,
+    sizeUnits: [],
+  });
+
+  try {
+    const response = makeResponse();
+    await createProduct(makeRequest({
+      name: 'Legacy-style Product', sku: 'UNC-001', category: 'Unconfigured Category', stock: 0, price: 100,
+    }), response, assert.fail);
+    assert.equal(response.statusCode, 400);
+    assert.match(response.body.message, /no selling units are configured/i);
+  } finally {
     Category.findOne = originalCategoryFindOne;
   }
 });
@@ -205,7 +281,12 @@ test('blank SKU product creation retries after a unique-index collision', async 
     }
     return Promise.resolve([]);
   };
-  Category.findOne = async () => null;
+  Category.findOne = async () => ({
+    _id: '507f1f77bcf86cd799439011',
+    name: 'Paints',
+    isActive: true,
+    sizeUnits: ['pcs'],
+  });
   Product.create = async (payload) => {
     createAttempts += 1;
     if (createAttempts === 1) {
@@ -218,7 +299,7 @@ test('blank SKU product creation retries after a unique-index collision', async 
   };
 
   try {
-    const req = makeRequest({ name: 'Latex Paint', sku: '   ', category: 'Paints', stock: 0, price: 100 });
+    const req = makeRequest({ name: 'Latex Paint', sku: '   ', category: 'Paints', stock: 0, price: 100, sellingUnit: 'pcs' });
     const res = makeResponse();
     await createProduct(req, res, assert.fail);
 

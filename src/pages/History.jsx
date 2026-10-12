@@ -6,18 +6,20 @@ import ToolbarDropdown from '../components/ToolbarDropdown';
 import ReceiptPreviewModal from '../components/ReceiptPreviewModal';
 import TableActionButton from '../components/TableActionButton';
 import TransactionReferenceModal from '../components/TransactionReferenceModal';
+import TransactionReferenceCorrectionModal from '../components/TransactionReferenceCorrectionModal';
 import { useLocation } from 'react-router-dom';
 import { showToast } from '../utils/toastHelper';
 import TableSkeletonRows from '../components/TableSkeletonRows';
 import { showPageLoadError } from '../utils/pageLoadError';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
-import { getCreditTransactionByIdApi, getSaleHistoryViewApi, getSaleSupportingDocumentApi, getSaleVoidProofApi, listCreditTransactionsApi, voidSaleApi } from '../services/inventoryApi';
+import { declineSaleVoidRequestApi, getCreditTransactionByIdApi, getSaleHistoryViewApi, getSaleSupportingDocumentApi, getSaleVoidProofApi, listCreditTransactionsApi, requestSaleVoidApi, voidSaleApi } from '../services/inventoryApi';
 import { printReceipt } from '../services/receiptPrinter';
 import { formatMoney as formatMoneyValue } from '../utils/numberFormat';
 import { getActorDisplayName, getActorRoleLabel } from '../utils/actorDisplay';
 import { createClientRequestId } from '../utils/clientRequestId';
 import { canOfferSaleVoid } from '../utils/saleVoid';
+import { PENDING_VOID_REQUEST_FILTER, countPendingVoidRequests, isPendingVoidRequest } from '../utils/pendingVoidRequests';
 
 const MAX_VOID_PROOF_SIZE = 5 * 1024 * 1024;
 const VOID_PROOF_TYPES = new Map([
@@ -92,6 +94,20 @@ const History = () => {
     const [specificDate, setSpecificDate] = useState('');
     const [customStartDate, setCustomStartDate] = useState('');
     const [customEndDate, setCustomEndDate] = useState('');
+
+    const pendingVoidRequestCount = useMemo(
+        () => countPendingVoidRequests(transactions),
+        [transactions]
+    );
+
+    useEffect(() => {
+        const requestedFilter = new URLSearchParams(location.search).get('filter');
+        if (requestedFilter === 'pending-void' && isAdminOrAbove()) {
+            setActiveTab('sales');
+            setSalesRecordView(PENDING_VOID_REQUEST_FILTER);
+            setCurrentPage(1);
+        }
+    }, [location.search, isAdminOrAbove]);
 
     useEffect(() => {
         const timeoutId = window.setTimeout(() => {
@@ -347,6 +363,8 @@ const History = () => {
                 ? isArchived
                 : salesRecordView === 'VOIDED'
                     ? !isArchived && isVoided
+                    : salesRecordView === PENDING_VOID_REQUEST_FILTER
+                        ? !isArchived && isPendingVoidRequest(trx)
                     : !isArchived;
             
             return matchesSearch && matchesDate && matchesProduct && matchesCategory && matchesRecordView;
@@ -542,6 +560,8 @@ const History = () => {
     const [selectedTransaction, setSelectedTransaction] = useState(null);
     const [selectedSaleDetails, setSelectedSaleDetails] = useState(null);
     const [isEditingSaleReference, setIsEditingSaleReference] = useState(false);
+    const [isCorrectingSaleReference, setIsCorrectingSaleReference] = useState(false);
+    const [isCorrectionHistoryOpen, setIsCorrectionHistoryOpen] = useState(false);
     const [documentPreview, setDocumentPreview] = useState(null);
     const [showReceipt, setShowReceipt] = useState(false);
     const [printStatus, setPrintStatus] = useState('idle');
@@ -552,6 +572,14 @@ const History = () => {
     const [voidReason, setVoidReason] = useState('');
     const [voidProofFile, setVoidProofFile] = useState(null);
     const [voidProofPreview, setVoidProofPreview] = useState(null);
+    const isSaleDetailsChildActive = Boolean(
+        isEditingSaleReference
+        || isCorrectingSaleReference
+        || isCorrectionHistoryOpen
+        || isVoidModalOpen
+        || documentPreview
+        || voidProofPreview
+    );
     const [isVoidSubmitting, setIsVoidSubmitting] = useState(false);
     const voidRequestIdRef = useRef('');
     const voidRequestInFlightRef = useRef(false);
@@ -653,9 +681,16 @@ const History = () => {
         isOnline: typeof navigator === 'undefined' || navigator.onLine,
     });
 
+    const canRequestVoid = (transaction) => userRole === ROLES.CASHIER
+        && transaction?.sourceId
+        && transaction?.voidEligible
+        && String(transaction?.status || '').toLowerCase() === 'completed'
+        && transaction?.voidRequest?.status !== 'pending'
+        && (typeof navigator === 'undefined' || navigator.onLine);
+
     const openVoidModal = () => {
-        if (!canVoidSale(selectedSaleDetails)) return;
-        setVoidReason('');
+        if (!canVoidSale(selectedSaleDetails) && !canRequestVoid(selectedSaleDetails)) return;
+        setVoidReason(selectedSaleDetails?.voidRequest?.status === 'pending' ? selectedSaleDetails.voidRequest.reason : '');
         setVoidProofFile(null);
         voidRequestIdRef.current = createClientRequestId('sale-void');
         setIsVoidModalOpen(true);
@@ -695,22 +730,31 @@ const History = () => {
         voidRequestInFlightRef.current = true;
         setIsVoidSubmitting(true);
         try {
-            const result = await voidSaleApi(selectedSaleDetails.sourceId, {
-                reason,
-                requestId: voidRequestIdRef.current || createClientRequestId('sale-void'),
-                proofFile: voidProofFile,
-            });
-            const updated = result.sale;
+            const isCashierRequest = userRole === ROLES.CASHIER;
+            const result = isCashierRequest
+                ? await requestSaleVoidApi(selectedSaleDetails.sourceId, { reason, proofFile: voidProofFile })
+                : await voidSaleApi(selectedSaleDetails.sourceId, {
+                    reason,
+                    requestId: voidRequestIdRef.current || createClientRequestId('sale-void'),
+                    proofFile: voidProofFile,
+                });
+            const updated = isCashierRequest ? result : result.sale;
             setTransactions((previous) => previous.map((transaction) => (
                 transaction.sourceId === updated.sourceId ? updated : transaction
             )));
             setSelectedSaleDetails(updated);
             setSelectedTransaction((previous) => previous?.sourceId === updated.sourceId ? updated : previous);
+            if (typeof window !== 'undefined') window.dispatchEvent(new Event('sale:void-requests-changed'));
             setIsVoidModalOpen(false);
             setVoidReason('');
             setVoidProofFile(null);
             voidRequestIdRef.current = '';
-            showToast(result.replayed ? 'Sale Already Voided' : 'Sale Voided', `${updated.id} is recorded as voided.`, 'success', 'sale-void-success');
+            showToast(
+                isCashierRequest ? 'Void Requested' : result.replayed ? 'Sale Already Voided' : 'Sale Voided',
+                isCashierRequest ? `${updated.id} is pending Admin review.` : `${updated.id} is recorded as voided.`,
+                'success',
+                isCashierRequest ? 'sale-void-request-success' : 'sale-void-success'
+            );
         } catch (error) {
             showToast('Void Failed', error.message || 'The Sale was not voided. No inventory changes were applied.', 'error', 'sale-void-failed');
         } finally {
@@ -718,6 +762,35 @@ const History = () => {
             setIsVoidSubmitting(false);
         }
     };
+
+    const declineVoidRequest = async () => {
+        if (!selectedSaleDetails?.sourceId || selectedSaleDetails.voidRequest?.status !== 'pending') return;
+        try {
+            const updated = await declineSaleVoidRequestApi(selectedSaleDetails.sourceId);
+            setTransactions((previous) => previous.map((transaction) => transaction.sourceId === updated.sourceId ? updated : transaction));
+            setSelectedSaleDetails(updated);
+            if (typeof window !== 'undefined') window.dispatchEvent(new Event('sale:void-requests-changed'));
+            showToast('Void Request Declined', `${updated.id} remains completed.`, 'success', 'sale-void-request-declined');
+        } catch (error) {
+            showToast('Unable to Decline', error.message || 'The Void request was not changed.', 'error', 'sale-void-request-decline-failed');
+        }
+    };
+
+    useEffect(() => {
+        if (!isSaleDetailsChildActive) return undefined;
+        const handleEscape = (event) => {
+            if (event.key !== 'Escape') return;
+            event.preventDefault();
+            if (documentPreview) return setDocumentPreview(null);
+            if (voidProofPreview) return setVoidProofPreview(null);
+            if (isVoidModalOpen) return closeVoidModal();
+            if (isCorrectionHistoryOpen) return setIsCorrectionHistoryOpen(false);
+            if (isCorrectingSaleReference) return setIsCorrectingSaleReference(false);
+            if (isEditingSaleReference) setIsEditingSaleReference(false);
+        };
+        window.addEventListener('keydown', handleEscape);
+        return () => window.removeEventListener('keydown', handleEscape);
+    }, [documentPreview, voidProofPreview, isVoidModalOpen, isCorrectionHistoryOpen, isCorrectingSaleReference, isEditingSaleReference, isSaleDetailsChildActive]);
 
     useEffect(() => () => {
         if (documentPreview?.url) URL.revokeObjectURL(documentPreview.url);
@@ -737,14 +810,25 @@ const History = () => {
         }
     };
 
+    const viewCorrectionDocument = async (correctionIndex, version, document) => {
+        if (!selectedSaleDetails?.sourceId || !document) return;
+        try {
+            const blob = await getSaleSupportingDocumentApi(selectedSaleDetails.sourceId, { correctionIndex, version });
+            setDocumentPreview({ url: URL.createObjectURL(blob), name: document.originalName || 'Supporting Document' });
+        } catch (error) {
+            showToast('Document Unavailable', error.message || 'Unable to load the historical supporting document.', 'error', 'sale-correction-document-view');
+        }
+    };
+
     const viewSaleVoidProof = async () => {
-        if (!selectedSaleDetails?.sourceId || !selectedSaleDetails.voidInfo?.supportingProof) return;
+        const proof = selectedSaleDetails?.voidInfo?.supportingProof || selectedSaleDetails?.voidRequest?.supportingProof;
+        if (!selectedSaleDetails?.sourceId || !proof) return;
         try {
             const blob = await getSaleVoidProofApi(selectedSaleDetails.sourceId);
             setVoidProofPreview({
                 url: URL.createObjectURL(blob),
-                name: selectedSaleDetails.voidInfo.supportingProof.originalName || 'Supporting Proof',
-                mimeType: selectedSaleDetails.voidInfo.supportingProof.mimeType || blob.type,
+                name: proof.originalName || 'Supporting Proof',
+                mimeType: proof.mimeType || blob.type,
             });
         } catch (error) {
             showToast('Proof Unavailable', error.message || 'Unable to load the Supporting Proof.', 'error', 'sale-void-proof-view');
@@ -973,6 +1057,7 @@ const History = () => {
                                                     className="w-full rounded-lg border-2 border-gray-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 focus:border-gray-900 focus:outline-none"
                                                 >
                                                     <option value="ALL">All</option>
+                                                    {isAdminOrAbove() && <option value={PENDING_VOID_REQUEST_FILTER}>Pending Void Requests ({pendingVoidRequestCount})</option>}
                                                     <option value="VOIDED">Voided</option>
                                                     <option value="ARCHIVED">Archived</option>
                                                 </select>
@@ -1208,6 +1293,11 @@ const History = () => {
                                                                 Voided
                                                             </span>
                                                         )}
+                                                        {isPendingVoidRequest(trx) && (
+                                                            <span className="inline-flex rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-700 dark:border-amber-900/70 dark:bg-amber-950/40 dark:text-amber-300">
+                                                                Void Request Pending
+                                                            </span>
+                                                        )}
                                                     </div>
                                                 </td>
                                                 <td className="whitespace-nowrap py-2 px-3 text-gray-800 font-medium text-xs text-center border border-gray-200">{formatExact(trx.date)}</td>
@@ -1425,7 +1515,7 @@ const History = () => {
             </div>
 
             {isCreditDetailsOpen && selectedCredit && (
-                <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+                <div className="app-modal-backdrop fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
                     <div className="w-full max-w-3xl bg-white rounded-xl border border-gray-200 shadow-xl overflow-hidden">
                         <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between bg-gray-50">
                             <div>
@@ -1553,8 +1643,8 @@ const History = () => {
             )}
 
 
-            {selectedSaleDetails && (
-                <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+            {selectedSaleDetails && !isSaleDetailsChildActive && (
+                <div className="app-modal-backdrop fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
                     <div role="dialog" aria-modal="true" aria-label="Sale details" className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-[#202225]">
                         <div className="flex items-start justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-700">
                             <div>
@@ -1574,12 +1664,32 @@ const History = () => {
                                 <div><p className="text-slate-500 dark:text-slate-400">Total</p><p className="mt-1 font-semibold text-slate-900 dark:text-slate-100">₱{formatMoney(selectedSaleDetails.total)}</p></div>
                             </div>
                             <div className="border-t border-slate-200 pt-3 dark:border-slate-700">
-                                <div className="flex items-center justify-between gap-2"><h4 className="text-xs font-semibold text-slate-900 dark:text-slate-100">Transaction Reference</h4>{selectedSaleDetails.sourceId && String(selectedSaleDetails.status || '').toLowerCase() !== 'voided' && <button type="button" onClick={() => setIsEditingSaleReference(true)} className="text-xs font-medium text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white">{selectedSaleDetails.transactionReference?.referenceNumber || selectedSaleDetails.transactionReference?.supportingDocument ? 'Edit Reference' : 'Add Reference'}</button>}</div>
+                                <div className="flex items-center justify-between gap-2">
+                                    <div className="flex items-center gap-2">
+                                        <h4 className="text-xs font-semibold text-slate-900 dark:text-slate-100">Transaction Reference</h4>
+                                        {selectedSaleDetails.transactionReference?.correctionHistory?.length > 0 && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-slate-600 dark:bg-slate-700 dark:text-slate-300">Corrected</span>}
+                                    </div>
+                                    {selectedSaleDetails.sourceId && String(selectedSaleDetails.status || '').toLowerCase() !== 'voided' && !selectedSaleDetails.transactionReference?.referenceNumber && !selectedSaleDetails.transactionReference?.supportingDocument && <button type="button" onClick={() => setIsEditingSaleReference(true)} className="text-xs font-medium text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white">Add Reference</button>}
+                                    {selectedSaleDetails.sourceId && String(selectedSaleDetails.status || '').toLowerCase() !== 'voided' && isAdminOrAbove() && (selectedSaleDetails.transactionReference?.referenceNumber || selectedSaleDetails.transactionReference?.supportingDocument) && <button type="button" onClick={() => setIsCorrectingSaleReference(true)} className="text-xs font-medium text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white">Correct Reference</button>}
+                                </div>
                                 {selectedSaleDetails.transactionReference?.referenceNumber && <p className="mt-2 text-xs text-slate-700 dark:text-slate-200"><span className="text-slate-500 dark:text-slate-400">Reference No.</span> {selectedSaleDetails.transactionReference.referenceNumber}</p>}
                                 {selectedSaleDetails.transactionReference?.supportingDocument && <button type="button" onClick={viewSaleDocument} className="mt-2 text-xs font-medium text-slate-700 underline underline-offset-2 hover:text-slate-900 dark:text-slate-200">View Supporting Document</button>}
+                                {isAdminOrAbove() && selectedSaleDetails.transactionReference?.correctionHistory?.length > 0 && <button type="button" onClick={() => setIsCorrectionHistoryOpen(true)} className="ml-3 mt-2 text-xs font-medium text-slate-500 underline underline-offset-2 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200">View correction history</button>}
                                 {!selectedSaleDetails.sourceId && <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">Reference details can be added after this sale syncs.</p>}
                                 {String(selectedSaleDetails.status || '').toLowerCase() === 'voided' && <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">Reference metadata is preserved and read-only after voiding.</p>}
                             </div>
+                            {selectedSaleDetails.voidRequest && String(selectedSaleDetails.status || '').toLowerCase() !== 'voided' && (
+                                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs dark:border-slate-700 dark:bg-slate-800/30">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <h4 className="font-semibold text-slate-800 dark:text-slate-200">Void Request</h4>
+                                        <span className="rounded-full bg-slate-200/70 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-slate-600 dark:bg-slate-700 dark:text-slate-300">{selectedSaleDetails.voidRequest.status}</span>
+                                    </div>
+                                    <p className="mt-2 text-slate-600 dark:text-slate-300">{selectedSaleDetails.voidRequest.reason}</p>
+                                    <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{selectedSaleDetails.voidRequest.requestedByName} · {formatExact(selectedSaleDetails.voidRequest.requestedAt)}</p>
+                                    {selectedSaleDetails.voidRequest.status === 'pending' && userRole === ROLES.CASHIER && <p className="mt-2 font-medium text-slate-600 dark:text-slate-300">Void request pending</p>}
+                                    {selectedSaleDetails.voidRequest.supportingProof && <button type="button" onClick={viewSaleVoidProof} className="mt-2 font-medium text-slate-700 underline underline-offset-2 dark:text-slate-200">View Proof</button>}
+                                </div>
+                            )}
                             <div className="border-t border-slate-200 pt-3 dark:border-slate-700"><h4 className="text-xs font-semibold text-slate-900 dark:text-slate-100">Items</h4>{(selectedSaleDetails.items || []).map((item, index) => <div key={`${item.code || item.name}-${index}`} className="flex justify-between gap-3 border-b border-slate-100 py-2 text-xs text-slate-700 dark:border-slate-700 dark:text-slate-200"><span>{item.name} × {item.qty}</span><span className="shrink-0">₱{formatMoney(item.subtotal ?? item.qty * item.price)}</span></div>)}</div>
                             {String(selectedSaleDetails.status || '').toLowerCase() === 'voided' && (
                                 <div className="rounded-xl border border-rose-200 bg-rose-50/70 p-3 text-xs dark:border-rose-900/60 dark:bg-rose-950/20">
@@ -1601,10 +1711,11 @@ const History = () => {
                                 </div>
                             )}
                         </div>
-                        {canVoidSale(selectedSaleDetails) && (
-                            <div className="border-t border-slate-200 px-5 py-3 dark:border-slate-700">
+                        {(canVoidSale(selectedSaleDetails) || canRequestVoid(selectedSaleDetails)) && (
+                            <div className="flex justify-end gap-2 border-t border-slate-200 px-5 py-3 dark:border-slate-700">
+                                {isAdminOrAbove() && selectedSaleDetails.voidRequest?.status === 'pending' && <button type="button" onClick={declineVoidRequest} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:bg-[#202225] dark:text-slate-200 dark:hover:bg-slate-800">Decline</button>}
                                 <button type="button" onClick={openVoidModal} className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-700 transition-colors hover:bg-rose-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300 dark:border-rose-900/70 dark:bg-[#202225] dark:text-rose-300 dark:hover:bg-rose-950/30">
-                                    Void Transaction
+                                    {userRole === ROLES.CASHIER ? 'Request Void' : 'Void Transaction'}
                                 </button>
                             </div>
                         )}
@@ -1618,15 +1729,54 @@ const History = () => {
                     setIsEditingSaleReference(false);
                 }} />
             )}
+            {isCorrectingSaleReference && selectedSaleDetails?.sourceId && (
+                <TransactionReferenceCorrectionModal
+                    saleId={selectedSaleDetails.sourceId}
+                    currentReference={selectedSaleDetails.transactionReference}
+                    onClose={() => setIsCorrectingSaleReference(false)}
+                    onSaved={(updated) => {
+                        setSelectedSaleDetails(updated);
+                        setTransactions((previous) => previous.map((transaction) => transaction.sourceId === updated.sourceId ? updated : transaction));
+                        setIsCorrectingSaleReference(false);
+                        showToast('Reference Corrected', `${updated.id} now shows the corrected evidence.`, 'success', 'sale-reference-corrected');
+                    }}
+                />
+            )}
+            {isCorrectionHistoryOpen && !documentPreview && selectedSaleDetails?.transactionReference?.correctionHistory?.length > 0 && (
+                <div className="app-modal-backdrop fixed inset-0 z-[85] flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-[2px]">
+                    <div role="dialog" aria-modal="true" aria-labelledby="correction-history-title" className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-slate-50 shadow-xl dark:border-slate-700/80 dark:bg-[#24262a]">
+                        <div className="flex items-center justify-between border-b border-slate-200/70 px-5 py-4 dark:border-slate-700/70">
+                            <h3 id="correction-history-title" className="text-base font-semibold text-slate-900 dark:text-slate-100">Correction History</h3>
+                            <button type="button" onClick={() => setIsCorrectionHistoryOpen(false)} className="text-xs font-medium text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white">Close</button>
+                        </div>
+                        <div className="space-y-3 overflow-y-auto px-5 py-4">
+                            {selectedSaleDetails.transactionReference.correctionHistory.map((entry, index) => (
+                                <div key={`${entry.correctedAt}-${index}`} className="rounded-xl border border-slate-200 bg-white p-3 text-xs dark:border-slate-700 dark:bg-[#2d3035]">
+                                    <div className="grid grid-cols-2 gap-3">
+                                        <div><p className="text-slate-500 dark:text-slate-400">Previous Reference</p><p className="mt-1 break-all text-slate-800 dark:text-slate-100">{entry.previousReferenceNumber || 'Document only'}</p></div>
+                                        <div><p className="text-slate-500 dark:text-slate-400">Corrected Reference</p><p className="mt-1 break-all text-slate-800 dark:text-slate-100">{entry.correctedReferenceNumber || 'Document only'}</p></div>
+                                    </div>
+                                    <p className="mt-3 text-slate-600 dark:text-slate-300"><span className="text-slate-500 dark:text-slate-400">Reason:</span> {entry.reason}</p>
+                                    <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{entry.correctedByName} · {formatExact(entry.correctedAt)}</p>
+                                    <div className="mt-2 flex flex-wrap gap-3">
+                                        {entry.previousSupportingDocument && <button type="button" onClick={() => viewCorrectionDocument(index, 'previous', entry.previousSupportingDocument)} className="font-medium text-slate-600 underline underline-offset-2 dark:text-slate-300">View original document</button>}
+                                        {entry.correctedSupportingDocument && (!entry.previousSupportingDocument || String(entry.correctedSupportingDocument.uploadedAt || '') !== String(entry.previousSupportingDocument.uploadedAt || '')) && <button type="button" onClick={() => viewCorrectionDocument(index, 'corrected', entry.correctedSupportingDocument)} className="font-medium text-slate-600 underline underline-offset-2 dark:text-slate-300">View corrected document</button>}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            )}
             {isVoidModalOpen && selectedSaleDetails && (
-                <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-[2px]">
+                <div className="app-modal-backdrop fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-[2px]">
                     <div role="dialog" aria-modal="true" aria-labelledby="void-sale-title" className="w-full max-w-md overflow-hidden rounded-2xl border border-slate-200/80 bg-slate-50 shadow-[0_20px_50px_-24px_rgba(15,23,42,0.35)] dark:border-slate-700/80 dark:bg-[#24262a] dark:shadow-[0_20px_50px_-24px_rgba(0,0,0,0.6)]">
                         <div className="border-b border-slate-200/70 px-5 py-4 dark:border-slate-700/70">
-                            <h3 id="void-sale-title" className="text-base font-semibold text-slate-900 dark:text-slate-100">Void Transaction</h3>
+                            <h3 id="void-sale-title" className="text-base font-semibold text-slate-900 dark:text-slate-100">{userRole === ROLES.CASHIER ? 'Request Void' : 'Void Transaction'}</h3>
                             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{selectedSaleDetails.id}</p>
                         </div>
                         <div className="space-y-3 px-5 py-4">
-                            <p className="text-sm leading-5 text-slate-700 dark:text-slate-200">This permanently voids the Sale and restores the exact sold quantities to inventory.</p>
+                            <p className="text-sm leading-5 text-slate-700 dark:text-slate-200">{userRole === ROLES.CASHIER ? 'Submit this Sale for Admin review.' : 'This permanently voids the Sale and restores the exact sold quantities to inventory.'}</p>
                             <label className="block">
                                 <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Reason for voiding</span>
                                 <textarea value={voidReason} onChange={(event) => setVoidReason(event.target.value)} maxLength={500} rows={4} disabled={isVoidSubmitting} placeholder="Enter the reason for voiding this Sale" className="mt-1.5 w-full resize-none rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition-colors focus:border-slate-400 focus:ring-2 focus:ring-slate-300/40 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:opacity-70 dark:border-slate-600/80 dark:bg-[#2d3035] dark:text-slate-100 dark:focus:border-slate-500 dark:focus:ring-slate-500/25 dark:disabled:bg-[#292c30]" />
@@ -1652,14 +1802,14 @@ const History = () => {
                         </div>
                         <div className="flex justify-end gap-2 border-t border-slate-200/70 px-5 py-3 dark:border-slate-700/70">
                             <button type="button" onClick={closeVoidModal} disabled={isVoidSubmitting} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400/40 disabled:opacity-50 dark:border-slate-600 dark:bg-[#2d3035] dark:text-slate-200 dark:hover:bg-[#373a40]">Cancel</button>
-                            <button type="button" onClick={confirmVoidSale} disabled={!voidReason.trim() || isVoidSubmitting} className="rounded-lg border border-rose-700 bg-rose-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-rose-800 disabled:cursor-not-allowed disabled:border-rose-300 disabled:bg-rose-300 dark:border-rose-800 dark:bg-rose-800 dark:hover:bg-rose-700 dark:disabled:border-rose-950 dark:disabled:bg-rose-950/60 dark:disabled:text-rose-400">{isVoidSubmitting ? 'Voiding...' : 'Void Transaction'}</button>
+                            <button type="button" onClick={confirmVoidSale} disabled={!voidReason.trim() || isVoidSubmitting} className="rounded-lg border border-rose-700 bg-rose-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-rose-800 disabled:cursor-not-allowed disabled:border-rose-300 disabled:bg-rose-300 dark:border-rose-800 dark:bg-rose-800 dark:hover:bg-rose-700 dark:disabled:border-rose-950 dark:disabled:bg-rose-950/60 dark:disabled:text-rose-400">{isVoidSubmitting ? (userRole === ROLES.CASHIER ? 'Submitting...' : 'Voiding...') : (userRole === ROLES.CASHIER ? 'Submit Request' : 'Void Transaction')}</button>
                         </div>
                     </div>
                 </div>
             )}
-            {documentPreview && <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/75 p-4" role="dialog" aria-modal="true" aria-label="Supporting Document preview"><img src={documentPreview.url} alt={documentPreview.name} className="max-h-[85vh] max-w-full rounded-lg object-contain" /><button type="button" onClick={() => setDocumentPreview(null)} className="absolute right-5 top-5 rounded-lg bg-white px-3 py-2 text-xs font-medium text-slate-900">Close</button></div>}
+            {documentPreview && <div className="app-modal-backdrop fixed inset-0 z-[90] flex items-center justify-center bg-black/75 p-4" role="dialog" aria-modal="true" aria-label="Supporting Document preview"><img src={documentPreview.url} alt={documentPreview.name} className="max-h-[85vh] max-w-full rounded-lg object-contain" /><button type="button" onClick={() => setDocumentPreview(null)} className="absolute right-5 top-5 rounded-lg bg-white px-3 py-2 text-xs font-medium text-slate-900">Close</button></div>}
             {voidProofPreview && (
-                <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/75 p-4" role="dialog" aria-modal="true" aria-label="Supporting Proof preview">
+                <div className="app-modal-backdrop fixed inset-0 z-[90] flex items-center justify-center bg-black/75 p-4" role="dialog" aria-modal="true" aria-label="Supporting Proof preview">
                     {voidProofPreview.mimeType === 'application/pdf'
                         ? <iframe src={voidProofPreview.url} title={voidProofPreview.name} className="h-[85vh] w-full max-w-4xl rounded-lg bg-white" />
                         : <img src={voidProofPreview.url} alt={voidProofPreview.name} className="max-h-[85vh] max-w-full rounded-lg object-contain" />}

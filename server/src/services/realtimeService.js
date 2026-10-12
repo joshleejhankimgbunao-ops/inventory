@@ -147,8 +147,12 @@ const publishSpecialOrderUpdated = ({ orderId = '', orderNumber = '', status = '
 };
 
 // Foundation only: future committed lifecycle operations can call this.
-const publishSaleUpdated = ({ saleId = '', cashierId = '' } = {}) => {
-  const payload = { saleId: String(saleId), occurredAt: new Date().toISOString() };
+const publishSaleUpdated = ({ saleId = '', cashierId = '', changeType = 'sale.updated' } = {}) => {
+  const payload = {
+    saleId: String(saleId),
+    changeType: String(changeType || 'sale.updated'),
+    occurredAt: new Date().toISOString(),
+  };
   publishEvent('sale.updated', payload, { roles: ['superadmin', 'admin'] });
   if (cashierId) publishEvent('sale.updated', payload, { roles: ['cashier'], userIds: [cashierId] });
 };

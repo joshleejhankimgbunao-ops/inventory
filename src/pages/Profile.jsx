@@ -3,7 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { showToast } from '../utils/toastHelper';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
-import { meApi, updateMyProfileApi, verifyCurrentPasswordApi, verifyCurrentPinApi } from '../services/authApi';
+import { completeFirstLoginSecuritySetupApi, meApi, updateMyProfileApi, verifyCurrentPasswordApi, verifyCurrentPinApi } from '../services/authApi';
 import { getPasswordChecks, isValidPassword } from '../utils/passwordPolicy';
 import { normalizeHumanReadable } from '../utils/textNormalization';
 import ProfileSkeleton from '../components/ProfileSkeleton';
@@ -214,10 +214,16 @@ const Profile = () => {
     const passwordVerifyTimerRef = useRef(null);
     const pinVerifyTimerRef = useRef(null);
     const [activeSection, setActiveSection] = useState('personal');
-    const [showSecurityRequirementModal, setShowSecurityRequirementModal] = useState(false);
+    const [firstLoginPassword, setFirstLoginPassword] = useState('');
+    const [firstLoginPasswordConfirmation, setFirstLoginPasswordConfirmation] = useState('');
+    const [firstLoginPin, setFirstLoginPin] = useState('');
+    const [firstLoginPinConfirmation, setFirstLoginPinConfirmation] = useState('');
+    const [firstLoginSetupError, setFirstLoginSetupError] = useState('');
+    const [isFirstLoginSetupSaving, setIsFirstLoginSetupSaving] = useState(false);
     const [isProfileHydrating, setIsProfileHydrating] = useState(() => !cachedProfileSnapshot);
     const [isProfileSaving, setIsProfileSaving] = useState(false);
     const profileSaveInFlightRef = useRef(false);
+    const isCashierProfile = userRole === ROLES.CASHIER;
 
     const profileSections = [
         { id: 'personal', label: 'Personal Details' },
@@ -234,12 +240,6 @@ const Profile = () => {
     React.useEffect(() => {
         if (mustChangeCredentials) {
             setActiveSection('security');
-        }
-    }, [mustChangeCredentials]);
-
-    React.useEffect(() => {
-        if (mustChangeCredentials) {
-            setShowSecurityRequirementModal(true);
         }
     }, [mustChangeCredentials]);
 
@@ -336,16 +336,18 @@ const Profile = () => {
     const lastMousePos = useRef({ x: 0, y: 0 });
 
     const isModified = React.useMemo(() => {
-        if (!profileData.adminUser || !profileData.fullName || !profileData.adminDisplayName || !profileData.email) {
+        if (!profileData.adminUser || (!isCashierProfile && (!profileData.fullName || !profileData.adminDisplayName || !profileData.email))) {
             return false;
         }
 
         const currentProfile = normalizeProfileSnapshot(profileData);
-        if (currentProfile.contactNumber && currentProfile.contactNumber.length !== 11) {
+        if (!isCashierProfile && currentProfile.contactNumber && currentProfile.contactNumber.length !== 11) {
             return false;
         }
 
-        const hasCoreProfileChanges =
+        const hasCoreProfileChanges = isCashierProfile
+            ? !baselineProfile || currentProfile.adminUser !== baselineProfile.adminUser
+            :
             !baselineProfile ||
             currentProfile.adminUser !== baselineProfile.adminUser ||
             currentProfile.fullName !== baselineProfile.fullName ||
@@ -374,7 +376,7 @@ const Profile = () => {
         }
 
         return hasCoreProfileChanges || hasPasswordChanges || hasPinChanges;
-    }, [profileData, baselineProfile, currentPassword, confirmPassword, oldPin, newPin, confirmPin, allPasswordChecksMet]);
+    }, [profileData, baselineProfile, currentPassword, confirmPassword, oldPin, newPin, confirmPin, allPasswordChecksMet, isCashierProfile]);
 
     const verifyCurrentPassword = async () => {
         if (!currentPassword) {
@@ -493,6 +495,61 @@ const Profile = () => {
         };
     }, [oldPin]);
 
+    const handleFirstLoginSecuritySetup = async (event) => {
+        event.preventDefault();
+        if (isFirstLoginSetupSaving) return;
+
+        if (!firstLoginPassword) {
+            setFirstLoginSetupError('A new password is required.');
+            return;
+        }
+
+        if (firstLoginPassword !== firstLoginPasswordConfirmation) {
+            setFirstLoginSetupError('Password entries do not match.');
+            return;
+        }
+
+        if (!isValidPassword(firstLoginPassword)) {
+            setFirstLoginSetupError('Password must be at least 8 characters and include uppercase, lowercase, number, and special character.');
+            return;
+        }
+
+        if (!/^\d{6}$/.test(firstLoginPin)) {
+            setFirstLoginSetupError('Security PIN must be exactly 6 digits.');
+            return;
+        }
+
+        if (firstLoginPin !== firstLoginPinConfirmation) {
+            setFirstLoginSetupError('Security PIN entries do not match.');
+            return;
+        }
+
+        setIsFirstLoginSetupSaving(true);
+        setFirstLoginSetupError('');
+        try {
+            const response = await completeFirstLoginSecuritySetupApi({
+                newPassword: firstLoginPassword,
+                newPin: firstLoginPin,
+            });
+
+            if (response?.user?.mustChangeCredentials !== false) {
+                throw new Error('Security setup could not be confirmed. Please try again.');
+            }
+
+            sessionStorage.setItem('mustChangeCredentials', 'false');
+            setMustChangeCredentials(false);
+            setFirstLoginPassword('');
+            setFirstLoginPasswordConfirmation('');
+            setFirstLoginPin('');
+            setFirstLoginPinConfirmation('');
+            showToast('Security Updated', 'Your password and security PIN have been updated.', 'success', 'first-login-security');
+        } catch (error) {
+            setFirstLoginSetupError(error?.message || 'Unable to complete security setup. Please try again.');
+        } finally {
+            setIsFirstLoginSetupSaving(false);
+        }
+    };
+
     const handleSave = async () => {
         if (profileSaveInFlightRef.current) return;
 
@@ -505,27 +562,27 @@ const Profile = () => {
         const previousDisplayName = avatarName;
         const normalizedContactNumber = normalizePhoneDigits(profileData.contactNumber);
 
-        if (!(profileData.fullName || '').trim()) {
+        if (!isCashierProfile && !(profileData.fullName || '').trim()) {
             showToast('Error', 'Full name is required.', 'error');
             return;
         }
 
-        if (!nextDisplayName) {
+        if (!isCashierProfile && !nextDisplayName) {
             showToast('Error', 'Display name is required.', 'error');
             return;
         }
 
-        if (!normalizedEmail) {
+        if (!isCashierProfile && !normalizedEmail) {
             showToast('Error', 'Email is required.', 'error');
             return;
         }
 
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+        if (!isCashierProfile && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
             showToast('Error', 'Enter a valid email address.', 'error');
             return;
         }
 
-        if (normalizedContactNumber && normalizedContactNumber.length !== 11) {
+        if (!isCashierProfile && normalizedContactNumber && normalizedContactNumber.length !== 11) {
             showToast('Error', 'Contact number must be exactly 11 digits.', 'error');
             return;
         }
@@ -580,12 +637,14 @@ const Profile = () => {
         let response;
         try {
             response = await updateMyProfileApi({
-                name: normalizeHumanReadable(profileData.fullName),
-                displayName: normalizeHumanReadable(nextDisplayName),
                 username: profileData.adminUser,
-                email: normalizedEmail,
-                phone: normalizedContactNumber,
-                avatarUrl: profileData.avatar || '',
+                ...(!isCashierProfile ? {
+                    name: normalizeHumanReadable(profileData.fullName),
+                    displayName: normalizeHumanReadable(nextDisplayName),
+                    email: normalizedEmail,
+                    phone: normalizedContactNumber,
+                    avatarUrl: profileData.avatar || '',
+                } : {}),
                 ...(profileData.adminPassword ? { currentPassword, newPassword: profileData.adminPassword } : {}),
                 ...(newPin ? { currentPin: oldPin, newPin } : {}),
             });
@@ -817,25 +876,81 @@ const Profile = () => {
     return (
         <div className="w-full min-h-screen bg-slate-200/50">
             <div className="w-full min-h-screen max-w-[1180px] mx-auto flex flex-col relative text-[12px] md:text-[13px]">
-            {mustChangeCredentials && showSecurityRequirementModal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm md:max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-                        <div className="p-6 text-center">
-                            <div className="mx-auto flex items-center justify-center mb-4 text-amber-600">
-                                <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v3m0 4h.01m-7.938 4h15.876c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L2.34 17c-.77 1.333.192 3 1.732 3Z" /></svg>
+            {mustChangeCredentials && (
+                <div className="app-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                    <form onSubmit={handleFirstLoginSecuritySetup} className="w-full max-w-sm overflow-hidden rounded-2xl bg-white shadow-2xl animate-in fade-in zoom-in-95 duration-200 dark:bg-gray-800">
+                        <div className="border-b border-gray-100 px-5 py-4 text-center dark:border-gray-700">
+                            <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-100">
+                                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a4 4 0 018 0v4" /></svg>
                             </div>
-                            <h3 className="text-xl font-semibold text-gray-900 mb-2">Security Update Required</h3>
-                            <p className="text-gray-500 text-sm mb-6">For first login safety, update your password or PIN now before continuing.</p>
+                            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Secure Your Account</h3>
+                            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">For your first login, create a new password and security PIN before continuing.</p>
+                        </div>
+                        <div className="space-y-4 px-5 py-5">
+                            <div>
+                                <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-300">New Password</label>
+                                <input
+                                    type="password"
+                                    autoComplete="new-password"
+                                    value={firstLoginPassword}
+                                    onChange={(event) => setFirstLoginPassword(event.target.value)}
+                                    className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-900 outline-none transition-colors focus:border-slate-800 focus:ring-2 focus:ring-slate-200 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:focus:border-gray-300 dark:focus:ring-gray-600"
+                                    required
+                                />
+                            </div>
+                            <div>
+                                <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-300">Confirm New Password</label>
+                                <input
+                                    type="password"
+                                    autoComplete="new-password"
+                                    value={firstLoginPasswordConfirmation}
+                                    onChange={(event) => setFirstLoginPasswordConfirmation(event.target.value)}
+                                    className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-900 outline-none transition-colors focus:border-slate-800 focus:ring-2 focus:ring-slate-200 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:focus:border-gray-300 dark:focus:ring-gray-600"
+                                    required
+                                />
+                            </div>
+                            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                                <div>
+                                    <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-300">New Security PIN</label>
+                                    <input
+                                        type="password"
+                                        inputMode="numeric"
+                                        autoComplete="new-password"
+                                        value={firstLoginPin}
+                                        onChange={(event) => setFirstLoginPin(event.target.value.replace(/\D/g, '').slice(0, 6))}
+                                        className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-900 outline-none transition-colors focus:border-slate-800 focus:ring-2 focus:ring-slate-200 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:focus:border-gray-300 dark:focus:ring-gray-600"
+                                        maxLength={6}
+                                        required
+                                    />
+                                </div>
+                                <div>
+                                    <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-300">Confirm Security PIN</label>
+                                    <input
+                                        type="password"
+                                        inputMode="numeric"
+                                        autoComplete="new-password"
+                                        value={firstLoginPinConfirmation}
+                                        onChange={(event) => setFirstLoginPinConfirmation(event.target.value.replace(/\D/g, '').slice(0, 6))}
+                                        className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-900 outline-none transition-colors focus:border-slate-800 focus:ring-2 focus:ring-slate-200 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:focus:border-gray-300 dark:focus:ring-gray-600"
+                                        maxLength={6}
+                                        required
+                                    />
+                                </div>
+                            </div>
+                            {firstLoginSetupError && (
+                                <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-200" role="alert">{firstLoginSetupError}</p>
+                            )}
+                        </div>
+                        <div className="border-t border-gray-100 px-5 py-4 dark:border-gray-700">
                             <button
-                                type="button"
-                                onClick={() => setShowSecurityRequirementModal(false)}
-                                style={{ backgroundColor: '#111827' }}
-                                className="w-full py-2.5 text-white rounded-xl font-semibold text-sm shadow-md hover:opacity-90 transition-all transform hover:-translate-y-0.5"
+                                type="submit"
+                                disabled={isFirstLoginSetupSaving}
+                                className="w-full rounded-xl bg-gray-900 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-gray-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-70 dark:bg-slate-100 dark:text-gray-900 dark:hover:bg-white"
                             >
-                                Okay
+                                {isFirstLoginSetupSaving ? 'Saving...' : 'Save & Continue'}
                             </button>
                         </div>
-                    </div>
+                    </form>
                 </div>
             )}
             
@@ -947,8 +1062,8 @@ const Profile = () => {
                     </div>
 
                     {/* Desktop Section Navigation */}
-                    <div className="hidden md:block bg-white rounded-2xl shadow-sm border border-gray-100 p-3">
-                        <p className="px-2 pb-2 text-[10px] font-semibold tracking-widest text-gray-500 uppercase">Profile Sections</p>
+                    <div className="hidden md:block bg-white rounded-2xl shadow-sm border border-gray-100 p-2.5">
+                        <p className="px-2 pb-1.5 text-[10px] font-semibold tracking-widest text-gray-500 uppercase">Profile Sections</p>
                         <div className="space-y-1">
                             {profileSections.map((section) => {
                                 const isActive = activeSection === section.id;
@@ -962,9 +1077,9 @@ const Profile = () => {
                                             }
                                             setActiveSection(section.id);
                                         }}
-                                        className={`w-full text-left px-3 py-2.5 rounded-xl text-xs font-semibold transition-all ${
+                                        className={`w-full text-left px-3 py-2 rounded-xl text-xs font-semibold transition-colors ${
                                             isActive
-                                                ? 'bg-gray-900 text-white shadow-md'
+                                                ? 'bg-gray-900 text-white shadow-sm'
                                                 : 'text-gray-600 hover:bg-gray-100'
                                         }`}
                                         disabled={mustChangeCredentials && section.id !== 'security'}
@@ -1018,6 +1133,27 @@ const Profile = () => {
                                     </h3>
                                 </div>
 
+                                {isCashierProfile ? (
+                                    <>
+                                        <p className="mb-4 text-xs text-gray-500">Personal account details are managed by an administrator.</p>
+                                        <dl className="grid grid-cols-1 gap-x-6 gap-y-5 md:grid-cols-2">
+                                            {[
+                                                ['Full Name', profileData.fullName],
+                                                ['Display Name', profileData.adminDisplayName],
+                                                ['Email Address', profileData.email],
+                                                ['Contact Number', profileData.contactNumber],
+                                                ['Position', profileData.role || roleNames[userRole] || 'Cashier'],
+                                                ['Last Login', formatLastLogin(profileData.lastLogin)],
+                                            ].map(([label, value]) => (
+                                                <div key={label} className="border-b border-gray-100 pb-3 last:border-b-0 md:[&:nth-last-child(-n+2)]:border-b-0">
+                                                    <dt className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">{label}</dt>
+                                                    <dd className="mt-1 text-sm font-medium text-gray-900 break-words">{value || '—'}</dd>
+                                                </div>
+                                            ))}
+                                        </dl>
+                                    </>
+                                ) : (
+                                    <>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                     <div>
                                         <label className="block text-xs font-semibold text-gray-900 uppercase tracking-wide mb-2">Full Name</label>
@@ -1119,39 +1255,45 @@ const Profile = () => {
                                     </div>
                                 </div>
 
-                                <div className="mt-4 border-t border-gray-100 pt-4">
-                                    <h4 className="text-xs font-semibold text-gray-900 uppercase tracking-wide mb-3">Preferences</h4>
-                                    <div className="flex items-center justify-between bg-gray-50 p-4 rounded-xl border border-gray-200">
-                                        <div>
+                                    </>
+                                )}
+
+                                <section className="mt-5 border-t border-gray-100 pt-4">
+                                    <h4 className="text-xs font-semibold text-gray-900 uppercase tracking-wide">Preferences</h4>
+                                    <div className="mt-3 flex items-center justify-between gap-4 rounded-xl border border-gray-200 bg-gray-50/70 px-4 py-3.5">
+                                        <div className="min-w-0">
                                             <h5 className="text-sm font-semibold text-gray-900">Automatic Printing</h5>
-                                            <p className="text-xs text-gray-500 font-medium">Automatically print receipt after transaction completes</p>
+                                            <p className="mt-0.5 text-xs text-gray-500">Automatically print the Order Confirmation after a successful transaction.</p>
                                         </div>
                                         <button
                                             type="button"
                                             onClick={handleAutoPrintToggle}
-                                            className={`w-11 h-6 rounded-full relative transition-colors ${!autoPrint ? 'bg-gray-200' : ''}`}
+                                            aria-pressed={autoPrint}
+                                            aria-label={`${autoPrint ? 'Disable' : 'Enable'} automatic printing`}
+                                            className={`relative h-6 w-11 shrink-0 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 focus-visible:ring-offset-2 ${!autoPrint ? 'bg-gray-200' : ''}`}
                                             style={{ backgroundColor: autoPrint ? '#111827' : '' }}
                                         >
-                                            <span className={`absolute top-1 left-1 bg-white w-4 h-4 rounded-full shadow-sm transition-transform ${autoPrint ? 'translate-x-5' : ''}`}></span>
+                                            <span className={`absolute left-1 top-1 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${autoPrint ? 'translate-x-5' : ''}`} />
                                         </button>
                                     </div>
-                                </div>
+                                </section>
                             </div>
                         )}
 
                         {activeSection === 'security' && (
-                            <div className="overflow-y-auto no-scrollbar pr-1 pb-2 max-h-[calc(100vh-340px)] md:max-h-[calc(100vh-300px)] space-y-4">
-                                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-                                    <div className="border-b border-gray-200 pb-3 mb-4">
+                            <div className="overflow-y-auto no-scrollbar pr-1 pb-2 max-h-[calc(100vh-340px)] md:max-h-[calc(100vh-300px)]">
+                                <div className="space-y-6">
+                                    <div className="border-b border-gray-100 pb-4">
                                         <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wider flex items-center gap-2">
                                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
                                             Security & Login
                                         </h3>
                                     </div>
 
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                        <div className="md:col-span-2">
-                                            <label className="block text-xs font-semibold text-gray-900 uppercase tracking-wide mb-2">Username (Login)</label>
+                                    <section className="border-b border-gray-100 pb-5">
+                                        <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Login</h4>
+                                        <div className="mt-3 max-w-md">
+                                            <label className="block text-xs font-semibold text-gray-900 uppercase tracking-wide mb-2">Username</label>
                                             <div className="relative">
                                                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                                                     <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
@@ -1160,12 +1302,19 @@ const Profile = () => {
                                                     type="text"
                                                     value={profileData.adminUser}
                                                     onChange={(e) => setProfileData({ ...profileData, adminUser: e.target.value })}
-                                                    className="w-full pl-10 pr-4 py-2.5 bg-gray-100 border border-gray-200 rounded-xl text-sm text-gray-700 focus:border-slate-800 outline-none transition-colors"
+                                                    className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-900 focus:border-slate-800 outline-none transition-colors"
                                                 />
                                             </div>
-                                            <p className="text-[10px] text-gray-500 mt-1">This is your login username and cannot be changed later.</p>
+                                            <p className="mt-1 text-[10px] text-gray-500">Use this username to sign in.</p>
                                         </div>
+                                    </section>
 
+                                    <section className="border-b border-gray-100 pb-5">
+                                        <div className="mb-4">
+                                            <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Password</h4>
+                                            <p className="mt-1 text-[10px] text-gray-500">Verify your current password before creating a new one.</p>
+                                        </div>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                                         <div>
                                             <label className="block text-xs font-semibold text-gray-900 uppercase tracking-wide mb-2">Current Password</label>
                                             <div className="relative">
@@ -1197,7 +1346,6 @@ const Profile = () => {
                                                     {showCurrentPassword ? <EyeOffIcon /> : <EyeIcon />}
                                                 </button>
                                             </div>
-                                            <p className="text-[10px] text-gray-500 mt-1">Enter your current password before changing it.</p>
                                             {isPasswordChangeAttempt && !validCurrentPassword && (
                                                 <p className="text-[10px] text-red-500 mt-1">Current password is required when changing password.</p>
                                             )}
@@ -1240,7 +1388,6 @@ const Profile = () => {
                                                     {showPassword ? <EyeOffIcon /> : <EyeIcon />}
                                                 </button>
                                             </div>
-                                            <p className="text-[10px] text-gray-500 mt-1">Choose a strong password; you will need to re-enter it below.</p>
 
                                             {profileData.adminPassword && !allPasswordChecksMet && (
                                                 <div className="mt-2 rounded-lg border border-gray-200 bg-white p-2">
@@ -1298,20 +1445,20 @@ const Profile = () => {
                                                     } rounded-xl text-sm text-gray-900 focus:border-slate-800 outline-none transition-colors disabled:bg-gray-100 disabled:text-gray-500 ${!canEnterNewPassword ? 'opacity-60 cursor-not-allowed' : ''}`}
                                                 />
                                             </div>
-                                            <p className="text-[10px] text-gray-500 mt-1">Re-type the new password exactly as above.</p>
                                         </div>
                                     </div>
-                                </div>
+                                    </section>
 
-                                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-                                    <div className="border-b border-gray-200 pb-3 mb-4">
+                                <section>
+                                    <div className="mb-4">
                                         <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wider flex items-center gap-2">
                                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>
-                                            Change Security PIN
+                                            Security PIN
                                         </h3>
+                                        <p className="mt-1 text-[10px] text-gray-500">Verify your current PIN before setting a new six-digit PIN.</p>
                                     </div>
 
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                         <div>
                             <label className="block text-xs font-semibold text-gray-900 uppercase tracking-wide mb-2">Current PIN</label>
                             <div className="relative">
@@ -1342,7 +1489,6 @@ const Profile = () => {
                                     {showOldPin ? <EyeOffIcon /> : <EyeIcon />}
                                 </button>
                             </div>
-                            <p className="text-[10px] text-gray-500 mt-1">Provide your existing 6-digit security PIN to make changes.</p>
                             {isPinChangeAttempt && !validCurrentPin && (
                                 <p className="text-[10px] text-red-500 mt-1">Current PIN is required when changing PIN.</p>
                             )}
@@ -1378,7 +1524,6 @@ const Profile = () => {
                                     {showNewPin ? <EyeOffIcon /> : <EyeIcon />}
                                 </button>
                             </div>
-                            <p className="text-[10px] text-gray-500 mt-1">Choose a new 6-digit PIN (you must also enter your current PIN above). Changes take effect on next login.</p>
                         </div>
 
                         <div className="md:col-start-2">
@@ -1407,21 +1552,22 @@ const Profile = () => {
                                     } rounded-xl text-sm font-semibold text-gray-900 focus:border-slate-800 outline-none transition-colors disabled:bg-gray-100 disabled:text-gray-500 ${!canEnterNewPin ? 'opacity-60 cursor-not-allowed' : ''}`}
                                 />
                             </div>
-                            <p className="text-[10px] text-gray-500 mt-1">Re-type the new PIN for verification.</p>
                         </div>
 
                                     </div>
-                                </div>
+                                </section>
+                            </div>
                             </div>
                         )}
 
+                        {(!isCashierProfile || activeSection === 'security') && (
                         <div className="pt-1">
                             <div className="border-t border-gray-100 pt-4">
                                 <div className="flex justify-end">
                                     <div className="relative group">
                                         <FieldLockTooltip
                                             show={!isModified}
-                                            message="No changes yet. Update any profile field to enable Save Changes."
+                                            message={`No changes yet. Update ${activeSection === 'security' ? 'a security field' : 'a personal detail'} to enable saving.`}
                                             align="right"
                                         />
                                         <button
@@ -1434,12 +1580,17 @@ const Profile = () => {
                                                     : 'bg-gray-900 text-white/70 cursor-not-allowed'
                                             }`}
                                         >
-                                            {isProfileSaving ? 'Saving...' : 'Save Changes'}
+                                            {isProfileSaving
+                                                ? 'Saving...'
+                                                : activeSection === 'security'
+                                                    ? 'Save Security Changes'
+                                                    : 'Save Personal Details'}
                                         </button>
                                     </div>
                                 </div>
                             </div>
                         </div>
+                        )}
                     </div>
                 </div>
             </div>

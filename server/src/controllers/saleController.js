@@ -7,7 +7,7 @@ const Sale = require('../models/Sale');
 const Partner = require('../models/Partner');
 const CreditTransaction = require('../models/CreditTransaction');
 const { writeActivityLog, writeInventoryLog } = require('../services/logService');
-const { publishSaleCreated, publishInventoryUpdated, publishCreditTransactionsUpdated } = require('../services/realtimeService');
+const { publishSaleCreated, publishSaleUpdated, publishInventoryUpdated, publishCreditTransactionsUpdated } = require('../services/realtimeService');
 const { normalizeVatMode, computeTransactionVatBreakdown, toMoney } = require('../utils/vat');
 const { parseStrictWholeNumber } = require('../utils/numericValidation');
 const { isMoneyInputTooLarge, parseSafeMoneyToCentavos } = require('../utils/moneyValidation');
@@ -23,6 +23,7 @@ const { isObjectNotFoundError } = require('../services/r2StorageService');
 
 const MIN_CREDIT_TERM_DAYS = 1;
 const MAX_CREDIT_TERM_DAYS = 60;
+const TRANSACTION_REFERENCE_DUPLICATE_MESSAGE = 'This reference number is already used by another transaction.';
 const CREDIT_PAYMENT_MODE_LABELS = {
   cash: 'Cash',
   gcash: 'GCash',
@@ -37,6 +38,27 @@ const normalizePaymentMethod = (value) => {
     return normalized;
   }
   return '';
+};
+
+const isTransactionReferenceDuplicateKeyError = (error) => error?.code === 11000
+  && (error?.keyPattern?.['transactionReference.referenceNumber']
+    || String(error?.message || '').includes('transactionReference.referenceNumber'));
+
+const transactionReferenceConflictError = () => {
+  const error = new Error(TRANSACTION_REFERENCE_DUPLICATE_MESSAGE);
+  error.status = 409;
+  return error;
+};
+
+const findSaleWithTransactionReference = (referenceNumber, excludedSaleId = null, session = null) => {
+  if (!referenceNumber) return null;
+
+  const query = {
+    'transactionReference.referenceNumber': referenceNumber,
+    ...(excludedSaleId ? { _id: { $ne: excludedSaleId } } : {}),
+  };
+  const request = Sale.findOne(query).select('_id');
+  return session ? request.session(session) : request;
 };
 
 const parseCreditTermDays = (value) => {
@@ -95,6 +117,8 @@ const resolveCashierName = (user) => {
   return user?.name || user?.displayName || user?.username || 'Unknown';
 };
 
+const displaySaleId = (sale) => `TRX-${String(sale?._id || '').slice(-8).toUpperCase()}`;
+
 const publicTransactionReference = (reference) => {
   if (!reference) return null;
   const document = reference.supportingDocument;
@@ -106,6 +130,17 @@ const publicTransactionReference = (reference) => {
       size: document.size,
       uploadedAt: document.uploadedAt,
     } : null,
+    savedAt: reference.savedAt || null,
+    correctedAt: reference.correctedAt || null,
+    correctionHistory: (reference.correctionHistory || []).map((entry) => ({
+      previousReferenceNumber: String(entry.previousReferenceNumber || '').trim(),
+      previousSupportingDocument: publicVoidSupportingProof(entry.previousSupportingDocument),
+      correctedReferenceNumber: String(entry.correctedReferenceNumber || '').trim(),
+      correctedSupportingDocument: publicVoidSupportingProof(entry.correctedSupportingDocument),
+      reason: entry.reason,
+      correctedByName: entry.correctedByName,
+      correctedAt: entry.correctedAt,
+    })),
   };
 };
 
@@ -114,6 +149,17 @@ const publicVoidSupportingProof = (proof) => proof ? {
   mimeType: proof.mimeType,
   size: proof.size,
   uploadedAt: proof.uploadedAt,
+} : null;
+
+const publicVoidRequest = (request) => request ? {
+  status: request.status,
+  reason: request.reason,
+  requestedByName: request.requestedByName,
+  requestedAt: request.requestedAt,
+  supportingProof: publicVoidSupportingProof(request.supportingProof),
+  reviewedByName: request.reviewedByName || '',
+  reviewedAt: request.reviewedAt || null,
+  declineReason: request.declineReason || '',
 } : null;
 
 const mapSaleToTransactionContract = (sale) => {
@@ -152,6 +198,7 @@ const mapSaleToTransactionContract = (sale) => {
       requestId: saleObj.voidInfo.requestId,
       supportingProof: publicVoidSupportingProof(saleObj.voidInfo.supportingProof),
     } : null,
+    voidRequest: publicVoidRequest(saleObj.voidRequest),
     date: saleObj.createdAt,
     cashierId: String(saleObj?.cashier?._id || saleObj?.cashier || ''),
     cashierUser,
@@ -284,6 +331,11 @@ const executeSaleCreation = async ({ req, session = null, clientRequestId = '' }
     const validationError = new Error('items are required.');
     validationError.status = 400;
     throw validationError;
+  }
+
+  if (transactionReferenceNumber) {
+    const existingReference = await findSaleWithTransactionReference(transactionReferenceNumber, null, session);
+    if (existingReference) throw transactionReferenceConflictError();
   }
 
   const preparedItems = [];
@@ -553,6 +605,10 @@ const createSale = async (req, res, next) => {
       }
     }
 
+    if (isTransactionReferenceDuplicateKeyError(error)) {
+      return res.status(409).json({ message: TRANSACTION_REFERENCE_DUPLICATE_MESSAGE });
+    }
+
     const message = String(error?.message || '').toLowerCase();
     const transactionUnsupported = message.includes('transaction numbers are only allowed on a replica set member or mongos');
 
@@ -646,12 +702,115 @@ const voidSale = async (req, res, next, dependencies = {}) => {
   }
 };
 
+const requestSaleVoid = async (req, res, next, dependencies = {}) => {
+  const findSale = dependencies.findSale || ((id) => Sale.findById(id));
+  const updateSale = dependencies.updateSale || ((query, update) => Sale.findOneAndUpdate(query, update, { new: true, runValidators: true }));
+  const upload = dependencies.uploadProof || uploadProof;
+  const remove = dependencies.removeProof || removeProof;
+  const publishSale = dependencies.publishSale || publishSaleUpdated;
+  let uploaded = null;
+  let persisted = false;
+  try {
+    if (String(req.user?.role || '').toLowerCase() !== 'cashier') return res.status(403).json({ message: 'Only a Cashier can submit a Void request.' });
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ message: 'Invalid Sale ID.' });
+    const sale = await findSale(req.params.id);
+    if (!sale) return res.status(404).json({ message: 'Sale not found.' });
+    if (!canAccessSale(sale, req.user)) return res.status(403).json({ message: 'You can only request a void for your own Sale.' });
+    const eligibility = getSaleVoidEligibility(sale);
+    if (!eligibility.eligible) return res.status(409).json({ message: eligibility.reason });
+    if (sale.voidRequest?.status === 'pending') return res.status(409).json({ message: 'A Void request is already pending.' });
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+    if (!reason) return res.status(400).json({ message: 'Void request reason is required.' });
+    if (reason.length > 500) return res.status(400).json({ message: 'Void request reason must be 500 characters or fewer.' });
+    if (req.file) uploaded = await upload(req.file);
+    const requestedAt = new Date();
+    const request = {
+      status: 'pending',
+      reason,
+      requestedBy: req.user._id,
+      requestedByName: resolveCashierName(req.user),
+      requestedAt,
+      supportingProof: uploaded,
+      reviewedBy: null,
+      reviewedByName: '',
+      reviewedAt: null,
+      declineReason: '',
+    };
+    const updated = await updateSale({ _id: sale._id, status: { $ne: 'voided' }, 'voidRequest.status': { $ne: 'pending' } }, { $set: { voidRequest: request } });
+    if (!updated) return res.status(409).json({ message: 'The Sale changed elsewhere. Refresh and retry.' });
+    persisted = true;
+    await (dependencies.writeActivityLog || writeActivityLog)({
+      user: req.user,
+      action: 'SALE_VOID_REQUESTED',
+      details: `${displaySaleId(updated)} Void requested. Reason: ${reason}.`,
+      ipAddress: req.ip,
+      userAgent: req.get?.('user-agent') || '',
+    });
+    publishSale({ saleId: updated._id, cashierId: updated.cashier, changeType: 'sale.void-request.requested' });
+    return res.status(201).json(mapSaleToTransactionContract(updated));
+  } catch (error) {
+    if (error?.status) return res.status(error.status).json({ message: error.message });
+    return next(error);
+  } finally {
+    if (uploaded?.key && !persisted) {
+      try { await remove(uploaded.key); } catch (error) { console.error('Unable to remove orphan Void request proof:', error.message); }
+    }
+  }
+};
+
+const getPendingSaleVoidRequestCount = async (req, res, next, dependencies = {}) => {
+  const countSales = dependencies.countSales || ((query) => Sale.countDocuments(query));
+  try {
+    if (!['admin', 'superadmin'].includes(String(req.user?.role || '').toLowerCase())) {
+      return res.status(403).json({ message: 'Only an Admin or Super Admin can review Void requests.' });
+    }
+    const count = await countSales({ 'voidRequest.status': 'pending' });
+    return res.json({ count });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+const declineSaleVoidRequest = async (req, res, next, dependencies = {}) => {
+  const updateSale = dependencies.updateSale || ((query, update) => Sale.findOneAndUpdate(query, update, { new: true, runValidators: true }));
+  const publishSale = dependencies.publishSale || publishSaleUpdated;
+  try {
+    if (!['admin', 'superadmin'].includes(String(req.user?.role || '').toLowerCase())) return res.status(403).json({ message: 'Only an Admin or Super Admin can decline a Void request.' });
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ message: 'Invalid Sale ID.' });
+    const declineReason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+    if (declineReason.length > 500) return res.status(400).json({ message: 'Decline reason must be 500 characters or fewer.' });
+    const reviewedAt = new Date();
+    const updated = await updateSale({ _id: req.params.id, status: { $ne: 'voided' }, 'voidRequest.status': 'pending' }, { $set: {
+      'voidRequest.status': 'declined',
+      'voidRequest.reviewedBy': req.user._id,
+      'voidRequest.reviewedByName': resolveCashierName(req.user),
+      'voidRequest.reviewedAt': reviewedAt,
+      'voidRequest.declineReason': declineReason,
+    } });
+    if (!updated) return res.status(409).json({ message: 'No pending Void request is available to decline.' });
+    await (dependencies.writeActivityLog || writeActivityLog)({
+      user: req.user,
+      action: 'SALE_VOID_REQUEST_DECLINED',
+      details: `${displaySaleId(updated)} Void request declined.${declineReason ? ` Reason: ${declineReason}.` : ''}`,
+      ipAddress: req.ip,
+      userAgent: req.get?.('user-agent') || '',
+    });
+    publishSale({ saleId: updated._id, cashierId: updated.cashier, changeType: 'sale.void-request.declined' });
+    return res.json(mapSaleToTransactionContract(updated));
+  } catch (error) {
+    if (error?.status) return res.status(error.status).json({ message: error.message });
+    return next(error);
+  }
+};
+
 const canAccessSale = (sale, user) => user?.role !== 'cashier'
   || String(sale?.cashier?._id || sale?.cashier || '') === String(user?._id || '');
 
 const updateSaleTransactionReference = async (req, res, next, dependencies = {}) => {
   const findSale = dependencies.findSale || ((id) => Sale.findById(id));
   const updateSale = dependencies.updateSale || ((query, update) => Sale.findOneAndUpdate(query, update, { new: true, runValidators: true }));
+  const findSaleByReference = dependencies.findSaleByReference
+    || ((referenceNumber, excludedSaleId) => findSaleWithTransactionReference(referenceNumber, excludedSaleId));
   const upload = dependencies.upload || uploadDocument;
   const remove = dependencies.remove || removeDocument;
   let uploaded = null;
@@ -662,6 +821,11 @@ const updateSaleTransactionReference = async (req, res, next, dependencies = {})
     if (!sale) return res.status(404).json({ message: 'Sale not found.' });
     if (!canAccessSale(sale, req.user)) return res.status(403).json({ message: 'You can only update your own sales.' });
     if (getSaleStatus(sale) === 'voided') return res.status(409).json({ message: 'Transaction references are read-only after a Sale is voided.' });
+    const existingReferenceNumber = String(sale.transactionReference?.referenceNumber || '').trim();
+    const existingDocument = sale.transactionReference?.supportingDocument || null;
+    if (existingReferenceNumber || existingDocument) {
+      return res.status(409).json({ message: 'The saved Transaction Reference is locked. An Admin can use Correct Reference when a correction is required.' });
+    }
 
     const hasNumber = Object.prototype.hasOwnProperty.call(req.body || {}, 'referenceNumber');
     if (hasNumber && typeof req.body.referenceNumber !== 'string') {
@@ -674,33 +838,127 @@ const updateSaleTransactionReference = async (req, res, next, dependencies = {})
     if (referenceNumber && !isValidTransactionReferenceNumber(referenceNumber)) {
       return res.status(400).json({ message: TRANSACTION_REFERENCE_NUMERIC_MESSAGE });
     }
-    const existingReferenceNumber = String(sale.transactionReference?.referenceNumber || '').trim();
-    const existingDocument = sale.transactionReference?.supportingDocument || null;
-    const effectiveReferenceNumber = hasNumber ? referenceNumber : existingReferenceNumber;
-    if (!effectiveReferenceNumber && !req.file && !existingDocument) {
+    if (!referenceNumber && !req.file) {
       return res.status(400).json({ message: 'Provide a Reference No. or Supporting Document.' });
+    }
+    if (referenceNumber && await findSaleByReference(referenceNumber, sale._id)) {
+      return res.status(409).json({ message: TRANSACTION_REFERENCE_DUPLICATE_MESSAGE });
     }
 
     if (req.file) uploaded = await upload(req.file);
-    const oldKey = sale.transactionReference?.supportingDocument?.key || null;
     const update = { $set: { transactionReference: {
-      referenceNumber: effectiveReferenceNumber,
-      supportingDocument: uploaded || existingDocument,
+      referenceNumber,
+      supportingDocument: uploaded,
+      savedAt: new Date(),
+      savedBy: req.user?._id || null,
+      correctedAt: null,
+      correctionHistory: [],
     } } };
-    const query = { _id: sale._id, 'transactionReference.supportingDocument.key': oldKey };
+    const query = {
+      _id: sale._id,
+      $and: [
+        { $or: [{ 'transactionReference.referenceNumber': { $exists: false } }, { 'transactionReference.referenceNumber': '' }, { transactionReference: null }] },
+        { $or: [{ 'transactionReference.supportingDocument': { $exists: false } }, { 'transactionReference.supportingDocument': null }, { transactionReference: null }] },
+      ],
+    };
     const updated = await updateSale(query, update);
-    if (!updated) return res.status(409).json({ message: 'This reference was updated elsewhere. Refresh and retry.' });
+    if (!updated) return res.status(409).json({ message: 'This reference was already saved. Refresh to view the locked evidence.' });
     persisted = true;
-    if (uploaded && oldKey && oldKey !== uploaded.key) {
-      try { await remove(oldKey); } catch (error) { console.error('Unable to remove replaced supporting document:', error.message); }
-    }
     return res.json(mapSaleToTransactionContract(updated));
   } catch (error) {
+    if (isTransactionReferenceDuplicateKeyError(error)) {
+      return res.status(409).json({ message: TRANSACTION_REFERENCE_DUPLICATE_MESSAGE });
+    }
     if (error?.status) return res.status(error.status).json({ message: error.message });
     return next(error);
   } finally {
     if (uploaded?.key && !persisted) {
       try { await remove(uploaded.key); } catch (error) { console.error('Unable to remove orphan supporting document:', error.message); }
+    }
+  }
+};
+
+const correctSaleTransactionReference = async (req, res, next, dependencies = {}) => {
+  const findSale = dependencies.findSale || ((id) => Sale.findById(id));
+  const updateSale = dependencies.updateSale || ((query, update) => Sale.findOneAndUpdate(query, update, { new: true, runValidators: true }));
+  const findSaleByReference = dependencies.findSaleByReference
+    || ((referenceNumber, excludedSaleId) => findSaleWithTransactionReference(referenceNumber, excludedSaleId));
+  const upload = dependencies.upload || uploadDocument;
+  const remove = dependencies.remove || removeDocument;
+  let uploaded = null;
+  let persisted = false;
+  try {
+    if (!['admin', 'superadmin'].includes(String(req.user?.role || '').toLowerCase())) {
+      return res.status(403).json({ message: 'Only an Admin or Super Admin can correct a saved Transaction Reference.' });
+    }
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ message: 'Invalid Sale ID.' });
+    const sale = await findSale(req.params.id);
+    if (!sale) return res.status(404).json({ message: 'Sale not found.' });
+    if (getSaleStatus(sale) === 'voided') return res.status(409).json({ message: 'Transaction references are read-only after a Sale is voided.' });
+
+    const currentNumber = String(sale.transactionReference?.referenceNumber || '').trim();
+    const currentDocument = sale.transactionReference?.supportingDocument || null;
+    if (!currentNumber && !currentDocument) return res.status(409).json({ message: 'Save the initial Transaction Reference before using correction.' });
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+    if (!reason) return res.status(400).json({ message: 'Correction reason is required.' });
+    if (reason.length > 500) return res.status(400).json({ message: 'Correction reason must be 500 characters or fewer.' });
+
+    const hasNumber = Object.prototype.hasOwnProperty.call(req.body || {}, 'referenceNumber');
+    if (hasNumber && typeof req.body.referenceNumber !== 'string') return res.status(400).json({ message: 'Reference No. must be text.' });
+    const nextNumber = hasNumber ? String(req.body.referenceNumber || '').trim() : currentNumber;
+    if (nextNumber.length > TRANSACTION_REFERENCE_MAX_LENGTH) return res.status(400).json({ message: `Reference No. must be ${TRANSACTION_REFERENCE_MAX_LENGTH} characters or fewer.` });
+    if (nextNumber !== currentNumber && nextNumber && !isValidTransactionReferenceNumber(nextNumber)) return res.status(400).json({ message: TRANSACTION_REFERENCE_NUMERIC_MESSAGE });
+    if (!nextNumber && !req.file && !currentDocument) return res.status(400).json({ message: 'Provide a Reference No. or Supporting Document.' });
+    if (nextNumber === currentNumber && !req.file) return res.status(400).json({ message: 'Change the Reference No. or choose a new Supporting Document.' });
+    if (nextNumber && nextNumber !== currentNumber && await findSaleByReference(nextNumber, sale._id)) {
+      return res.status(409).json({ message: TRANSACTION_REFERENCE_DUPLICATE_MESSAGE });
+    }
+
+    if (req.file) uploaded = await upload(req.file);
+    const now = new Date();
+    const nextDocument = uploaded || currentDocument;
+    const historyEntry = {
+      previousReferenceNumber: currentNumber,
+      previousSupportingDocument: currentDocument,
+      correctedReferenceNumber: nextNumber,
+      correctedSupportingDocument: nextDocument,
+      reason,
+      correctedBy: req.user._id,
+      correctedByName: resolveCashierName(req.user),
+      correctedAt: now,
+    };
+    const query = {
+      _id: sale._id,
+      'transactionReference.referenceNumber': currentNumber,
+      'transactionReference.supportingDocument.key': currentDocument?.key || null,
+    };
+    const updated = await updateSale(query, {
+      $set: {
+        'transactionReference.referenceNumber': nextNumber,
+        'transactionReference.supportingDocument': nextDocument,
+        'transactionReference.correctedAt': now,
+      },
+      $push: { 'transactionReference.correctionHistory': historyEntry },
+    });
+    if (!updated) return res.status(409).json({ message: 'This reference changed elsewhere. Refresh and retry.' });
+    persisted = true;
+    await (dependencies.writeActivityLog || writeActivityLog)({
+      user: req.user,
+      action: 'SALE_REFERENCE_CORRECTED',
+      details: `${displaySaleId(updated)} Transaction Reference corrected. Reason: ${reason}.`,
+      ipAddress: req.ip,
+      userAgent: req.get?.('user-agent') || '',
+    });
+    return res.json(mapSaleToTransactionContract(updated));
+  } catch (error) {
+    if (isTransactionReferenceDuplicateKeyError(error)) {
+      return res.status(409).json({ message: TRANSACTION_REFERENCE_DUPLICATE_MESSAGE });
+    }
+    if (error?.status) return res.status(error.status).json({ message: error.message });
+    return next(error);
+  } finally {
+    if (uploaded?.key && !persisted) {
+      try { await remove(uploaded.key); } catch (error) { console.error('Unable to remove orphan corrected supporting document:', error.message); }
     }
   }
 };
@@ -713,7 +971,20 @@ const getSaleSupportingDocument = async (req, res, next, dependencies = {}) => {
     const sale = await findSale(req.params.id);
     if (!sale) return res.status(404).json({ message: 'Sale not found.' });
     if (!canAccessSale(sale, req.user)) return res.status(403).json({ message: 'You can only view your own sales.' });
-    const document = sale.transactionReference?.supportingDocument;
+    let document = sale.transactionReference?.supportingDocument;
+    if (req.query?.correctionIndex !== undefined) {
+      if (!['admin', 'superadmin'].includes(String(req.user?.role || '').toLowerCase())) {
+        return res.status(403).json({ message: 'Only an Admin or Super Admin can view correction history evidence.' });
+      }
+      const correctionIndex = Number(req.query.correctionIndex);
+      const correction = Number.isSafeInteger(correctionIndex)
+        ? sale.transactionReference?.correctionHistory?.[correctionIndex]
+        : null;
+      if (!correction) return res.status(404).json({ message: 'Correction history entry is not available.' });
+      document = req.query.version === 'corrected'
+        ? correction.correctedSupportingDocument
+        : correction.previousSupportingDocument;
+    }
     if (!document?.key) return res.status(404).json({ message: 'Supporting Document is not available.' });
     const stored = await read(document.key);
     if (!stored) return res.status(404).json({ message: 'Supporting Document is not available.' });
@@ -743,7 +1014,7 @@ const getSaleVoidProof = async (req, res, next, dependencies = {}) => {
     const sale = await findSale(req.params.id);
     if (!sale) return res.status(404).json({ message: 'Sale not found.' });
     if (!canAccessSale(sale, req.user)) return res.status(403).json({ message: 'You can only view your own sales.' });
-    const proof = sale.voidInfo?.supportingProof;
+    const proof = sale.voidInfo?.supportingProof || sale.voidRequest?.supportingProof;
     if (!proof?.key) return res.status(404).json({ message: 'Supporting Proof is not available.' });
     const stored = await read(proof.key);
     if (!stored) return res.status(404).json({ message: 'Supporting Proof is not available.' });
@@ -825,8 +1096,12 @@ module.exports = {
   getSaleHistoryView,
   createSale,
   voidSale,
+  requestSaleVoid,
+  getPendingSaleVoidRequestCount,
+  declineSaleVoidRequest,
   getSaleVoidProof,
   updateSaleTransactionReference,
+  correctSaleTransactionReference,
   getSaleSupportingDocument,
   archiveSale,
   restoreSale,

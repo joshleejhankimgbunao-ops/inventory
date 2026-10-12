@@ -47,6 +47,22 @@ const supportingDocumentSchema = new mongoose.Schema({
 const transactionReferenceSchema = new mongoose.Schema({
   referenceNumber: { type: String, default: '', trim: true, maxlength: 80 },
   supportingDocument: { type: supportingDocumentSchema, default: null },
+  savedAt: { type: Date, default: null },
+  savedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  correctedAt: { type: Date, default: null },
+  correctionHistory: {
+    type: [new mongoose.Schema({
+      previousReferenceNumber: { type: String, default: '', trim: true, maxlength: 80 },
+      previousSupportingDocument: { type: supportingDocumentSchema, default: null },
+      correctedReferenceNumber: { type: String, default: '', trim: true, maxlength: 80 },
+      correctedSupportingDocument: { type: supportingDocumentSchema, default: null },
+      reason: { type: String, required: true, trim: true, maxlength: 500 },
+      correctedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+      correctedByName: { type: String, required: true, trim: true },
+      correctedAt: { type: Date, required: true },
+    }, { _id: false })],
+    default: [],
+  },
 }, { _id: false });
 
 const voidSupportingProofSchema = new mongoose.Schema({
@@ -74,6 +90,21 @@ const saleSchema = new mongoose.Schema(
         authorizationMethod: { type: String, trim: true, required: true },
         requestId: { type: String, trim: true, required: true },
         supportingProof: { type: voidSupportingProofSchema, default: null },
+      }, { _id: false }),
+      default: null,
+    },
+    voidRequest: {
+      type: new mongoose.Schema({
+        status: { type: String, enum: ['pending', 'approved', 'declined'], required: true },
+        reason: { type: String, trim: true, required: true, maxlength: 500 },
+        requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+        requestedByName: { type: String, trim: true, required: true },
+        requestedAt: { type: Date, required: true },
+        supportingProof: { type: voidSupportingProofSchema, default: null },
+        reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+        reviewedByName: { type: String, trim: true, default: '' },
+        reviewedAt: { type: Date, default: null },
+        declineReason: { type: String, trim: true, maxlength: 500, default: '' },
       }, { _id: false }),
       default: null,
     },

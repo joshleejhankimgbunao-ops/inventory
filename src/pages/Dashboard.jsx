@@ -7,8 +7,10 @@ import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
 import { ROLES, canAccess } from '../constants/roles';
 import { listUsersApi, updateMyPreferencesApi } from '../services/authApi';
-import { listCreditTransactionsApi } from '../services/inventoryApi';
+import { getPendingSaleVoidRequestCountApi, listCreditTransactionsApi } from '../services/inventoryApi';
+import { subscribeRealtimeEvent } from '../services/realtimeClient';
 import { showToast } from '../utils/toastHelper';
+import { getPendingVoidRequestAlertSessionKey } from '../utils/pendingVoidRequests';
 import { getCreditDueAlertCounts } from '../utils/creditDueStatus';
 import { getActorDisplayName } from '../utils/actorDisplay';
 // Dashboard Component for Inventory System
@@ -109,6 +111,8 @@ const Dashboard = ({ onLogout }) => {
   } = useInventory();
 
     const [backendUsers, setBackendUsers] = useState([]);
+  const [pendingVoidRequestCount, setPendingVoidRequestCount] = useState(0);
+  const pendingVoidAlertCheckedRef = React.useRef(false);
         const [isBackendUsersLoading, setIsBackendUsersLoading] = useState(true);
 
     const ACTIVITY_LOG_ONE_TIME_RESET_KEY = 'activityLogOneTimeResetDone';
@@ -146,6 +150,86 @@ const Dashboard = ({ onLogout }) => {
     }, []);
 
     const isRouteContentLoading = isAuthBootstrapLoading || isPageDataLoading || isBackendUsersLoading;
+
+  useEffect(() => {
+    pendingVoidAlertCheckedRef.current = false;
+  }, [currentAuthUserId, currentAuthUsername]);
+
+  useEffect(() => {
+    const alertUserId = String(currentAuthUserId || currentAuthUsername || '').trim();
+    if (!isAdminOrAbove() || !alertUserId) {
+      setPendingVoidRequestCount(0);
+      return undefined;
+    }
+
+    let isMounted = true;
+    let refreshTimer = null;
+    let refreshInFlight = false;
+    let refreshPending = false;
+    const refreshPendingVoidRequests = async () => {
+      if (refreshInFlight) {
+        refreshPending = true;
+        return;
+      }
+      refreshInFlight = true;
+      try {
+        const count = await getPendingSaleVoidRequestCountApi();
+        if (!isMounted) return;
+        setPendingVoidRequestCount(count);
+
+        if (!pendingVoidAlertCheckedRef.current) {
+          pendingVoidAlertCheckedRef.current = true;
+          const alertSessionKey = getPendingVoidRequestAlertSessionKey(alertUserId);
+          if (count > 0 && sessionStorage.getItem(alertSessionKey) !== 'true') {
+            sessionStorage.setItem(alertSessionKey, 'true');
+            showToast(
+              'Pending Void Requests',
+              `${count} ${count === 1 ? 'request requires' : 'requests require'} review.`,
+              'warning',
+              'pending-void-requests-login',
+              { actionLabel: 'Review Requests', onAction: () => navigate('/history?filter=pending-void') }
+            );
+          }
+        }
+      } catch {
+        // A count badge must never block the authenticated workspace.
+      } finally {
+        refreshInFlight = false;
+        if (refreshPending && isMounted) {
+          refreshPending = false;
+          schedulePendingVoidRequestRefresh();
+        }
+      }
+    };
+    const schedulePendingVoidRequestRefresh = () => {
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        void refreshPendingVoidRequests();
+      }, 75);
+    };
+    const handleSaleUpdated = (event) => {
+      try {
+        const payload = JSON.parse(event?.data || '{}');
+        if (String(payload.changeType || '').startsWith('sale.void-request.')) {
+          schedulePendingVoidRequestRefresh();
+        }
+      } catch {
+        // Ignore malformed realtime payloads and retain the last authoritative count.
+      }
+    };
+    void refreshPendingVoidRequests();
+    const unsubscribeSaleUpdated = subscribeRealtimeEvent('sale.updated', handleSaleUpdated);
+    const unsubscribeRealtimeResync = subscribeRealtimeEvent('realtime.resync', schedulePendingVoidRequestRefresh);
+    window.addEventListener('sale:void-requests-changed', schedulePendingVoidRequestRefresh);
+    return () => {
+      isMounted = false;
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+      unsubscribeSaleUpdated();
+      unsubscribeRealtimeResync();
+      window.removeEventListener('sale:void-requests-changed', schedulePendingVoidRequestRefresh);
+    };
+  }, [currentAuthUserId, currentAuthUsername, isAdminOrAbove, navigate]);
   
   
   // Request Desktop Notification Permission (User-Interactive Toast)
@@ -841,7 +925,7 @@ const Dashboard = ({ onLogout }) => {
     <div className="flex h-screen bg-slate-200/50 flex-col overflow-hidden">
        {/* Logout Confirmation Modal */}
        {isLogoutModalOpen && (
-        <div className="fixed inset-0 z-100 flex items-center justify-center bg-black/50 backdrop-blur-sm transition-opacity">
+        <div className="app-modal-backdrop fixed inset-0 z-100 flex items-center justify-center bg-black/50 backdrop-blur-sm transition-opacity">
             <div className="bg-white rounded-2xl p-6 max-w-sm md:max-w-md w-full shadow-2xl border border-gray-100 transform scale-100 transition-all">
                 <div className="text-center">
                     <div className="bg-gray-100 p-3 rounded-full w-14 h-14 mx-auto flex items-center justify-center mb-4">
@@ -874,7 +958,7 @@ const Dashboard = ({ onLogout }) => {
        
        {/* Activity Log Modal */}
        {isActivityLogOpen && (
-        <div className="fixed inset-0 z-100 flex items-center justify-center bg-black/50 backdrop-blur-sm transition-opacity" onClick={() => setIsActivityLogOpen(false)}>
+        <div className="app-modal-backdrop fixed inset-0 z-100 flex items-center justify-center bg-black/50 backdrop-blur-sm transition-opacity" onClick={() => setIsActivityLogOpen(false)}>
             <div className="bg-white rounded-2xl p-0 max-w-md md:max-w-lg w-full shadow-2xl border border-gray-100 transform scale-100 transition-all overflow-hidden flex flex-col max-h-[85vh] mx-4" onClick={(e) => e.stopPropagation()}>
                 {/* Header */}
                 <div className="px-4 py-3.5 border-b border-gray-100 flex justify-between items-center bg-gradient-to-r from-gray-50 to-white shrink-0">
@@ -1231,6 +1315,7 @@ const Dashboard = ({ onLogout }) => {
                  const prevCategory = index > 0 ? menuItems[index - 1].category : null;
                  const showHeader = item.category !== prevCategory;
                  const isActive = activeMenu === item.name;
+                 const showHistoryNotification = item.page === 'History' && isAdminOrAbove() && pendingVoidRequestCount > 0;
                         
                  return (
                     <React.Fragment key={item.name}>
@@ -1254,9 +1339,15 @@ const Dashboard = ({ onLogout }) => {
                         >
                             <span className={`relative z-10 shrink-0 transition-colors duration-200 [&>svg]:h-[18px] [&>svg]:w-[18px] ${isActive ? 'text-white' : 'text-gray-300 group-hover:text-white'}`}>
                             {item.icon}
+                            {showHistoryNotification && !isSidebarExpanded && (
+                              <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-rose-500 ring-2 ring-[#111827]" aria-label={`${pendingVoidRequestCount} pending void ${pendingVoidRequestCount === 1 ? 'request' : 'requests'}`} />
+                            )}
                             </span>
-                            <span className={`relative z-10 whitespace-nowrap overflow-hidden transform transition-[max-width,opacity,transform] duration-340 ease-[cubic-bezier(0.16,1,0.3,1)] ${isSidebarExpanded ? 'opacity-100 translate-x-0 max-w-44 delay-100' : 'opacity-0 -translate-x-2 max-w-0 delay-0'} ${!isActive ? 'group-hover:translate-x-0.5' : ''}`}>
+                            <span className={`relative z-10 inline-flex items-center gap-1.5 whitespace-nowrap overflow-hidden transform transition-[max-width,opacity,transform] duration-340 ease-[cubic-bezier(0.16,1,0.3,1)] ${isSidebarExpanded ? 'opacity-100 translate-x-0 max-w-44 delay-100' : 'opacity-0 -translate-x-2 max-w-0 delay-0'} ${!isActive ? 'group-hover:translate-x-0.5' : ''}`}>
                                 {item.name}
+                                {showHistoryNotification && isSidebarExpanded && (
+                                  <span className="h-2 w-2 shrink-0 rounded-full bg-rose-500" aria-label={`${pendingVoidRequestCount} pending void ${pendingVoidRequestCount === 1 ? 'request' : 'requests'}`} />
+                                )}
                             </span>
                         </button>
                         </li>

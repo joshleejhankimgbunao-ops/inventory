@@ -13,6 +13,7 @@ import toast from 'react-hot-toast';
  * @param {object} options - Optional CTA config
  * @param {string} options.actionLabel - Small action button label
  * @param {Function} options.onAction - Called when action button is clicked
+ * @param {number} options.duration - Optional auto-dismiss duration in milliseconds
  */
 export const showToast = (title, subtitle, type = 'success', key = 'general', options = {}) => {
     const renderId = Date.now();
@@ -83,7 +84,9 @@ export const showToast = (title, subtitle, type = 'success', key = 'general', op
     );
 
     // 3. Trigger Toast
-    let duration = style.duration;
+    let duration = Number.isFinite(options?.duration) && options.duration > 0
+        ? options.duration
+        : style.duration;
     let animationDuration = duration + 200;
 
     // Special handling for loading state: show an indefinite toast without

@@ -1,5 +1,5 @@
 const Product = require('../models/Product');
-const Category = require('../models/Category');
+const Sale = require('../models/Sale');
 const { writeActivityLog, writeInventoryLog } = require('../services/logService');
 const { publishInventoryUpdated } = require('../services/realtimeService');
 const { parseStrictWholeNumber } = require('../utils/numericValidation');
@@ -7,14 +7,19 @@ const { isMoneyInputTooLarge, parseSafeMoney } = require('../utils/moneyValidati
 const { normalizeHumanReadable } = require('../../../shared/textNormalization.cjs');
 const { applyLegacyCompatibility, getEffectiveDefinitions, plainAttributes, validateProductAttributeValues } = require('../utils/productAttributes');
 const { buildProductConfigurationIdentity, productConfigurationInput } = require('../utils/productConfigurationIdentity');
+const {
+  categoryNameCondition,
+  normalizeCategoryKey,
+  resolveCategory,
+  resolveProductCategory,
+} = require('../utils/categoryResolution');
 
 const DUPLICATE_CONFIGURATION_MESSAGE = 'A product with the same configuration already exists. Update the existing product or add a distinguishing product attribute.';
 
-const resolveProductAttributes = async ({ categoryName, attributes, legacy }) => {
+const resolveProductAttributes = async ({ category, attributes, legacy }) => {
   // Legacy clients do not send an attributes payload. Preserve their existing
   // fixed-field contract while new clients receive category-aware validation.
   if (attributes === undefined) return { attributes: {}, legacy };
-  const category = await Category.findOne({ name: categoryName });
   if (!category) return { attributes: plainAttributes(attributes), legacy };
   const definitions = getEffectiveDefinitions(category);
   const values = validateProductAttributeValues(definitions, attributes, legacy);
@@ -27,6 +32,34 @@ const normalizeString = (value) => {
   }
 
   return value.trim();
+};
+
+const categorySellingUnits = (category) => (
+  Array.isArray(category?.sizeUnits)
+    ? category.sizeUnits.map((unit) => normalizeString(unit)).filter(Boolean)
+    : []
+);
+
+const resolveSellingUnit = ({ sellingUnit, category, required = false }) => {
+  const requestedUnit = normalizeString(sellingUnit);
+  const availableUnits = categorySellingUnits(category);
+
+  if (!requestedUnit) {
+    if (required && availableUnits.length === 0) {
+      throw new Error('No selling units are configured for this category.');
+    }
+    if (required) {
+      throw new Error('Select a selling unit configured for this category.');
+    }
+    return '';
+  }
+
+  const configuredUnit = availableUnits.find((unit) => unit.toLowerCase() === requestedUnit.toLowerCase());
+  if (!configuredUnit) {
+    throw new Error('Selected selling unit is not configured for this category.');
+  }
+
+  return configuredUnit;
 };
 
 const SKU_MAX_LENGTH = 100;
@@ -93,18 +126,26 @@ const generateNextSku = async (category) => {
 
 const isDuplicateKeyError = (error) => Number(error?.code) === 11000;
 
-const getConfigurationDefinitions = async (categoryName) => {
-  const category = await Category.findOne({ name: categoryName });
-  return category ? getEffectiveDefinitions(category) : [];
-};
+const getConfigurationDefinitions = (category) => (
+  category ? getEffectiveDefinitions(category) : []
+);
 
 const findConfigurationConflict = async ({ candidate, definitions, excludeId = null }) => {
   const identity = buildProductConfigurationIdentity({
     ...productConfigurationInput(candidate),
     definitions,
   });
+  const categoryRef = candidate.categoryRef?._id || candidate.categoryRef;
   const candidates = await Product.find({
-    category: candidate.category,
+    ...(categoryRef ? {
+      $or: [
+        { categoryRef },
+        {
+          categoryRef: null,
+          category: categoryNameCondition(candidate.category),
+        },
+      ],
+    } : { category: categoryNameCondition(candidate.category) }),
     ...(excludeId ? { _id: { $ne: excludeId } } : {}),
   });
 
@@ -149,7 +190,7 @@ const createProduct = async (req, res, next) => {
 
     const name = normalizeHumanReadable(req.body?.name);
     const requestedSku = normalizeSku(req.body?.sku);
-    const category = normalizeHumanReadable(req.body?.category);
+    const requestedCategoryName = normalizeHumanReadable(req.body?.category);
     const brand = normalizeHumanReadable(req.body?.brand);
     const color = normalizeHumanReadable(req.body?.color);
     const size = normalizeString(req.body?.size);
@@ -169,15 +210,37 @@ const createProduct = async (req, res, next) => {
       return res.status(400).json({ message: 'stock must be a non-negative whole number.' });
     }
 
+    const category = await resolveCategory({
+      categoryRef: req.body?.categoryRef,
+      categoryName: requestedCategoryName,
+      activeOnly: true,
+    });
+    if (!category) {
+      return res.status(400).json({ message: 'Selected category is unavailable.' });
+    }
+    const canonicalCategoryName = category.name;
+    let sellingUnit;
+    try {
+      sellingUnit = resolveSellingUnit({
+        sellingUnit: req.body?.sellingUnit,
+        category,
+        required: true,
+      });
+    } catch (error) {
+      return res.status(400).json({ message: error.message });
+    }
+
     let resolvedAttributes;
     try {
-      resolvedAttributes = await resolveProductAttributes({ categoryName: category, attributes: req.body?.attributes, legacy: { brand, color, size } });
+      resolvedAttributes = await resolveProductAttributes({ category, attributes: req.body?.attributes, legacy: { brand, color, size } });
     } catch (error) {
       return res.status(400).json({ message: error.message });
     }
     const createPayload = {
       name,
-      category,
+      category: canonicalCategoryName,
+      categoryRef: category._id,
+      sellingUnit,
       brand: resolvedAttributes.legacy.brand,
       color: resolvedAttributes.legacy.color,
       size: resolvedAttributes.legacy.size,
@@ -189,7 +252,7 @@ const createProduct = async (req, res, next) => {
       ...(clientRequestId ? { clientRequestId } : {}),
     };
 
-    const configurationDefinitions = await getConfigurationDefinitions(category);
+    const configurationDefinitions = getConfigurationDefinitions(category);
     const configurationConflict = await findConfigurationConflict({
       candidate: createPayload,
       definitions: configurationDefinitions,
@@ -222,7 +285,7 @@ const createProduct = async (req, res, next) => {
       }
     } else {
       for (let attempt = 0; attempt < 5; attempt += 1) {
-        const generatedSku = await generateNextSku(category);
+        const generatedSku = await generateNextSku(canonicalCategoryName);
         try {
           product = await Product.create({ ...createPayload, sku: generatedSku });
           break;
@@ -430,7 +493,30 @@ const updateProduct = async (req, res, next) => {
       }
       payload.sku = requestedSku;
     }
-    if (req.body?.category !== undefined) payload.category = normalizeHumanReadable(req.body.category);
+    const categoryWasRequested = req.body?.category !== undefined || req.body?.categoryRef !== undefined;
+    let resolvedCategory = null;
+    let categoryChanged = false;
+    if (categoryWasRequested) {
+      resolvedCategory = await resolveCategory({
+        categoryRef: req.body?.categoryRef,
+        categoryName: req.body?.category ?? existing.category,
+        activeOnly: true,
+      });
+      if (!resolvedCategory) {
+        return res.status(400).json({ message: 'Target category is unavailable.' });
+      }
+
+      const existingRef = existing.categoryRef?._id || existing.categoryRef;
+      categoryChanged = existingRef
+        ? String(existingRef) !== String(resolvedCategory._id)
+        : normalizeCategoryKey(existing.category) !== normalizeCategoryKey(resolvedCategory.name);
+
+      payload.category = resolvedCategory.name;
+      payload.categoryRef = resolvedCategory._id;
+      if (categoryChanged && req.body?.attributes === undefined) {
+        return res.status(400).json({ message: 'Product attributes are required when changing category.' });
+      }
+    }
     if (req.body?.brand !== undefined) payload.brand = normalizeHumanReadable(req.body.brand);
     if (req.body?.color !== undefined) payload.color = normalizeHumanReadable(req.body.color);
     if (req.body?.size !== undefined) payload.size = normalizeString(req.body.size);
@@ -438,9 +524,55 @@ const updateProduct = async (req, res, next) => {
     if (req.body?.imageUrl !== undefined) payload.imageUrl = normalizeString(req.body.imageUrl);
     if (req.body?.isActive !== undefined) payload.isActive = Boolean(req.body.isActive);
 
+    if (req.body?.sellingUnit !== undefined) {
+      try {
+        if (!resolvedCategory) {
+          resolvedCategory = await resolveProductCategory(existing);
+        }
+        if (!resolvedCategory) {
+          return res.status(400).json({ message: 'The product category could not be resolved.' });
+        }
+        const requestedSellingUnit = normalizeString(req.body.sellingUnit);
+        const existingSellingUnit = normalizeString(existing.sellingUnit);
+        const sellingUnitIsChanging = requestedSellingUnit
+          && existingSellingUnit
+          && requestedSellingUnit.toLowerCase() !== existingSellingUnit.toLowerCase();
+
+        if (sellingUnitIsChanging) {
+          const [hasStock, hasSaleHistory] = await Promise.all([
+            Number(existing.stock || 0) > 0,
+            Sale.exists({ 'items.product': existing._id }),
+          ]);
+
+          if (hasStock || hasSaleHistory) {
+            return res.status(409).json({
+              message: 'Sold By cannot be changed after stock or sales history exists. Create a new product variant instead.',
+            });
+          }
+        }
+
+        payload.sellingUnit = requestedSellingUnit
+          && requestedSellingUnit.toLowerCase() === existingSellingUnit.toLowerCase()
+          ? existingSellingUnit
+          : resolveSellingUnit({
+            sellingUnit: requestedSellingUnit,
+            category: resolvedCategory,
+            required: Boolean(existingSellingUnit && !requestedSellingUnit),
+          });
+      } catch (error) {
+        return res.status(400).json({ message: error.message });
+      }
+    }
+
     if (req.body?.attributes !== undefined) {
       try {
-        const legacy = {
+        if (!resolvedCategory) {
+          resolvedCategory = await resolveProductCategory(existing);
+        }
+        if (!resolvedCategory) {
+          return res.status(400).json({ message: 'The product category could not be resolved.' });
+        }
+        const legacy = categoryChanged ? { brand: '', color: '', size: '' } : {
           // Existing legacy values remain the fallback for attributes that are
           // no longer configured. Configured Brand/Color/Size values are still
           // mirrored from the authoritative attributes payload below.
@@ -449,7 +581,7 @@ const updateProduct = async (req, res, next) => {
           size: existing.size,
         };
         const resolved = await resolveProductAttributes({
-          categoryName: payload.category ?? existing.category,
+          category: resolvedCategory,
           attributes: req.body?.attributes ?? plainAttributes(existing.attributes),
           legacy,
         });
@@ -479,15 +611,34 @@ const updateProduct = async (req, res, next) => {
       payload.price = priceValue;
     }
 
+    const changesConfiguration = ['category', 'categoryRef', 'name', 'attributes', 'brand', 'color', 'size']
+      .some((field) => Object.prototype.hasOwnProperty.call(payload, field));
+    if (changesConfiguration && !resolvedCategory) {
+      resolvedCategory = await resolveProductCategory(existing);
+      if (!resolvedCategory) {
+        return res.status(400).json({ message: 'The product category could not be resolved.' });
+      }
+    }
+    if (changesConfiguration && resolvedCategory && !categoryWasRequested) {
+      const existingRef = existing.categoryRef?._id || existing.categoryRef;
+      if (
+        String(existingRef || '') !== String(resolvedCategory._id)
+        || existing.category !== resolvedCategory.name
+      ) {
+        payload.categoryRef = resolvedCategory._id;
+        payload.category = resolvedCategory.name;
+      }
+    }
     const configurationCandidate = {
       category: payload.category ?? existing.category,
+      categoryRef: payload.categoryRef ?? existing.categoryRef,
       name: payload.name ?? existing.name,
       attributes: payload.attributes ?? plainAttributes(existing.attributes),
       brand: payload.brand ?? existing.brand,
       color: payload.color ?? existing.color,
       size: payload.size ?? existing.size,
     };
-    const configurationDefinitions = await getConfigurationDefinitions(configurationCandidate.category);
+    const configurationDefinitions = getConfigurationDefinitions(resolvedCategory);
     const existingConfigurationIdentity = buildProductConfigurationIdentity({
       ...productConfigurationInput(existing),
       definitions: configurationDefinitions,

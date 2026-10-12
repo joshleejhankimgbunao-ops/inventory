@@ -237,6 +237,63 @@ test('POS order confirmation prints its distinct heading and optional transactio
   assert.ok(lines.every((line) => line.length <= 30));
 });
 
+test('POS Order List prints only transaction details and item pricing within 30 columns', () => {
+  const lines = buildReceiptLines({
+    store: {
+      name: 'Tableria La Confianza',
+      address: 'Store address that is not part of an order list',
+      contactPhone: '09123456789',
+    },
+    receipt: {
+      id: 'TRX-ORDER-LIST-001', documentType: 'order-list', transactionReference: 'REF-123',
+      date: '2026-10-12T13:45:00.000Z', cashier: 'Cashier', paymentMethod: 'Cash',
+      customerName: 'Customer omitted from order list', paymentStatus: 'Paid',
+      items: [{ label: 'Item', code: 'ITEM-001', qty: 1, unitPrice: 100, subtotal: 100 }],
+      netAmount: 89.29, vatAmount: 10.71, grossAmount: 100, total: 100, cash: 100, change: 0,
+    },
+  });
+  const output = lines.join('\n');
+  const header = `${'QTY'.padStart(3)} ${'UNIT PRICE'.padStart(12)} ${'AMOUNT'.padStart(13)}`;
+
+  assert.match(output, /ORDER LIST/);
+  assert.match(output, /Transaction ID:\s+TRX-ORDER-LIST-001/);
+  assert.match(output, /Date:\s+10\/12\/2026/);
+  assert.match(output, /Time:\s+\d{1,2}:45 PM/);
+  assert.match(output, /Cashier:\s+Cashier/);
+  assert.match(output, /Payment Type:\s+Cash/);
+  assert.match(output, /Code: ITEM-001\n\nQTY   UNIT PRICE        AMOUNT/);
+  assert.ok(lines.includes(header));
+  assert.doesNotMatch(output, /Tableria|Store address|Contact:|Transaction Ref:|Customer:|Net:|VAT:|Gross:|TOTAL:|Status:|Cash:|Change:|THANK YOU|For transaction reference/i);
+  assert.ok(lines.every((line) => line.length <= 30));
+});
+
+test('draft Order List prints products, quantities, and selling units without finalizing details', () => {
+  const lines = buildReceiptLines({
+    store: { name: 'Store Name', address: 'Store Address' },
+    receipt: {
+      documentType: 'order-list-draft',
+      id: 'TRX-NOT-PRINTED',
+      date: '2026-10-12T13:45:00.000Z',
+      cashier: 'Cashier',
+      paymentMethod: 'Cash',
+      total: 100, netAmount: 89.29, vatAmount: 10.71, cash: 100, change: 0,
+      items: [{ label: 'Concrete Nails', code: 'CMT-001', qty: 2, sellingUnit: 'pack', unitPrice: 50, subtotal: 100 }],
+    },
+  });
+  const output = lines.join('\n');
+
+  assert.match(output, /ORDER LIST - DRAFT/);
+  assert.match(output, /Date:/);
+  assert.match(output, /Time:/);
+  assert.match(output, /Cashier:/);
+  assert.match(output, /Concrete Nails/);
+  assert.match(output, /Code: CMT-001/);
+  assert.match(output, /Qty:\s+2/);
+  assert.match(output, /Unit:\s+pack/);
+  assert.doesNotMatch(output, /Store Name|Store Address|Transaction ID|Method:|Payment Type|Net:|VAT:|Gross:|TOTAL:|Cash:|Change:|₱/);
+  assert.ok(lines.every((line) => line.length <= 30));
+});
+
 test('Order Confirmation repeats aligned thermal price columns for multiple item blocks', () => {
   const lines = buildReceiptLines({
     receipt: {
@@ -426,6 +483,79 @@ test('printReceipt sends one job from one receipt payload', async () => {
   assert.equal(calls[0].copyPayload.receipt.id, payload.receipt.id);
   assert.deepEqual(result.completedCopies, [1]);
   assert.equal(result.copyCount, 1);
+});
+
+test('printReceipt accepts a draft Order List without a finalized receipt id', async () => {
+  const calls = [];
+  const payload = {
+    receipt: {
+      documentType: 'order-list-draft',
+      date: '2026-10-12T13:45:00.000Z',
+      cashier: 'Cashier',
+      items: [{ label: 'Concrete Nails', code: 'CMT-001', qty: 2, sellingUnit: 'pack', unitPrice: 50, subtotal: 100 }],
+    },
+  };
+  const printJob = async (copyPayload) => {
+    calls.push(copyPayload);
+    return { ok: true, printerName: 'XP-58H', queued: true };
+  };
+
+  const result = await printReceipt(payload, 'draft-order-list-test', printJob);
+  const output = buildReceiptLines(calls[0]).join('\n');
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].receipt.id, undefined);
+  assert.match(output, /ORDER LIST - DRAFT/);
+  assert.match(output, /Concrete Nails/);
+  assert.match(output, /Code: CMT-001/);
+  assert.match(output, /Qty:\s+2/);
+  assert.match(output, /Unit:\s+pack/);
+  assert.doesNotMatch(output, /Transaction ID|Receipt No|UNIT PRICE|AMOUNT|Net:|VAT:|TOTAL:|Cash:|Change:|Payment Status|â‚±/);
+  assert.equal(result.copyCount, 1);
+});
+
+test('printReceipt still requires receipt.id for finalized receipt documents', async () => {
+  await assert.rejects(
+    () => printReceipt({ receipt: { documentType: 'order-confirmation', items: [] } }, 'missing-final-id-test', async () => ({ ok: true })),
+    (error) => {
+      assert.equal(error.status, 400);
+      assert.equal(error.message, 'receipt.id is required.');
+      return true;
+    },
+  );
+});
+
+test('printReceipt rejects unsupported document types before starting a printer job', async () => {
+  let printStarted = false;
+  await assert.rejects(
+    () => printReceipt({
+      receipt: {
+        id: 'TRX-INVALID-TYPE',
+        documentType: 'unknown-document',
+        items: [{ label: 'Item', qty: 1 }],
+      },
+    }, 'invalid-document-type-test', async () => {
+      printStarted = true;
+      return { ok: true };
+    }),
+    (error) => {
+      assert.equal(error.status, 400);
+      assert.equal(error.message, 'Unsupported receipt document type.');
+      return true;
+    },
+  );
+  assert.equal(printStarted, false);
+});
+
+test('draft Order List requires at least one item without requiring receipt.id', async () => {
+  await assert.rejects(
+    () => printReceipt({ receipt: { documentType: 'order-list-draft', items: [] } }, 'empty-draft-test', async () => ({ ok: true })),
+    (error) => {
+      assert.equal(error.status, 400);
+      assert.equal(error.message, 'receipt.items is required for a draft Order List.');
+      return true;
+    },
+  );
 });
 
 test('a failed receipt job does not retry or repeat the completed sale', async () => {

@@ -183,6 +183,12 @@ const sanitizePreferencesPayload = (raw = {}) => {
 
 const updateMyEmail = async (req, res, next) => {
   try {
+    if (req.user?.role === 'cashier') {
+      return res.status(403).json({
+        message: 'Cashier account details are managed by an administrator.',
+      });
+    }
+
     const normalizedEmail = normalizeValue(req.body?.email);
 
     if (!normalizedEmail) {
@@ -216,6 +222,18 @@ const updateMyEmail = async (req, res, next) => {
 
 const updateMyProfile = async (req, res, next) => {
   try {
+    const isCashier = req.user?.role === 'cashier';
+    const cashierRestrictedFields = ['name', 'fullName', 'displayName', 'email', 'phone', 'contactNumber', 'role', 'position'];
+    const attemptedRestrictedField = isCashier && cashierRestrictedFields.some((field) => (
+      Object.prototype.hasOwnProperty.call(req.body || {}, field)
+    ));
+
+    if (attemptedRestrictedField) {
+      return res.status(403).json({
+        message: 'Cashier account details are managed by an administrator.',
+      });
+    }
+
     const user = await User.findById(req.user._id).select('+password +pinHash');
 
     if (!user || !user.isActive) {
@@ -255,6 +273,14 @@ const updateMyProfile = async (req, res, next) => {
     }
 
     const hasNewPassword = typeof req.body?.newPassword === 'string' && req.body.newPassword.length > 0;
+    const hasNewPin = req.body?.newPin !== undefined && req.body?.newPin !== null && String(req.body.newPin) !== '';
+
+    if (user.mustChangeCredentials && (hasNewPassword || hasNewPin)) {
+      return res.status(409).json({
+        message: 'Complete the required first-login security setup before changing credentials.',
+      });
+    }
+
     if (hasNewPassword) {
       if (!isValidPassword(req.body.newPassword)) {
         return res.status(400).json({
@@ -273,10 +299,8 @@ const updateMyProfile = async (req, res, next) => {
 
       user.password = await bcrypt.hash(req.body.newPassword, 10);
       user.authRevokedAt = new Date();
-      user.mustChangeCredentials = false;
     }
 
-    const hasNewPin = req.body?.newPin !== undefined && req.body?.newPin !== null && String(req.body.newPin) !== '';
     if (hasNewPin) {
       const nextPin = String(req.body.newPin);
       if (!isValidPin(nextPin)) {
@@ -298,7 +322,6 @@ const updateMyProfile = async (req, res, next) => {
 
       user.pinHash = await bcrypt.hash(nextPin, 10);
       user.authRevokedAt = new Date();
-      user.mustChangeCredentials = false;
     }
 
     user.name = nextName;
@@ -312,6 +335,54 @@ const updateMyProfile = async (req, res, next) => {
 
     return res.json({
       message: 'Profile updated.',
+      user: sanitizeUser(user),
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+const completeFirstLoginSecuritySetup = async (req, res, next) => {
+  try {
+    const newPassword = req.body?.newPassword;
+    const newPin = req.body?.newPin;
+
+    if (typeof newPassword !== 'string' || !newPassword) {
+      return res.status(400).json({ message: 'newPassword is required.' });
+    }
+
+    if (!isValidPassword(newPassword)) {
+      return res.status(400).json({ message: passwordRequirementsMessage('newPassword') });
+    }
+
+    const normalizedPin = typeof newPin === 'string' ? newPin : '';
+    if (!isValidPin(normalizedPin)) {
+      return res.status(400).json({ message: `newPin must be exactly ${PIN_LENGTH} digits.` });
+    }
+
+    const user = await User.findById(req.user._id).select('+password +pinHash');
+    if (!user || !user.isActive) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+
+    if (!user.mustChangeCredentials) {
+      return res.status(409).json({ message: 'First-login security setup is not required for this account.' });
+    }
+
+    // Hash both values before mutating the document so a hashing failure cannot leave
+    // the account with only one of its temporary credentials replaced.
+    const [passwordHash, pinHash] = await Promise.all([
+      bcrypt.hash(newPassword, 10),
+      bcrypt.hash(normalizedPin, 10),
+    ]);
+
+    user.password = passwordHash;
+    user.pinHash = pinHash;
+    user.mustChangeCredentials = false;
+    await user.save({ validateBeforeSave: false });
+
+    return res.json({
+      message: 'First-login security setup completed.',
       user: sanitizeUser(user),
     });
   } catch (error) {
@@ -876,7 +947,7 @@ const resetPassword = async (req, res, next) => {
     user.passwordResetExpiresAt = undefined;
     user.passwordResetRequestedAt = undefined;
     user.authRevokedAt = now;
-    user.mustChangeCredentials = false;
+    user.mustChangeCredentials = Boolean(user.mustChangeCredentials);
     await user.save();
 
     return res.json({ message: 'Password reset successful.' });
@@ -914,7 +985,7 @@ const resetPin = async (req, res, next) => {
     user.pinResetExpiresAt = undefined;
     user.pinResetRequestedAt = undefined;
     user.authRevokedAt = now;
-    user.mustChangeCredentials = false;
+    user.mustChangeCredentials = Boolean(user.mustChangeCredentials);
     await user.save({ validateBeforeSave: false });
 
     return res.json({ message: 'PIN reset successful.' });
@@ -929,6 +1000,7 @@ module.exports = {
   logout,
   me,
   updateMyPreferences,
+  completeFirstLoginSecuritySetup,
   verifyMyCurrentPassword,
   verifyMyCurrentPin,
   updateMyProfile,

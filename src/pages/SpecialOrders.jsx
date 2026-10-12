@@ -791,7 +791,7 @@ const SpecialOrders = () => {
       </section>
 
       {showForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={() => closeForm()}>
+        <div className="app-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={() => closeForm()}>
           <div className="flex max-h-[calc(100dvh-2rem)] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-gray-100 bg-white shadow-2xl ring-1 ring-black/5 animate-in fade-in zoom-in-95 duration-200" onClick={(event) => event.stopPropagation()}>
             <div className="flex items-center justify-between border-b border-gray-100 bg-linear-to-r from-gray-50 to-white px-5 py-3.5">
               <div className="flex items-center gap-2.5">
@@ -854,7 +854,7 @@ const SpecialOrders = () => {
       )}
 
       {selectedOrder && selectedSummary && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={closeDetails}>
+        <div className="app-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={closeDetails}>
           <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-gray-100 bg-white shadow-2xl ring-1 ring-black/5" onClick={(event) => event.stopPropagation()}>
             <div className="flex items-start justify-between gap-4 border-b border-gray-200 px-4 py-3">
               <div>
@@ -913,7 +913,7 @@ const SpecialOrders = () => {
       )}
 
       {orderToComplete && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={closeCompleteConfirmation}>
+        <div className="app-modal-backdrop fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={closeCompleteConfirmation}>
           <div className="w-full max-w-md overflow-hidden rounded-xl border border-gray-100 bg-white shadow-2xl ring-1 ring-black/5" onClick={(event) => event.stopPropagation()}>
             <div className="border-b-2 border-gray-200 px-5 py-4">
               <h2 className="text-xl font-semibold text-gray-900">Complete Special Order?</h2>

@@ -19,6 +19,7 @@ require.cache[realtimeServicePath] = {
 
 const Product = require('../src/models/Product');
 const Category = require('../src/models/Category');
+const Sale = require('../src/models/Sale');
 const {
   DUPLICATE_CONFIGURATION_MESSAGE,
   createProduct,
@@ -33,11 +34,22 @@ const makeResponse = () => ({
 });
 
 const makeRequest = (body = {}, id = '') => ({
-  body,
+  body: { sellingUnit: 'pcs', ...body },
   params: id ? { id } : {},
   user: { _id: 'admin-1', name: 'Admin' },
   ip: '127.0.0.1',
   get: () => '',
+});
+
+const DEFAULT_CATEGORY_ID = '507f1f77bcf86cd799439011';
+
+const categoryFixture = (category, defaults = {}) => category && ({
+  _id: DEFAULT_CATEGORY_ID,
+  name: 'Electrical',
+  isActive: true,
+  sizeUnits: ['pcs'],
+  ...defaults,
+  ...category,
 });
 
 const makeProduct = (overrides = {}) => ({
@@ -51,27 +63,33 @@ const makeProduct = (overrides = {}) => ({
   attributes: overrides.attributes || {},
   stock: overrides.stock ?? 5,
   price: overrides.price ?? 89,
+  sellingUnit: overrides.sellingUnit || '',
   supplierName: overrides.supplierName || 'Supplier',
   imageUrl: overrides.imageUrl || '',
   updatedAt: overrides.updatedAt || null,
   isActive: overrides.isActive ?? true,
 });
 
-const withProductStubs = async ({ category, products = [], existing = null, action }) => {
+const withProductStubs = async ({ category, products = [], existing = null, saleExists = null, action }) => {
   const originalCategoryFindOne = Category.findOne;
   const originalProductFind = Product.find;
   const originalProductFindOne = Product.findOne;
   const originalProductFindById = Product.findById;
   const originalProductCreate = Product.create;
   const originalFindOneAndUpdate = Product.findOneAndUpdate;
+  const originalSaleExists = Sale.exists;
 
   try {
-    Category.findOne = async () => category;
+    Category.findOne = async (filter) => {
+      const resolved = typeof category === 'function' ? category(filter) : category;
+      return categoryFixture(resolved);
+    };
     Product.find = async () => products;
     Product.findOne = async () => null;
     Product.findById = async () => existing;
     Product.create = async (payload) => ({ _id: 'created-1', ...payload });
     Product.findOneAndUpdate = async (_filter, payload) => ({ ...existing, ...payload, _id: existing?._id || 'existing-1' });
+    Sale.exists = async () => saleExists;
     await action();
   } finally {
     Category.findOne = originalCategoryFindOne;
@@ -80,6 +98,7 @@ const withProductStubs = async ({ category, products = [], existing = null, acti
     Product.findById = originalProductFindById;
     Product.create = originalProductCreate;
     Product.findOneAndUpdate = originalFindOneAndUpdate;
+    Sale.exists = originalSaleExists;
   }
 };
 
@@ -204,6 +223,36 @@ test('unchanged, price-only, stock-only, and supplier-only edits remain allowed'
   }
 });
 
+test('selling unit changes cannot reinterpret a product with stock or sales history', async () => {
+  const existing = makeProduct({ sellingUnit: 'pack', stock: 5 });
+
+  await withProductStubs({ category: { sizeUnits: ['pack', 'kg'] }, existing, action: async () => {
+    const response = makeResponse();
+    await updateProduct(makeRequest({ sellingUnit: 'kg' }, existing._id), response, assert.fail);
+    assert.equal(response.statusCode, 409);
+    assert.match(response.body.message, /cannot be changed after stock or sales history/i);
+  }});
+
+  const noStock = makeProduct({ sellingUnit: 'pack', stock: 0 });
+  await withProductStubs({ category: { sizeUnits: ['pack', 'kg'] }, existing: noStock, saleExists: { _id: 'sale-1' }, action: async () => {
+    const response = makeResponse();
+    await updateProduct(makeRequest({ sellingUnit: 'kg' }, noStock._id), response, assert.fail);
+    assert.equal(response.statusCode, 409);
+    assert.match(response.body.message, /cannot be changed after stock or sales history/i);
+  }});
+});
+
+test('legacy products without a selling unit may assign a configured unit without changing stock', async () => {
+  const existing = makeProduct({ sellingUnit: '', stock: 5 });
+
+  await withProductStubs({ category: { sizeUnits: ['pack'] }, existing, action: async () => {
+    const response = makeResponse();
+    await updateProduct(makeRequest({ sellingUnit: 'pack' }, existing._id), response, assert.fail);
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body.sellingUnit, 'pack');
+  }});
+});
+
 test('schema v1 maintenance edits preserve stale legacy values without making them authoritative', async () => {
   const category = {
     attributeSchemaVersion: 1,
@@ -242,6 +291,106 @@ test('editing into another existing configured product is rejected', async () =>
   await withProductStubs({ category, existing, products: [other], action: async () => {
     const response = makeResponse();
     await updateProduct(makeRequest({ size: '3.5mm' }, existing._id), response, assert.fail);
+    assert.equal(response.statusCode, 409);
+    assert.equal(response.body.message, DUPLICATE_CONFIGURATION_MESSAGE);
+  }});
+});
+
+test('editing Product Name updates only the selected Product record', async () => {
+  const category = { showSize: true, showBrand: false, showColor: false, attributeSchemaVersion: 0 };
+  const existing = makeProduct({ _id: 'one', sku: 'OTH-010', category: 'Masonry', name: 'Hollow Block', size: '4 in' });
+  const sibling = makeProduct({ _id: 'two', sku: 'OTH-011', category: 'Masonry', name: 'Hollow Block', size: '5 in' });
+
+  await withProductStubs({ category, existing, products: [sibling], action: async () => {
+    const response = makeResponse();
+    await updateProduct(makeRequest({ name: 'Concrete Hollow Block' }, existing._id), response, assert.fail);
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body.name, 'Concrete Hollow Block');
+    assert.equal(response.body.sku, 'OTH-010');
+    assert.equal(response.body.price, existing.price);
+    assert.equal(response.body.stock, existing.stock);
+    assert.equal(sibling.name, 'Hollow Block');
+  }});
+});
+
+test('category change updates one product, preserves unrelated fields, and removes incompatible attributes', async () => {
+  const existing = makeProduct({
+    _id: 'one',
+    category: 'Masonry',
+    sku: 'OTH-010',
+    name: 'Hollow Block',
+    attributes: { size: '4 in', material: 'Concrete' },
+    brand: 'Legacy Brand',
+    color: 'Gray',
+    size: '4 in',
+    imageUrl: 'block.jpg',
+    supplierName: 'Block Supplier',
+  });
+  const sibling = makeProduct({ _id: 'two', sku: 'OTH-011', category: 'Masonry', name: 'Hollow Block', attributes: { size: '5 in' } });
+  const target = {
+    name: 'Tools & Abrasives',
+    isActive: true,
+    attributeSchemaVersion: 1,
+    productAttributes: [
+      { name: 'Material', key: 'material', type: 'text', required: false, order: 0 },
+      { name: 'Grit', key: 'grit', type: 'number', required: true, order: 1 },
+    ],
+  };
+
+  await withProductStubs({
+    category: () => target,
+    existing,
+    products: [sibling],
+    action: async () => {
+      const response = makeResponse();
+      await updateProduct(makeRequest({ category: target.name, attributes: { material: 'Concrete', grit: 80 } }, existing._id), response, assert.fail);
+
+      assert.equal(response.statusCode, 200);
+      assert.equal(response.body.category, target.name);
+      assert.deepEqual(response.body.attributes, { material: 'Concrete', grit: 80 });
+      assert.equal(response.body.sku, 'OTH-010');
+      assert.equal(response.body.price, existing.price);
+      assert.equal(response.body.stock, existing.stock);
+      assert.equal(response.body.supplierName, 'Block Supplier');
+      assert.equal(response.body.imageUrl, 'block.jpg');
+      assert.equal(response.body.isActive, existing.isActive);
+      assert.equal(response.body.brand, '');
+      assert.equal(response.body.color, '');
+      assert.equal(response.body.size, '');
+      assert.equal(sibling.name, 'Hollow Block');
+      assert.equal(sibling.category, 'Masonry');
+    },
+  });
+});
+
+test('category change rejects inactive targets, missing required attributes, and duplicate configurations', async () => {
+  const existing = makeProduct({ _id: 'one', category: 'Masonry', name: 'Sanding Block', attributes: { size: '4 in' } });
+  const target = {
+    name: 'Tools & Abrasives',
+    isActive: true,
+    attributeSchemaVersion: 1,
+    productAttributes: [{ name: 'Grit', key: 'grit', type: 'number', required: true, order: 0 }],
+  };
+
+  await withProductStubs({ category: () => null, existing, action: async () => {
+    const response = makeResponse();
+    await updateProduct(makeRequest({ category: target.name, attributes: { grit: 80 } }, existing._id), response, assert.fail);
+    assert.equal(response.statusCode, 400);
+    assert.match(response.body.message, /unavailable/i);
+  }});
+
+  await withProductStubs({ category: target, existing, action: async () => {
+    const response = makeResponse();
+    await updateProduct(makeRequest({ category: target.name, attributes: {} }, existing._id), response, assert.fail);
+    assert.equal(response.statusCode, 400);
+    assert.match(response.body.message, /Grit is required/i);
+  }});
+
+  const duplicate = makeProduct({ _id: 'two', sku: 'ABR-080', category: target.name, name: existing.name, attributes: { grit: 80 } });
+  await withProductStubs({ category: target, existing, products: [duplicate], action: async () => {
+    const response = makeResponse();
+    await updateProduct(makeRequest({ category: target.name, attributes: { grit: 80 } }, existing._id), response, assert.fail);
     assert.equal(response.statusCode, 409);
     assert.equal(response.body.message, DUPLICATE_CONFIGURATION_MESSAGE);
   }});

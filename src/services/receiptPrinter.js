@@ -20,6 +20,7 @@ const normalizeReceiptItem = (item) => {
   return {
     label: color ? `${label} — ${color}` : label,
     code: String(item?.code || '').trim(),
+    sellingUnit: String(item?.sellingUnit || item?.unit || '').trim(),
     qty,
     unitPrice,
     subtotal,

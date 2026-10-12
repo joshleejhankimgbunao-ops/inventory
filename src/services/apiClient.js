@@ -20,6 +20,8 @@ export const clearAuthToken = () => {
 export const isApiConnectionFailure = (error) => error?.isConnectionFailure === true;
 
 const clearClientSessionState = () => {
+  const alertUserId = String(sessionStorage.getItem('authUserId') || '').trim();
+  if (alertUserId) sessionStorage.removeItem(`pending-void-request-alert-shown:${alertUserId}`);
   sessionStorage.removeItem('userRole');
   sessionStorage.removeItem('userName');
   sessionStorage.removeItem('userAvatar');

@@ -15,6 +15,7 @@ const makeVariant = (overrides = {}) => ({
   attributes: overrides.attributes || {},
   price: overrides.price ?? 50,
   stock: overrides.stock ?? 10,
+  sellingUnit: overrides.sellingUnit || '',
   imageUrl: '',
 });
 
@@ -365,12 +366,53 @@ test('schema authority applies independently to Size and Color', async () => {
   assert.deepEqual(group.variantDimensions, ['color']);
 });
 
-test('Product Master compact rows hide schema-v1 legacy badges without clearing stored values', () => {
+test('POS groups retain authoritative configured attributes for selected-variant details', async () => {
+  const { groupProductsForPos } = await loadHelpers();
+  const category = {
+    name: 'Electrical',
+    attributeSchemaVersion: 1,
+    productAttributes: [
+      { name: 'Wire Size', key: 'wire_size', type: 'number_unit', unit: 'mm²', order: 0 },
+      { name: 'Color', key: 'color', type: 'text', order: 1 },
+    ],
+  };
+  const group = groupProductsForPos([
+    makeVariant({ code: 'WIRE-20-BLK', attributes: { wire_size: '2.0', color: 'Black' }, sellingUnit: 'roll' }),
+    makeVariant({ code: 'WIRE-35-RED', attributes: { wire_size: '3.5', color: 'Red' }, sellingUnit: 'roll' }),
+  ], [category])[0];
+
+  assert.deepEqual(group.attributeDefinitions.map(({ key }) => key), ['wire_size', 'color']);
+  assert.equal(group.variants[0].sellingUnit, 'roll');
+});
+
+test('schema-v1 POS details do not expose stale unconfigured legacy attributes', async () => {
+  const { groupProductsForPos } = await loadHelpers();
+  const category = {
+    name: 'Electrical',
+    attributeSchemaVersion: 1,
+    productAttributes: [{ name: 'Wire Size', key: 'wire_size', type: 'text', order: 0 }],
+  };
+  const group = groupProductsForPos([
+    makeVariant({ code: 'WIRE-A', brand: 'Legacy Brand', attributes: { wire_size: '2.0 mm²' } }),
+    makeVariant({ code: 'WIRE-B', brand: 'Legacy Brand', attributes: { wire_size: '3.5 mm²' } }),
+  ], [category])[0];
+
+  assert.deepEqual(group.attributeDefinitions.map(({ key }) => key), ['wire_size']);
+  assert.equal(group.variants[0].brand, 'Legacy Brand');
+});
+
+test('selected-variant UI uses selling-unit labels and neutral legacy fallbacks', () => {
+  const source = fs.readFileSync(path.resolve(__dirname, '../../src/pages/PointOfSale.jsx'), 'utf8');
+
+  assert.match(source, /selectedSellingUnit \? `Price per \$\{selectedSellingUnit\}` : 'Price'/);
+  assert.match(source, /selectedSellingUnit \? `Quantity \(\$\{selectedSellingUnit\}\)` : 'Quantity'/);
+  assert.match(source, /matchedVariant\.stock\}\{selectedSellingUnit \? ` \$\{selectedSellingUnit\}` : ''\}/);
+  assert.match(source, /productAttributeValues\(matchedVariant, variantModal\.group\.attributeDefinitions \|\| \[\]\)/);
+});
+
+test('Product Master uses the shared authoritative attribute resolver without clearing stored values', () => {
   const source = fs.readFileSync(path.resolve(__dirname, '../../src/pages/ProductList.jsx'), 'utf8');
 
-  assert.match(source, /attributeSchemaVersion/);
-  assert.match(source, /isCompactLegacyAttributeVisible\(product\.category, 'brand'\)/);
-  assert.match(source, /isCompactLegacyAttributeVisible\(product\.category, 'size'\)/);
-  assert.match(source, /isCompactLegacyAttributeVisible\(product\.category, 'color'\)/);
+  assert.match(source, /getEffectiveProductAttributes/);
   assert.doesNotMatch(source, /delete product\.brand/);
 });

@@ -9,7 +9,7 @@ require.cache[realtimeServicePath] = {
   id: realtimeServicePath, filename: realtimeServicePath, loaded: true,
   exports: { publishSaleCreated: () => {}, publishInventoryUpdated: () => {}, publishCreditTransactionsUpdated: () => {} },
 };
-const { createSale, updateSaleTransactionReference, getSaleSupportingDocument, mapSaleToTransactionContract } = require('../src/controllers/saleController');
+const { createSale, updateSaleTransactionReference, correctSaleTransactionReference, getSaleSupportingDocument, mapSaleToTransactionContract } = require('../src/controllers/saleController');
 const { markCreditTransactionFullyPaid } = require('../src/controllers/creditTransactionController');
 
 const saleId = '68a01234567890abcdef1234';
@@ -74,11 +74,48 @@ test('reference only updates existing Sale metadata without touching transaction
   let update;
   await updateSaleTransactionReference(request({ referenceNumber: '  00123456  ' }), res, assert.fail, {
     findSale: async () => makeSale(),
+    findSaleByReference: async () => null,
     updateSale: async (_query, value) => { update = value; return makeSale(value.$set.transactionReference); },
   });
   assert.equal(res.code, 200);
   assert.equal(res.body.transactionReference.referenceNumber, '00123456');
   assert.deepEqual(Object.keys(update.$set), ['transactionReference']);
+});
+
+test('initial save rejects a Reference No. already used by another Sale', async () => {
+  const res = makeResponse();
+  let updateCalled = false;
+  await updateSaleTransactionReference(request({ referenceNumber: '00123456' }), res, assert.fail, {
+    findSale: async () => makeSale(),
+    findSaleByReference: async (referenceNumber, excludedSaleId) => {
+      assert.equal(referenceNumber, '00123456');
+      assert.equal(String(excludedSaleId), saleId);
+      return { _id: '68a01234567890abcdef9999' };
+    },
+    updateSale: async () => { updateCalled = true; },
+  });
+  assert.equal(res.code, 409);
+  assert.equal(res.body.message, 'This reference number is already used by another transaction.');
+  assert.equal(updateCalled, false);
+});
+
+test('leading-zero Reference Nos remain strings and do not conflict with a different string value', async () => {
+  const res = makeResponse();
+  let savedReference = '';
+  await updateSaleTransactionReference(request({ referenceNumber: '00123' }), res, assert.fail, {
+    findSale: async () => makeSale(),
+    findSaleByReference: async (referenceNumber) => {
+      assert.equal(referenceNumber, '00123');
+      assert.equal(typeof referenceNumber, 'string');
+      return null;
+    },
+    updateSale: async (_query, update) => {
+      savedReference = update.$set.transactionReference.referenceNumber;
+      return makeSale(update.$set.transactionReference);
+    },
+  });
+  assert.equal(res.code, 200);
+  assert.equal(savedReference, '00123');
 });
 
 test('blank or whitespace-only input is rejected when no reference method exists', async () => {
@@ -92,15 +129,15 @@ test('blank or whitespace-only input is rejected when no reference method exists
   }
 });
 
-test('an existing legacy Reference No. or Supporting Document satisfies the required method rule without mutation', async () => {
+test('an existing legacy Reference No. or Supporting Document is locked against ordinary overwrite', async () => {
   const existingReference = { referenceNumber: 'EXISTING', supportingDocument: null };
   const referenceResponse = makeResponse();
   await updateSaleTransactionReference(request({}), referenceResponse, assert.fail, {
     findSale: async () => makeSale(existingReference),
     updateSale: async (_query, update) => makeSale(update.$set.transactionReference),
   });
-  assert.equal(referenceResponse.code, 200);
-  assert.equal(referenceResponse.body.transactionReference.referenceNumber, 'EXISTING');
+  assert.equal(referenceResponse.code, 409);
+  assert.match(referenceResponse.body.message, /locked/i);
 
   const existingDocument = { key: 'existing.jpg', originalName: 'existing.jpg', mimeType: 'image/jpeg', size: 4 };
   const documentResponse = makeResponse();
@@ -108,9 +145,8 @@ test('an existing legacy Reference No. or Supporting Document satisfies the requ
     findSale: async () => makeSale({ referenceNumber: '', supportingDocument: existingDocument }),
     updateSale: async (_query, update) => makeSale(update.$set.transactionReference),
   });
-  assert.equal(documentResponse.code, 200);
-  assert.equal(documentResponse.body.transactionReference.referenceNumber, '');
-  assert.equal(documentResponse.body.transactionReference.supportingDocument.originalName, 'existing.jpg');
+  assert.equal(documentResponse.code, 409);
+  assert.match(documentResponse.body.message, /locked/i);
 });
 
 test('document only uses a separate prefix and does not expose storage key in history', async () => {
@@ -180,18 +216,74 @@ test('Credit payment references remain governed by the Credit payment domain', a
   assert.equal(receivedReference, 'GCASH-REF/123');
 });
 
-test('reference and replacement document preserve existing Sale data and remove old object after save', async () => {
+test('controlled correction preserves original evidence and retains the old private object', async () => {
   const old = { referenceNumber: 'OLD', supportingDocument: { key: 'old.jpg', originalName: 'old.jpg' } };
   const removed = [];
   const res = makeResponse();
-  await updateSaleTransactionReference(request({ referenceNumber: '987654321' }, jpeg), res, assert.fail, {
+  const req = request({ referenceNumber: '987654321', reason: 'Corrected entry' }, jpeg);
+  req.user = { _id: userId, role: 'admin', name: 'Admin User' };
+  req.get = () => '';
+  await correctSaleTransactionReference(req, res, assert.fail, {
     findSale: async () => makeSale(old),
+    findSaleByReference: async () => null,
     upload: async () => ({ key: 'new.jpg', originalName: 'new.jpg', mimeType: 'image/jpeg', size: 4 }),
-    updateSale: async (_query, update) => makeSale(update.$set.transactionReference),
+    updateSale: async (_query, update) => makeSale({
+      referenceNumber: update.$set['transactionReference.referenceNumber'],
+      supportingDocument: update.$set['transactionReference.supportingDocument'],
+      correctedAt: update.$set['transactionReference.correctedAt'],
+      correctionHistory: [update.$push['transactionReference.correctionHistory']],
+    }),
     remove: async (key) => removed.push(key),
+    writeActivityLog: async () => {},
   });
   assert.equal(res.body.transactionReference.referenceNumber, '987654321');
-  assert.deepEqual(removed, ['old.jpg']);
+  assert.equal(res.body.transactionReference.correctionHistory[0].previousReferenceNumber, 'OLD');
+  assert.equal(res.body.transactionReference.correctionHistory[0].previousSupportingDocument.originalName, 'old.jpg');
+  assert.equal(res.body.transactionReference.correctionHistory[0].correctedSupportingDocument.originalName, 'new.jpg');
+  assert.equal(res.body.transactionReference.correctionHistory[0].reason, 'Corrected entry');
+  assert.deepEqual(removed, []);
+});
+
+test('correction cannot move another Sale\'s Reference No. to the current Sale', async () => {
+  const res = makeResponse();
+  const current = makeSale({ referenceNumber: '00123', supportingDocument: null });
+  let updateCalled = false;
+  const req = request({ referenceNumber: '00456', reason: 'Corrected entry' });
+  req.user = { _id: userId, role: 'admin', name: 'Admin User' };
+  await correctSaleTransactionReference(req, res, assert.fail, {
+    findSale: async () => current,
+    findSaleByReference: async (referenceNumber, excludedSaleId) => {
+      assert.equal(referenceNumber, '00456');
+      assert.equal(String(excludedSaleId), saleId);
+      return { _id: '68a01234567890abcdef9999' };
+    },
+    updateSale: async () => { updateCalled = true; },
+  });
+  assert.equal(res.code, 409);
+  assert.equal(res.body.message, 'This reference number is already used by another transaction.');
+  assert.equal(updateCalled, false);
+});
+
+test('correction may retain its own Reference No. while replacing the supporting document', async () => {
+  const res = makeResponse();
+  const current = makeSale({ referenceNumber: '00123', supportingDocument: { key: 'old.jpg', originalName: 'old.jpg', mimeType: 'image/jpeg', size: 4 } });
+  const req = request({ referenceNumber: '00123', reason: 'Replacing proof' }, jpeg);
+  req.user = { _id: userId, role: 'admin', name: 'Admin User' };
+  let lookupCalled = false;
+  await correctSaleTransactionReference(req, res, assert.fail, {
+    findSale: async () => current,
+    findSaleByReference: async () => { lookupCalled = true; return null; },
+    upload: async () => ({ key: 'new.jpg', originalName: 'new.jpg', mimeType: 'image/jpeg', size: 4 }),
+    updateSale: async (_query, update) => makeSale({
+      referenceNumber: update.$set['transactionReference.referenceNumber'],
+      supportingDocument: update.$set['transactionReference.supportingDocument'],
+      correctionHistory: [update.$push['transactionReference.correctionHistory']],
+    }),
+    writeActivityLog: async () => {},
+  });
+  assert.equal(res.code, 200);
+  assert.equal(res.body.transactionReference.referenceNumber, '00123');
+  assert.equal(lookupCalled, false);
 });
 
 test('failed metadata persistence cleans up uploaded object and does not invalidate Sale', async () => {

@@ -56,7 +56,7 @@ const ReceiptPreviewModal = ({
         : 'Cash Sales Receipt';
 
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+    <div className="app-modal-backdrop fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
       <div className={`flex ${usesConfirmationLayout ? ORDER_CONFIRMATION_PREVIEW_SIZE.modal : 'max-h-[90vh] w-full max-w-[58mm]'} flex-col overflow-hidden ${usesConfirmationLayout ? 'rounded-2xl' : 'rounded-xl'} bg-white shadow-2xl`} role="dialog" aria-modal="true" aria-label={`${documentTitle} preview`}>
         <div className={`flex items-center justify-between border-b border-gray-100 bg-gray-50 ${usesConfirmationLayout ? 'px-4 py-3.5 sm:px-5 sm:py-4' : 'p-3'}`}>
           <div>
@@ -70,14 +70,16 @@ const ReceiptPreviewModal = ({
 
         <div className={`flex-1 overflow-y-auto bg-white ${usesConfirmationLayout ? 'px-4 py-4 sm:px-6 sm:py-5' : 'p-2'}`} id={contentId}>
           <div className={`${usesConfirmationLayout ? `${ORDER_CONFIRMATION_PREVIEW_SIZE.content} text-xs leading-relaxed text-gray-600 sm:text-[13px]` : 'mx-auto w-full max-w-[58mm] text-[9px] leading-tight'} px-1`}>
-            <div className={`${usesConfirmationLayout ? 'mb-5' : 'mb-3'} text-center`}>
-              <p className={`mb-1 ${usesConfirmationLayout ? 'text-lg' : 'text-[14px]'} font-semibold leading-tight text-gray-900`}>{settings.storeName || 'Tableria La Confianza'}</p>
-              <div className={`${usesConfirmationLayout ? 'mt-1.5 text-[11px] leading-relaxed sm:text-xs' : 'mt-1 text-[9px] leading-tight'} space-y-0.5 text-gray-400`}>
-                <p>{settings.storeAddress || 'Manila S Rd, Calamba, 4027 Laguna'}</p>
-                <p>Contact: {settings.contactPhone || '0917-545-2166'}</p>
-                {settings.contactPhoneSecondary && <p>{settings.contactPhoneSecondary}</p>}
+            {!isOrderConfirmation && (
+              <div className={`${usesConfirmationLayout ? 'mb-5' : 'mb-3'} text-center`}>
+                <p className={`mb-1 ${usesConfirmationLayout ? 'text-lg' : 'text-[14px]'} font-semibold leading-tight text-gray-900`}>{settings.storeName || 'Tableria La Confianza'}</p>
+                <div className={`${usesConfirmationLayout ? 'mt-1.5 text-[11px] leading-relaxed sm:text-xs' : 'mt-1 text-[9px] leading-tight'} space-y-0.5 text-gray-400`}>
+                  <p>{settings.storeAddress || 'Manila S Rd, Calamba, 4027 Laguna'}</p>
+                  <p>Contact: {settings.contactPhone || '0917-545-2166'}</p>
+                  {settings.contactPhoneSecondary && <p>{settings.contactPhoneSecondary}</p>}
+                </div>
               </div>
-            </div>
+            )}
 
             {isVoidedConfirmation && (
               <div className="mb-2 border-y border-rose-200 bg-rose-50 py-1.5 text-center text-[11px] font-bold tracking-[0.18em] text-rose-700">

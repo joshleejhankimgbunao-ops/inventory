@@ -221,7 +221,9 @@ export const groupProductsForPos = (products, categories = []) => {
 
         const sample = variants[0];
         const prices = variants.map((variant) => Number(variant?.price) || 0);
-        const variantDimensions = getPosVariantDimensionsForCategory(categoryMap.get(sample.category));
+        const category = categoryMap.get(sample.category);
+        const attributeDefinitions = getEffectiveProductAttributes(category);
+        const variantDimensions = getPosVariantDimensionsForCategory(category);
         const brandOptions = variantDimensions.includes('brand')
             ? getPosVariantOptions(variants, 'brand')
             : [];
@@ -244,6 +246,7 @@ export const groupProductsForPos = (products, categories = []) => {
             maxPrice: Math.max(...prices),
             availableBrands: brandOptions.map((option) => option.label),
             brandOptions,
+            attributeDefinitions,
             variantDimensions,
             variants: [...variants].sort((left, right) => (
                 String(left?.brand || '').localeCompare(String(right?.brand || ''))

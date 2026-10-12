@@ -68,6 +68,11 @@ const settingSchema = new mongoose.Schema(
       default: 'Manila S Rd, Calamba, 4027 Laguna',
       trim: true,
     },
+    storeBusinessSubtitle: {
+      type: String,
+      default: '',
+      trim: true,
+    },
     contactPhone: {
       type: String,
       default: '0917-545-2166',
@@ -93,6 +98,11 @@ const settingSchema = new mongoose.Schema(
     storeMapLink: {
       type: String,
       default: 'https://maps.app.goo.gl/9QdZo3bu4W62qTjQ8',
+      trim: true,
+    },
+    authorizedSignatoryName: {
+      type: String,
+      default: '',
       trim: true,
     },
     currency: {

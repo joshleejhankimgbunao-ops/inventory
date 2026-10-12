@@ -195,7 +195,7 @@ const Login = ({ onLogin }) => {
         });
 
         if (response.user.mustChangeCredentials) {
-          showToast('Security Update Required', 'Please update your password or PIN before continuing.', 'warning', 'login-result');
+          showToast('Security Setup Required', 'Complete your password and PIN setup before continuing.', 'warning', 'login-result');
         }
 
         setEmail('');

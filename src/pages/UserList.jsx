@@ -795,7 +795,7 @@ const UserList = () => {
                     )}
 
                     {/* Toolbar */}
-                    <div className="px-5 pb-4 flex flex-col sm:flex-row justify-between items-center gap-4 bg-transparent">
+                    <div className="px-5 pb-4 flex flex-col items-stretch justify-between gap-4 bg-transparent sm:flex-row sm:items-center">
                     <div className="main-toolbar-search group">
                         <input 
                             type="text" 
@@ -815,7 +815,7 @@ const UserList = () => {
                         </div>
                     </div>
 
-                    <div className="w-full sm:w-auto flex items-center gap-2">
+                    <div className="flex w-full flex-wrap items-center justify-end gap-3 sm:w-auto sm:flex-nowrap">
                         <button
                             type="button"
                             onClick={() => setShowArchived(prev => !prev)}
@@ -1031,7 +1031,7 @@ const UserList = () => {
 
             {/* Modal */}
             {isModalOpen && (
-                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                 <div className="app-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
                     <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-sm md:max-w-md max-h-[88vh] overflow-hidden animate-in fade-in zoom-in-95 duration-200 flex flex-col">
                         <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 flex justify-between items-center shrink-0">
                             <div className="flex items-center gap-2">
@@ -1080,7 +1080,6 @@ const UserList = () => {
                                         className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
                                         placeholder="John Doe"
                                     />
-                                    <p className="text-[10px] text-gray-400 mt-1">Use letters, spaces, periods, or hyphens.</p>
                                     {fieldErrors.name && <p className="text-rose-500 text-[11px] mt-1">{fieldErrors.name}</p>}
                                 </div>
                             </div>
@@ -1097,9 +1096,9 @@ const UserList = () => {
                                         }}
                                         onBlur={e => setFormData((prev) => ({ ...prev, displayName: normalizeHumanReadable(e.target.value) }))}
                                         className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
-                                        placeholder="Name shown in dashboard and logs"
+                                        placeholder="Optional display name"
                                     />
-                                    <p className="text-[10px] text-gray-400 mt-1">Optional. If left blank, full name will be used as display name.</p>
+                                    <p className="text-[10px] text-gray-400 mt-1">Optional. Full name will be used if left blank.</p>
                                     {fieldErrors.displayName && <p className="text-rose-500 text-[11px] mt-1">{fieldErrors.displayName}</p>}
                                 </div>
                             </div>
@@ -1143,7 +1142,6 @@ const UserList = () => {
                                         <option>Active</option>
                                         <option>Inactive</option>
                                     </select>
-                                    <p className="text-[10px] text-gray-400 mt-1">Inactive users are blocked from logging in.</p>
                                 </div>
                             </div>
 
@@ -1162,7 +1160,6 @@ const UserList = () => {
                                         className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
                                         placeholder="user@example.com"
                                     />
-                                    <p className="text-[10px] text-gray-400 mt-1">Used for login and notifications; must be a complete valid email address.</p>
                                     {fieldErrors.email && <p className="text-rose-500 text-[11px] mt-1">{fieldErrors.email}</p>}
                                 </div>
                                 <div>
@@ -1179,9 +1176,8 @@ const UserList = () => {
                                             }
                                         }}
                                         className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
-                                        placeholder="Enter 11-digit phone number"
+                                        placeholder="09XXXXXXXXX"
                                     />
-                                    <p className="text-[10px] text-gray-400 mt-1">Enter 11 digits (e.g. 09171234567).</p>
                                     {formData.phone && formData.phone.length !== 11 && (
                                         <p className="text-rose-500 text-[11px] mt-1">Phone number must be exactly 11 digits.</p>
                                     )}
@@ -1195,17 +1191,17 @@ const UserList = () => {
                                     <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400  tracking-wider mb-1">Username</label>
                                     <input 
                                         type="text" 
-                                        disabled={modalMode === 'add'} // Read-only for new users
+                                        readOnly={modalMode === 'add'}
                                         value={formData.username}
                                         onChange={e => {
                                             const val = e.target.value.toLowerCase().replace(/[^a-z0-9_.]/g, '');
                                             setFieldErrors(prev => ({ ...prev, username: '' }));
                                             setFormData({...formData, username: val});
                                         }}
-                                        className={`w-full p-2 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white ${modalMode === 'add' ? 'bg-gray-100 dark:bg-gray-800 text-gray-500 cursor-not-allowed' : 'bg-white dark:bg-gray-700'}`}
+                                        className={`w-full p-2 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white ${modalMode === 'add' ? 'bg-slate-50 dark:bg-gray-800 text-slate-700 dark:text-gray-200 cursor-default' : 'bg-white dark:bg-gray-700'}`}
                                         placeholder="username123"
                                     />
-                                    {modalMode === 'add' && <p className="text-[10px] text-gray-400 mt-1">Auto-generated from next available username sequence.</p>}
+                                    {modalMode === 'add' && <p className="text-[10px] text-gray-400 mt-1">Auto-generated.</p>}
                                     {modalMode === 'edit' && <p className="text-[10px] text-gray-400 mt-1">Alphanumeric, underscores and dots allowed. Cannot be changed for new users.</p>}
                                     {fieldErrors.username && <p className="text-rose-500 text-[11px] mt-1">{fieldErrors.username}</p>}
                                 </div>
@@ -1216,13 +1212,12 @@ const UserList = () => {
                                     <div className="relative">
                                         <input 
                                             type={modalMode === 'add' ? "text" : "password"} // Show text for auto-gen password
-                                            disabled={modalMode === 'add'}
                                             value={formData.password}
                                             onChange={e => {
                                                 setFieldErrors(prev => ({ ...prev, password: '' }));
                                                 setFormData({...formData, password: e.target.value});
                                             }}
-                                            className={`w-full p-2 border rounded-lg text-xs font-medium focus:ring-2 outline-none text-gray-900 dark:text-white ${modalMode === 'add' ? 'bg-gray-100 dark:bg-gray-800 text-gray-500 cursor-not-allowed font-mono' : 'bg-white dark:bg-gray-700'} ${
+                                            className={`w-full pr-10 p-2 border rounded-lg text-xs font-medium focus:ring-2 outline-none text-gray-900 dark:text-white ${modalMode === 'add' ? 'bg-slate-50 dark:bg-gray-800 font-mono' : 'bg-white dark:bg-gray-700'} ${
                                                 formData.password
                                                     ? allPasswordChecksMet
                                                         ? 'border-green-300 dark:border-green-500 focus:ring-green-200 dark:focus:ring-green-600'
@@ -1235,17 +1230,18 @@ const UserList = () => {
                                             <button 
                                                 type="button"
                                                 onClick={() => {
-                                                    const newPass = generatePassword();
-                                                    setFormData({...formData, password: newPass});
+                                                    setFieldErrors((prev) => ({ ...prev, password: '' }));
+                                                    setFormData((prev) => ({ ...prev, password: generatePassword() }));
                                                 }}
                                                 className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
-                                                title="Regenerate Password"
+                                                title="Generate new password"
+                                                aria-label="Generate new password"
                                             >
                                                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
                                             </button>
                                         )}
                                     </div>
-                                    {modalMode === 'add' && <p className="text-[10px] text-gray-400 mt-1">Auto-generated secure password</p>}
+                                    {modalMode === 'add' && <p className="text-[10px] text-gray-400 mt-1">Auto-generated secure password.</p>}
                                     {modalMode === 'edit' && <p className="text-[10px] text-gray-400 mt-1">Leave blank to keep existing password.</p>}
                                     {fieldErrors.password && <p className="text-rose-500 text-[11px] mt-1">{fieldErrors.password}</p>}
                                     {modalMode === 'edit' && formData.password && (
@@ -1284,27 +1280,45 @@ const UserList = () => {
                                     <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400  tracking-wider mb-1">
                                         PIN
                                     </label>
-                                    <input
-                                        type="text"
-                                        placeholder="123456"
-                                        value={formData.pin}
-                                        maxLength={6}
-                                        onChange={e => {
-                                            const rawValue = e.target.value;
+                                    <div className="relative">
+                                        <input
+                                            type="text"
+                                            inputMode="numeric"
+                                            pattern="[0-9]{6}"
+                                            placeholder="123456"
+                                            value={formData.pin}
+                                            maxLength={6}
+                                            onChange={e => {
+                                                const rawValue = e.target.value;
 
-                                            if (rawValue && /\D/.test(rawValue)) {
+                                                if (rawValue && /\D/.test(rawValue)) {
+                                                    setFieldErrors(prev => ({ ...prev, pin: '' }));
+                                                    setFormData({ ...formData, pin: '' });
+                                                    return;
+                                                }
+
+                                                const digits = rawValue.slice(0, 6);
                                                 setFieldErrors(prev => ({ ...prev, pin: '' }));
-                                                setFormData({ ...formData, pin: '' });
-                                                return;
-                                            }
-
-                                            const digits = rawValue.slice(0, 6);
-                                            setFieldErrors(prev => ({ ...prev, pin: '' }));
-                                            setFormData({...formData, pin: digits});
-                                        }}
-                                        className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
-                                    />
-                                    {modalMode === 'add' && <p className="text-[10px] text-gray-400 mt-1">Auto-generated 6‑digit PIN</p>}
+                                                setFormData({...formData, pin: digits});
+                                            }}
+                                            className="w-full p-2 pr-10 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
+                                        />
+                                        {modalMode === 'add' && (
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setFieldErrors((prev) => ({ ...prev, pin: '' }));
+                                                    setFormData((prev) => ({ ...prev, pin: generatePin() }));
+                                                }}
+                                                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                                                title="Generate new PIN"
+                                                aria-label="Generate new PIN"
+                                            >
+                                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                                            </button>
+                                        )}
+                                    </div>
+                                    {modalMode === 'add' && <p className="text-[10px] text-gray-400 mt-1">Auto-generated 6-digit PIN.</p>}
                                     {modalMode === 'edit' && <p className="text-[10px] text-gray-400 mt-1">Leave blank to retain current PIN or enter a new 6‑digit code.</p>}
                                     {fieldErrors.pin && <p className="text-rose-500 text-[11px] mt-1">{fieldErrors.pin}</p>}
                                 </div>
@@ -1325,7 +1339,7 @@ const UserList = () => {
 
             {/* Archive Confirmation Modal */}
             {isArchiveModalOpen && userToArchive && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                <div className="app-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
                     <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-sm md:max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
                         <div className="p-6 text-center">
                             <div className={`mx-auto flex items-center justify-center mb-4 ${userToArchive.isArchived ? 'text-emerald-600' : 'text-orange-600'}`}>

@@ -13,9 +13,10 @@ export const mapApiProductToUi = (product) => ({
   color: product.color || '',
   size: product.size || '',
   attributes: product.attributes || {},
-  supplier: product.supplierName || product.supplier || 'Local Supplier',
+  supplier: product.supplierName || product.supplier || '',
   imageUrl: product.imageUrl || product.image || '',
   category: product.category || 'General',
+  sellingUnit: product.sellingUnit || '',
   price: Number(product.price || 0),
   stock: Number(product.stock || 0),
   status: toStatus(Number(product.stock || 0)),
@@ -38,8 +39,9 @@ const mapUiProductToApi = (product) => ({
   color: product.color || '',
   size: product.size || '',
   attributes: product.attributes || {},
-  supplierName: product.supplier || 'Local Supplier',
+  supplierName: product.supplier || '',
   imageUrl: product.imageUrl || '',
+  sellingUnit: product.sellingUnit || '',
   isActive: product.isArchived ? false : true,
   ...(product.clientRequestId ? { clientRequestId: product.clientRequestId } : {}),
 });
@@ -164,6 +166,26 @@ export const voidSaleApi = async (saleId, { reason, requestId, proofFile } = {})
   });
 };
 
+export const requestSaleVoidApi = async (saleId, { reason, proofFile } = {}) => {
+  const formData = new FormData();
+  formData.append('reason', String(reason || '').trim());
+  if (proofFile) formData.append('proof', proofFile);
+  return apiRequest(`/api/sales/${encodeURIComponent(saleId)}/void-request`, {
+    method: 'POST',
+    body: formData,
+  });
+};
+
+export const getPendingSaleVoidRequestCountApi = async () => {
+  const response = await apiRequest('/api/sales/void-requests/pending-count');
+  return Number(response?.count || 0);
+};
+
+export const declineSaleVoidRequestApi = async (saleId, reason = '') => apiRequest(
+  `/api/sales/${encodeURIComponent(saleId)}/void-request/decline`,
+  { method: 'PATCH', body: JSON.stringify({ reason: String(reason || '').trim() }) }
+);
+
 export const getSaleVoidProofApi = async (saleId) => apiBlobRequest(
   `/api/sales/${encodeURIComponent(saleId)}/void-proof`
 );
@@ -178,9 +200,24 @@ export const updateSaleTransactionReferenceApi = async (saleId, { referenceNumbe
   });
 };
 
-export const getSaleSupportingDocumentApi = async (saleId) => apiBlobRequest(
-  `/api/sales/${encodeURIComponent(saleId)}/supporting-document`
-);
+export const correctSaleTransactionReferenceApi = async (saleId, { referenceNumber, documentFile, reason } = {}) => {
+  const formData = new FormData();
+  if (referenceNumber !== undefined) formData.append('referenceNumber', String(referenceNumber || '').trim());
+  formData.append('reason', String(reason || '').trim());
+  if (documentFile) formData.append('document', documentFile);
+  return apiRequest(`/api/sales/${encodeURIComponent(saleId)}/transaction-reference/correct`, {
+    method: 'PATCH',
+    body: formData,
+  });
+};
+
+export const getSaleSupportingDocumentApi = async (saleId, options = {}) => {
+  const params = new URLSearchParams();
+  if (options.correctionIndex !== undefined) params.set('correctionIndex', String(options.correctionIndex));
+  if (options.version) params.set('version', options.version);
+  const query = params.toString();
+  return apiBlobRequest(`/api/sales/${encodeURIComponent(saleId)}/supporting-document${query ? `?${query}` : ''}`);
+};
 
 export const listActivityLogsApi = async (limit = 100) => {
   const logs = await apiRequest(`/api/logs/activity?limit=${Number(limit) || 100}`);

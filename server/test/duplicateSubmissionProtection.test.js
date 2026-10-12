@@ -30,6 +30,7 @@ require.cache[logServicePath] = {
 const Sale = require('../src/models/Sale');
 const Partner = require('../src/models/Partner');
 const Product = require('../src/models/Product');
+const Category = require('../src/models/Category');
 const SpecialOrder = require('../src/models/SpecialOrder');
 const { createPartner } = require('../src/controllers/partnerController');
 const { markCreditTransactionFullyPaid } = require('../src/controllers/creditTransactionController');
@@ -142,6 +143,7 @@ test('persistent create models enforce sparse request-token uniqueness', () => {
 test('replaying one stock adjustment updates stock and inventory history once', async () => {
   const originalFindById = Product.findById;
   const originalFindOneAndUpdate = Product.findOneAndUpdate;
+  const originalCategoryFindOne = Category.findOne;
   let updateCount = 0;
   let product = {
     _id: 'product-1',
@@ -153,6 +155,7 @@ test('replaying one stock adjustment updates stock and inventory history once', 
   };
 
   Product.findById = async () => ({ ...product });
+  Category.findOne = async () => null;
   Product.findOneAndUpdate = async (filter, payload) => {
     assert.equal(filter._id, 'product-1');
     assert.deepEqual(filter.lastStockAdjustmentRequestId, { $ne: 'stock:same-submit' });
@@ -184,12 +187,14 @@ test('replaying one stock adjustment updates stock and inventory history once', 
   } finally {
     Product.findById = originalFindById;
     Product.findOneAndUpdate = originalFindOneAndUpdate;
+    Category.findOne = originalCategoryFindOne;
   }
 });
 
 test('product archive and restore persist through the existing product update endpoint', async () => {
   const originalFindById = Product.findById;
   const originalFindOneAndUpdate = Product.findOneAndUpdate;
+  const originalCategoryFindOne = Category.findOne;
   let product = {
     _id: 'product-archive-1',
     sku: 'PNT-ARCHIVE-1',
@@ -200,6 +205,7 @@ test('product archive and restore persist through the existing product update en
   };
 
   Product.findById = async () => ({ ...product });
+  Category.findOne = async () => null;
   Product.findOneAndUpdate = async (filter, payload) => {
     assert.equal(filter._id, 'product-archive-1');
     assert.equal(typeof payload.isActive, 'boolean');
@@ -225,6 +231,7 @@ test('product archive and restore persist through the existing product update en
   } finally {
     Product.findById = originalFindById;
     Product.findOneAndUpdate = originalFindOneAndUpdate;
+    Category.findOne = originalCategoryFindOne;
   }
 });
 

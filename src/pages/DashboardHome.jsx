@@ -13,6 +13,7 @@ import { getDashboardComparisonPeriod, getMetricTrend, getPreviousPeriodMetrics 
 import MetricTrendLine from '../components/MetricTrendLine';
 import { getValidSales } from '../../shared/saleLifecycle.mjs';
 import { subscribeRealtimeEvent } from '../services/realtimeClient';
+import { getCashierDashboardSales, getCashierSalesTotal } from '../utils/cashierDashboardMetrics';
 
 const ReceiptText = ({ className = 'h-5 w-5' }) => (
     <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -91,7 +92,7 @@ const EmptyAnalyticsState = ({ title, subtitle, icon }) => (
 );
 
 const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
-    const { userRole, currentUserName, isAdminOrAbove, ROLES } = useAuth();
+    const { userRole, currentUserName, currentAuthUserId, isAdminOrAbove, ROLES } = useAuth();
     const {
         transactions = [],
         processedInventory = [],
@@ -186,6 +187,15 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
         });
     }, [transactions, dateRange, customStartDate, customEndDate, specificDate]);
 
+    const cashierSelectedDateTransactions = useMemo(() => getCashierDashboardSales(
+        selectedDateTransactions,
+        { cashierId: currentAuthUserId, cashierName: currentUserName }
+    ), [selectedDateTransactions, currentAuthUserId, currentUserName]);
+
+    const transactionsForTopProducts = userRole === ROLES.CASHIER
+        ? cashierSelectedDateTransactions
+        : selectedDateTransactions;
+
     // Derived data for charts and top products
     const trendData = useMemo(() => {
         if (!isSuperAdmin) return [];
@@ -225,7 +235,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
         );
 
         const productStats = {};
-        selectedDateTransactions.forEach(t => {
+        transactionsForTopProducts.forEach(t => {
             t.items.forEach(item => {
                 if (!productStats[item.code]) {
                     const canonicalName = inventoryNameByCode.get(item.code) || item.name;
@@ -241,13 +251,14 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
             .slice(0, 10)
             .map((p, idx) => ({
                 id: idx + 1,
+                code: p.code,
                 name: p.name,
                 sales: p.sales,
                 revenueAmount: p.revenue,
                 revenue: formatCurrency(p.revenue),
                 percent: Math.min(100, Math.round((p.sales / 50) * 100))
             }));
-    }, [selectedDateTransactions, processedInventory]);
+    }, [transactionsForTopProducts, processedInventory]);
 
     const topSellingPieData = useMemo(() => {
         const totalQuantity = topProducts.reduce((sum, product) => sum + (product.sales || 0), 0);
@@ -306,9 +317,11 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
         [categories]
     );
     const totalCategoriesDisplay = isCategoriesLoading || categoriesError ? '—' : totalCategories;
-    const cashierTransactionCount = useMemo(() => {
-        return selectedDateTransactions.filter((t) => t.cashier === currentUserName).length;
-    }, [selectedDateTransactions, currentUserName]);
+    const cashierSalesTotal = useMemo(
+        () => getCashierSalesTotal(cashierSelectedDateTransactions),
+        [cashierSelectedDateTransactions]
+    );
+    const cashierTransactionCount = cashierSelectedDateTransactions.length;
     // Compute sales by product category (revenue = price * qty)
     const salesByCategory = useMemo(() => {
         if (!isSuperAdmin) return [];
@@ -442,9 +455,31 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
             </div>
 
             <div className="flex-1 min-h-0 flex flex-col gap-4">
-                  <div className={`grid auto-rows-fr grid-cols-1 gap-4 sm:grid-cols-2 ${isSuperAdmin ? 'lg:grid-cols-4' : 'lg:grid-cols-3'}`}>
+                  <div className={`grid auto-rows-fr grid-cols-1 gap-4 sm:grid-cols-2 ${(isSuperAdmin || userRole === ROLES.CASHIER) ? 'lg:grid-cols-4' : 'lg:grid-cols-3'}`}>
                     {userRole === ROLES.CASHIER ? (
                         <>
+                            <StatCard
+                                title="My Sales"
+                                value={formatCurrency(cashierSalesTotal)}
+                                icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 17l6-6 4 4 7-7" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14 8h6v6" /></svg>}
+                                color="green"
+                                onClick={() => onNavigate && onNavigate('History Logs')}
+                                refined
+                                metricHierarchy
+                                titleClassName="text-[13px]"
+                                valueClassName="text-[21px] leading-tight"
+                            />
+                            <StatCard
+                                title="My Transactions"
+                                value={cashierTransactionCount.toString()}
+                                icon={<ReceiptText />}
+                                color="amber"
+                                onClick={() => onNavigate && onNavigate('History Logs')}
+                                refined
+                                metricHierarchy
+                                titleClassName="text-[13px]"
+                                valueClassName="text-[21px] leading-tight"
+                            />
                             <StatCard
                                 title="Total Products"
                                 value={processedInventory.length.toString()}
@@ -462,17 +497,6 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                                 icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 7h6m-6 5h6m-6 5h6m6-10h4m-4 5h4m-4 5h4"/></svg>}
                                 color="indigo"
                                 onClick={() => onNavigate && onNavigate('Product Master List')}
-                                refined
-                                metricHierarchy
-                                titleClassName="text-[13px]"
-                                valueClassName="text-[21px] leading-tight"
-                            />
-                            <StatCard
-                                title="My Transactions"
-                                value={cashierTransactionCount.toString()}
-                                icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>}
-                                color="amber"
-                                onClick={() => onNavigate && onNavigate('History Logs')}
                                 refined
                                 metricHierarchy
                                 titleClassName="text-[13px]"
@@ -565,51 +589,50 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                     <div className="flex flex-col gap-4 w-full min-w-0">
                         <div className="flex gap-4 w-full justify-between px-2 h-[60vh] min-h-0 overflow-hidden">
                             {/* top-selling and low stock side by side */}
-                            <div className="bg-white p-0 rounded-xl shadow-sm border border-gray-100 flex flex-col relative overflow-hidden w-1/2 h-full min-h-0">
-                                <div className="px-4 py-2 flex items-center gap-2 shrink-0">
+                            <div className="w-1/2 self-start overflow-hidden rounded-xl border border-gray-100 bg-white p-0 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+                                <div className="flex items-center gap-2 px-4 py-3">
                                     <div className="p-1 bg-gray-100 rounded-lg text-gray-900">
                                         <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path></svg>
                                     </div>
-                                    <h3 className="text-base font-semibold text-gray-900">Top-Selling Product</h3>
+                                    <h3 className="text-[15px] font-semibold text-gray-900 dark:text-slate-100">My Top-Selling Products</h3>
                                 </div>
-                                <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-2">
-                                    <table className="main-data-table w-full text-left border-separate border-spacing-0">
-                                        <thead className="text-[11px] uppercase text-white bg-gray-900 sticky top-0 z-10 font-semibold tracking-wider">
-                                            <tr>
-                                                <th className="px-2 py-1 font-semibold tracking-wider border border-gray-700">Product</th>
-                                                <th className="px-2 py-1 text-right font-semibold tracking-wider border border-gray-700">Vol</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody className="divide-y divide-gray-50 dark:divide-gray-700 text-xs">
+                                {topProducts.length > 0 ? (
+                                    <div className="max-h-[calc(60vh-8rem)] overflow-y-auto overscroll-contain px-4 pb-1">
+                                        <div className="flex items-center justify-end border-b border-slate-100 pb-1.5 text-[10px] font-medium uppercase tracking-wide text-slate-400 dark:border-slate-700 dark:text-slate-500">
+                                            Units Sold
+                                        </div>
+                                        <div className="divide-y divide-slate-100 dark:divide-slate-700">
                                             {topProducts.map(product => (
-                                                <tr key={product.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors group">
-                                                    <td className="px-2 py-1 border border-gray-200 dark:border-gray-700">
-                                                        <div className="flex items-center gap-2">
-                                                            <div className={`w-4 h-4 rounded-full flex items-center justify-center font-semibold text-[9px] ${product.id === 1 ? 'bg-gray-900 text-white shadow-lg' : 'bg-gray-100 text-gray-500'}`}>
-                                                                {product.id}
-                                                            </div>
-                                                            <span className="font-medium text-gray-900 truncate max-w-25 dark:text-white">{product.name}</span>
-                                                        </div>
-                                                    </td>
-                                                    <td className="px-2 py-1 text-right border border-gray-200 dark:border-gray-700"><span className="font-medium text-gray-900 dark:text-white">{product.sales}</span></td>
-                                                </tr>
+                                                <div key={product.id} className="flex items-center gap-3 py-2.5">
+                                                    <span className="w-5 shrink-0 text-xs font-medium tabular-nums text-slate-400 dark:text-slate-500">#{product.id}</span>
+                                                    <div className="min-w-0 flex-1">
+                                                        <p className="truncate text-xs font-medium text-slate-800 dark:text-slate-100">{product.name}</p>
+                                                        {product.code && <p className="mt-0.5 truncate text-[10px] text-slate-400 dark:text-slate-500">{product.code}</p>}
+                                                    </div>
+                                                    <span className="shrink-0 whitespace-nowrap text-xs font-semibold tabular-nums text-slate-700 dark:text-slate-200">
+                                                        {formatNumber(product.sales)} {Number(product.sales) === 1 ? 'unit' : 'units'}
+                                                    </span>
+                                                </div>
                                             ))}
-                                        </tbody>
-                                    </table>
-                                    {topProducts.length === 0 && (
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="px-4 pb-3">
                                         <EmptyAnalyticsState
-                                            title="No top-selling products yet"
-                                            subtitle="No item sales were recorded in the selected date range."
+                                            title="No products sold yet"
+                                            subtitle="No item sales were recorded in your transactions for the selected date range."
                                             icon={(
                                                 <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8c-1.657 0-3 1.343-3 3v4h6v-4c0-1.657-1.343-3-3-3zm0 0V6m-7 13h14" />
                                                 </svg>
                                             )}
                                         />
-                                    )}
-                                </div>
-                                <div className="p-2 text-center border-t border-gray-100 bg-gray-50 shrink-0">
-                                    <button onClick={onViewAllProducts} className="w-full px-3 py-1.5 rounded-lg text-white font-medium text-xs shadow-sm transition-colors hover:bg-slate-800" style={{ backgroundColor: '#111827', border: '1px solid #111827' }}>VIEW ALL</button>
+                                    </div>
+                                )}
+                                <div className="border-t border-slate-100 bg-slate-50 px-4 py-2 text-right dark:border-slate-700 dark:bg-slate-800/50">
+                                    <button type="button" onClick={onViewAllProducts} className="inline-flex items-center rounded-md px-1 py-1 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 focus-visible:ring-offset-1 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white dark:focus-visible:ring-offset-slate-900">
+                                        View all <span className="ml-1" aria-hidden="true">→</span>
+                                    </button>
                                 </div>
                             </div>
                             <div className="bg-white p-0 rounded-xl shadow-sm border border-gray-100 flex flex-col relative overflow-hidden w-1/2 h-full min-h-0">

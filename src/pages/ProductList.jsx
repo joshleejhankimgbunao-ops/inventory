@@ -6,6 +6,9 @@ import ArchiveIcon from '../components/ArchiveIcon';
 import EditIcon from '../components/EditIcon';
 import TableActionButton from '../components/TableActionButton';
 import ProductAttributeFields from '../components/ProductAttributeFields';
+import ProductFamilyModal from '../components/ProductFamilyModal';
+import VariantCategoryChangeModal from '../components/VariantCategoryChangeModal';
+import SupplierSelector from '../components/SupplierSelector';
 import { showToast } from '../utils/toastHelper';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
@@ -30,6 +33,11 @@ import {
     sanitizeWholeNumberInput,
 } from '../utils/numericInput';
 import { getActiveConfiguredCategories, getConfiguredCategoryCount } from '../utils/categorySummary';
+import {
+    getProductFamilyKey,
+    groupProductsIntoFamilies,
+    matchesProductFamilySearch,
+} from '../utils/productFamilies';
 
 const ProductList = () => {
     const listContainerRef = useRef(null);
@@ -45,6 +53,7 @@ const ProductList = () => {
         logAction,
         logActivity,
         categories: customCategories = [],
+        fetchCategories,
         isInventoryLoading,
         isCategoriesLoading,
         categoriesError,
@@ -66,8 +75,14 @@ const ProductList = () => {
     const [modalMode, setModalMode] = useState('add'); // 'add' or 'edit'
     const [editingProduct, setEditingProduct] = useState(null);
     const [isSupplierDropdownOpen, setIsSupplierDropdownOpen] = useState(false); // Custom dropdown state
+    const [supplierSearchQuery, setSupplierSearchQuery] = useState('');
     const [supplierPartners, setSupplierPartners] = useState([]);
     const [enlargedProductImage, setEnlargedProductImage] = useState(null);
+    const [managedFamilyKey, setManagedFamilyKey] = useState('');
+    const [isFamilyModalOpen, setIsFamilyModalOpen] = useState(false);
+    const [variantFamilyKey, setVariantFamilyKey] = useState('');
+    const [isCategoryChangeOpen, setIsCategoryChangeOpen] = useState(false);
+    const [sellingUnitError, setSellingUnitError] = useState('');
 
     // Pagination
     const [currentPage, setCurrentPage] = useState(1);
@@ -75,7 +90,7 @@ const ProductList = () => {
     
     const loadSupplierPartners = useCallback(async () => {
         try {
-            const rows = await listPartnersApi({ type: 'supplier', includeArchived: false });
+            const rows = await listPartnersApi({ type: 'supplier', includeArchived: true });
 
             setSupplierPartners(Array.isArray(rows) ? rows : []);
         } catch {
@@ -141,13 +156,6 @@ const ProductList = () => {
     const activeFilterCount = (statusFilter !== 'All' ? 1 : 0) + (sortBy !== 'off' ? 1 : 0);
 
     const deriveStatus = (item) => getStockStatus(item, settings);
-
-    const getStockBadgeClass = (item) => {
-        const status = deriveStatus(item);
-        if (status === 'Out of Stock') return 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300';
-        if (status === 'Low Stock') return 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300';
-        return 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300';
-    };
 
     const getProductImageUrl = (product) => String(product?.imageUrl || '').trim();
 
@@ -270,13 +278,6 @@ const ProductList = () => {
         return CATEGORY_FIELD_RULES[categoryName] || CATEGORY_FIELD_RULES.default;
     };
 
-    const isCompactLegacyAttributeVisible = (categoryName, attributeKey) => {
-        const category = customCategories.find((item) => item.name === categoryName);
-        if (Number(category?.attributeSchemaVersion || 0) < 1) return true;
-
-        return getEffectiveProductAttributes(category).some((definition) => definition.key === attributeKey);
-    };
-
     // Helper: parse a size string back into value + unit
     const parseSizeString = (sizeStr, category) => {
         if (!sizeStr) return { value: '', unit: '' };
@@ -376,16 +377,105 @@ const ProductList = () => {
         sizeUnit: getDefaultSizeUnit(defaultCategory),
         price: '',
         stock: '',
+        sellingUnit: '',
         supplier: '',
         attributes: {},
     };
     const [formData, setFormData] = useState(initialFormState);
     const categoryFieldRules = getCategoryFieldRules(formData.category);
-    const selectedCategory = customCategories.find((category) => category.name === formData.category) || {};
+    const normalizeCategoryLookup = (value) => String(value || '')
+        .trim()
+        .replace(/\s+/g, ' ')
+        .toLowerCase();
+    const findConfiguredCategory = (categoryName) => customCategories.find(
+        (category) => normalizeCategoryLookup(category?.name) === normalizeCategoryLookup(categoryName)
+    );
+    const selectedCategory = findConfiguredCategory(formData.category) || {};
     const attributeDefinitions = getEffectiveProductAttributes(selectedCategory);
+    const getCategorySellingUnits = (categoryName) => {
+        const category = findConfiguredCategory(categoryName);
+        return Array.isArray(category?.sizeUnits)
+            ? category.sizeUnits.map((unit) => String(unit || '').trim()).filter(Boolean)
+            : [];
+    };
+    const configuredSellingUnits = getCategorySellingUnits(formData.category);
+    const resolveConfiguredSellingUnit = (currentUnit, availableUnits) => (
+        availableUnits.find((unit) => unit.toLowerCase() === String(currentUnit || '').trim().toLowerCase()) || ''
+    );
+    const sellingUnitState = isCategoriesLoading
+        ? 'loading'
+        : categoriesError
+            ? 'error'
+            : !selectedCategory?.name
+                ? 'no-category'
+                : configuredSellingUnits.length === 0
+                    ? 'empty'
+                    : 'available';
+    const hasConfiguredSellingUnit = Boolean(resolveConfiguredSellingUnit(formData.sellingUnit, configuredSellingUnits));
+    const selectedSellingUnit = resolveConfiguredSellingUnit(formData.sellingUnit, configuredSellingUnits);
+    const hasMeasurementAttribute = attributeDefinitions.some((definition) => definition.type === 'number_unit');
+    const soldByIsRequired = modalMode === 'add' || Boolean(editingProduct?.sellingUnit);
+    const sellingUnitOptionsKey = configuredSellingUnits.join('\u0001');
+
+    useEffect(() => {
+        if (!isModalOpen || modalMode !== 'add' || sellingUnitState !== 'available') return;
+
+        setFormData((previous) => {
+            const currentUnit = String(previous.sellingUnit || '').trim();
+            const isCurrentUnitValid = sellingUnitOptionsKey
+                .split('\u0001')
+                .some((unit) => unit.toLowerCase() === currentUnit.toLowerCase());
+            return currentUnit && !isCurrentUnitValid ? { ...previous, sellingUnit: '' } : previous;
+        });
+    }, [isModalOpen, modalMode, sellingUnitState, sellingUnitOptionsKey]);
+
+    const renderSoldByField = () => {
+        const hasLegacySellingUnit = modalMode === 'edit' && formData.sellingUnit && !hasConfiguredSellingUnit;
+        const preventUnsafeSellingUnitChange = (nextUnit) => (
+            modalMode === 'edit'
+            && editingProduct?.sellingUnit
+            && String(nextUnit || '').trim().toLowerCase() !== String(editingProduct.sellingUnit).trim().toLowerCase()
+            && Number(editingProduct.stock || 0) > 0
+        );
+
+        return <div>
+            <label className="mb-1 block text-[10px] font-semibold text-gray-500 dark:text-gray-400">Sold By {soldByIsRequired && <span className="text-red-400">*</span>}</label>
+            <select
+                value={formData.sellingUnit}
+                disabled={sellingUnitState !== 'available'}
+                onChange={(event) => {
+                    const nextUnit = event.target.value;
+                    if (preventUnsafeSellingUnitChange(nextUnit)) {
+                        setSellingUnitError('Sold By cannot be changed while this product has stock. Adjust inventory before changing its unit.');
+                        return;
+                    }
+                    setSellingUnitError('');
+                    setFormData((prev) => ({ ...prev, sellingUnit: nextUnit }));
+                }}
+                required={soldByIsRequired && sellingUnitState === 'available'}
+                aria-describedby={sellingUnitError ? 'selling-unit-error' : undefined}
+                className={`w-full rounded-lg border border-gray-200 p-2 text-xs font-medium outline-none dark:border-gray-600 ${sellingUnitState === 'available' ? 'cursor-pointer bg-white text-gray-900 focus:ring-2 focus:ring-gray-900 dark:bg-gray-700 dark:text-white dark:focus:ring-gray-500' : 'cursor-not-allowed bg-gray-50 text-gray-400 dark:bg-gray-800 dark:text-gray-500'}`}
+            >
+                {hasLegacySellingUnit && <option value={formData.sellingUnit}>{`Existing unit: ${formData.sellingUnit}`}</option>}
+                {sellingUnitState === 'loading' && <option value="">Loading selling units...</option>}
+                {sellingUnitState === 'error' && <option value="">Unable to load selling units</option>}
+                {sellingUnitState === 'no-category' && <option value="">Select a category first</option>}
+                {sellingUnitState === 'empty' && <option value="">No selling units available</option>}
+                {sellingUnitState === 'available' && <>
+                    <option value="" disabled={modalMode === 'edit' && Boolean(editingProduct?.sellingUnit)}>Select selling unit</option>
+                    {configuredSellingUnits.map((unit) => <option key={unit} value={unit}>{unit}</option>)}
+                </>}
+            </select>
+            {sellingUnitState === 'error' && <p className="mt-1 flex items-center gap-1 text-[10px] text-rose-500 dark:text-rose-300">Unable to load selling units.<button type="button" onClick={() => void fetchCategories()} className="font-semibold underline underline-offset-2 hover:text-rose-700 dark:hover:text-rose-100">Retry</button></p>}
+            {sellingUnitState === 'empty' && <p className="mt-1 text-[10px] text-gray-400 dark:text-gray-500">Configure selling units in System Configuration before creating a product.</p>}
+            {hasLegacySellingUnit && sellingUnitState !== 'available' && <p className="mt-1 text-[10px] text-amber-600 dark:text-amber-300">Existing unit is not configured for this category.</p>}
+            {sellingUnitError && <p id="selling-unit-error" role="alert" className="mt-1 text-[10px] text-rose-600 dark:text-rose-300">{sellingUnitError}</p>}
+        </div>;
+    };
 
     const supplierPartnerNames = useMemo(() => {
         return [...new Set((supplierPartners || [])
+            .filter((row) => row?.isArchived !== true)
             .map((row) => String(row?.name || '').trim())
             .filter(Boolean))]
             .sort((a, b) => a.localeCompare(b));
@@ -393,21 +483,23 @@ const ProductList = () => {
 
     // Derived suppliers list (strictly from supplier partners, no inventory fallback).
     const suggestedSuppliers = useMemo(() => supplierPartnerNames, [supplierPartnerNames]);
-
-    useEffect(() => {
-        if (!isModalOpen || !categoryFieldRules.showSupplier) return;
-
-        const currentSupplier = String(formData?.supplier || '').trim();
-        if (!currentSupplier) return;
-
-        const hasMatch = supplierPartnerNames.some(
-            (name) => name.toLowerCase() === currentSupplier.toLowerCase()
-        );
-
-        if (!hasMatch) {
-            setFormData((prev) => ({ ...prev, supplier: '' }));
-        }
-    }, [categoryFieldRules.showSupplier, formData?.supplier, isModalOpen, supplierPartnerNames]);
+    const matchingSuppliers = useMemo(() => {
+        const normalizedQuery = String(supplierSearchQuery || '').trim().toLowerCase();
+        if (!normalizedQuery) return suggestedSuppliers;
+        return suggestedSuppliers.filter((supplier) => supplier.toLowerCase().includes(normalizedQuery));
+    }, [suggestedSuppliers, supplierSearchQuery]);
+    const currentSupplierName = String(formData.supplier || '').trim();
+    const originalSupplierName = String(editingProduct?.supplier || '').trim();
+    const currentSupplierPartner = supplierPartners.find(
+        (partner) => String(partner?.name || '').trim().toLowerCase() === currentSupplierName.toLowerCase()
+    );
+    const currentSupplierIsSelectable = supplierPartnerNames.some(
+        (name) => name.toLowerCase() === currentSupplierName.toLowerCase()
+    );
+    const isPreservingUnchangedSupplier = modalMode === 'edit'
+        && Boolean(currentSupplierName)
+        && currentSupplierName.toLowerCase() === originalSupplierName.toLowerCase()
+        && !currentSupplierIsSelectable;
 
     const resolveCombinedSize = (sizeValue, sizeUnitValue, category) => {
         const trimmedSize = String(sizeValue || '').trim();
@@ -534,59 +626,53 @@ const ProductList = () => {
         [customCategories]
     );
     const categoryCountDisplay = isCategoriesLoading || categoriesError ? '—' : configuredCategoryCount;
-    const filteredProductsBase = useMemo(() => {
-        const normalizedQuery = debouncedSearchTerm.toLowerCase();
-
-        return inventory.filter(item => {
-            const matchesSearch = item.name.toLowerCase().includes(normalizedQuery) || 
-                                item.code.toLowerCase().includes(normalizedQuery) ||
-                                (item.brand || '').toLowerCase().includes(normalizedQuery) ||
-                                (item.color || '').toLowerCase().includes(normalizedQuery) ||
-                                Object.values(item.attributes || {}).some((value) => String(value ?? '').toLowerCase().includes(normalizedQuery));
-            
-            // Special handling for Archived Items view
-            if (statusFilter === 'Archived') {
-                return matchesSearch && item.isArchived && (categoryFilter === 'All' || item.category === categoryFilter);
-            }
-
-            // For all other views, strictly hide archived items
-            if (item.isArchived) return false;
-
-            // Status filter
-            const derivedStatus = deriveStatus(item);
-            if (statusFilter !== 'All' && derivedStatus !== statusFilter) return false;
-
-            // Category filter
-            if (categoryFilter !== 'All' && item.category !== categoryFilter) return false;
-
-            return matchesSearch;
+    const allProductFamilies = useMemo(
+        () => groupProductsIntoFamilies(inventory, customCategories),
+        [inventory, customCategories]
+    );
+    const scopedProductFamilies = useMemo(() => {
+        const scopedProducts = inventory.filter((item) => {
+            const matchesArchiveView = statusFilter === 'Archived' ? item.isArchived : !item.isArchived;
+            const matchesCategory = categoryFilter === 'All' || item.category === categoryFilter;
+            return matchesArchiveView && matchesCategory;
         });
-    }, [inventory, debouncedSearchTerm, statusFilter, categoryFilter, settings]);
+        return groupProductsIntoFamilies(scopedProducts, customCategories);
+    }, [inventory, customCategories, statusFilter, categoryFilter]);
 
-    const filteredProducts = useMemo(() => {
-        return [...filteredProductsBase].sort((a, b) => {
+    const filteredProductFamilies = useMemo(() => {
+        const visibleFamilies = scopedProductFamilies.filter((family) => {
+            if (!matchesProductFamilySearch(family, debouncedSearchTerm)) return false;
+            return true;
+        });
+
+        return [...visibleFamilies].sort((a, b) => {
             switch (sortBy) {
                 case 'name-asc':
                     return a.name.localeCompare(b.name);
                 case 'name-desc':
                     return b.name.localeCompare(a.name);
                 case 'stock-asc':
-                    return a.stock - b.stock;
+                    return a.totalStock - b.totalStock;
                 case 'stock-desc':
-                    return b.stock - a.stock;
+                    return b.totalStock - a.totalStock;
                 case 'price-asc':
-                    return a.price - b.price;
+                    return a.minPrice - b.minPrice;
                 case 'price-desc':
-                    return b.price - a.price;
+                    return b.maxPrice - a.maxPrice;
                 default:
                     return 0;
             }
         });
-    }, [filteredProductsBase, sortBy]);
+    }, [scopedProductFamilies, debouncedSearchTerm, sortBy]);
+
+    const managedFamily = useMemo(
+        () => allProductFamilies.find((family) => family.key === managedFamilyKey) || null,
+        [allProductFamilies, managedFamilyKey]
+    );
 
     const previewableProducts = useMemo(() => {
-        return filteredProducts.filter((product) => getProductImageUrl(product));
-    }, [filteredProducts]);
+        return filteredProductFamilies.flatMap((family) => family.variants).filter((product) => getProductImageUrl(product));
+    }, [filteredProductFamilies]);
 
     useEffect(() => {
         if (!enlargedProductImage) return;
@@ -728,10 +814,10 @@ const ProductList = () => {
     };
 
     // Pagination Logic
-    const totalPages = Math.ceil(filteredProducts.length / itemsPerPage);
+    const totalPages = Math.ceil(filteredProductFamilies.length / itemsPerPage);
     const indexOfLastItem = currentPage * itemsPerPage;
     const indexOfFirstItem = indexOfLastItem - itemsPerPage;
-    const paginatedProducts = filteredProducts.slice(indexOfFirstItem, indexOfLastItem);
+    const paginatedProductFamilies = filteredProductFamilies.slice(indexOfFirstItem, indexOfLastItem);
 
     React.useEffect(() => {
         setCurrentPage((previous) => Math.min(previous, Math.max(totalPages, 1)));
@@ -759,17 +845,23 @@ const ProductList = () => {
                 (formData.imageUrl || '') !== (editingProduct.imageUrl || '') ||
                 formData.category !== editingProduct.category ||
                 combinedSize !== (editingProduct.size || '') ||
+                String(formData.sellingUnit || '').trim().toLowerCase() !== String(editingProduct.sellingUnit || '').trim().toLowerCase() ||
                 parseFloat(formData.price) !== editingProduct.price ||
                 stockVal !== editingProduct.stock ||
-                (formData.supplier || 'Local Supplier') !== (editingProduct.supplier || 'Local Supplier')
+                (formData.supplier || '') !== (editingProduct.supplier || '') ||
+                JSON.stringify(formData.attributes || {}) !== JSON.stringify(productAttributeValues(editingProduct, attributeDefinitions))
             );
         }
         return false;
-    }, [formData, modalMode, editingProduct]);
+    }, [formData, modalMode, editingProduct, attributeDefinitions]);
 
     // Handlers
     const handleOpenAdd = () => {
         productCreateRequestIdRef.current = '';
+        setSellingUnitError('');
+        setSupplierSearchQuery('');
+        setIsSupplierDropdownOpen(false);
+        setVariantFamilyKey('');
         setModalMode('add');
         setFormData({
             ...initialFormState,
@@ -779,8 +871,54 @@ const ProductList = () => {
         setIsModalOpen(true);
     };
 
+    const handleOpenFamily = (family) => {
+        setManagedFamilyKey(family.key);
+        setIsFamilyModalOpen(true);
+    };
+
+    const handleCloseProductForm = (familyKeyOverride = '') => {
+        const nextFamilyKey = typeof familyKeyOverride === 'string' && familyKeyOverride ? familyKeyOverride : variantFamilyKey;
+        setIsModalOpen(false);
+        setIsCategoryChangeOpen(false);
+        if (nextFamilyKey) {
+            setManagedFamilyKey(nextFamilyKey);
+            setIsFamilyModalOpen(true);
+        }
+        setVariantFamilyKey('');
+        setSellingUnitError('');
+        setSupplierSearchQuery('');
+        setIsSupplierDropdownOpen(false);
+    };
+
+    const handleOpenAddVariant = (family) => {
+        productCreateRequestIdRef.current = '';
+        setSellingUnitError('');
+        setManagedFamilyKey(family.key);
+        setVariantFamilyKey(family.key);
+        setIsFamilyModalOpen(false);
+        setSupplierSearchQuery(family.sharedSupplier || '');
+        setIsSupplierDropdownOpen(false);
+        setModalMode('add');
+        setEditingProduct(null);
+        setFormData({
+            ...initialFormState,
+            name: family.name,
+            category: family.categoryName,
+            imageUrl: family.sharedImageUrl,
+            supplier: family.sharedSupplier,
+            stock: '0',
+            sellingUnit: '',
+            sizeUnit: getDefaultSizeUnit(family.categoryName),
+            attributes: productAttributeValues({}, family.attributeDefinitions),
+        });
+        setIsModalOpen(true);
+    };
+
     const handleOpenEdit = (product) => {
         productCreateRequestIdRef.current = '';
+        setSellingUnitError('');
+        setSupplierSearchQuery(product.supplier || '');
+        setIsSupplierDropdownOpen(false);
         setModalMode('edit');
         setEditingProduct(product);
         const parsed = parseSizeString(product.size || '', product.category);
@@ -796,10 +934,43 @@ const ProductList = () => {
             sizeUnit: parsed.unit,
             price: product.price,
             stock: product.stock,
-            supplier: product.supplier || 'Local Supplier',
+            sellingUnit: product.sellingUnit || '',
+            supplier: product.supplier || '',
             attributes: productAttributeValues(product, definitions),
         });
         setIsModalOpen(true);
+    };
+
+    const handleOpenVariantEdit = (product, family) => {
+        setManagedFamilyKey(family.key);
+        setVariantFamilyKey(family.key);
+        setIsFamilyModalOpen(false);
+        handleOpenEdit(product);
+    };
+
+    const applyVariantCategoryChange = ({ category, attributes, definitions }) => {
+        const legacy = legacyValuesFromAttributes(definitions, attributes);
+        const parsedSize = parseSizeString(legacy.size || '', category);
+        setFormData((previous) => ({
+            ...previous,
+            category,
+            attributes,
+            brand: legacy.brand,
+            color: legacy.color,
+            size: parsedSize.value,
+            sizeUnit: parsedSize.unit || getDefaultSizeUnit(category),
+            sellingUnit: resolveConfiguredSellingUnit(previous.sellingUnit, getCategorySellingUnits(category)),
+        }));
+        setIsCategoryChangeOpen(false);
+    };
+
+    const openVariantCategoryChange = () => {
+        const hasAnotherActiveCategory = customCategories.some((category) => category.isActive !== false && category.name !== formData.category);
+        if (!hasAnotherActiveCategory) {
+            showToast('No Category Available', 'Create or activate another category before moving this variant.', 'warning', 'product-category-unavailable');
+            return;
+        }
+        setIsCategoryChangeOpen(true);
     };
 
     const handleSave = async (e) => {
@@ -819,10 +990,14 @@ const ProductList = () => {
         const legacyAttributes = legacyValuesFromAttributes(attributeDefinitions, formData.attributes);
         const normalizedBrand = normalizeHumanReadable(legacyAttributes.brand);
         const normalizedColor = normalizeHumanReadable(legacyAttributes.color);
-        const normalizedSupplier = rules.showSupplier ? String(formData.supplier || '').trim() : '';
+        const normalizedSupplier = (rules.showSupplier || modalMode === 'edit') ? String(formData.supplier || '').trim() : '';
         const supplierExists = supplierPartnerNames.some(
             (name) => name.toLowerCase() === normalizedSupplier.toLowerCase()
         );
+        const existingSupplier = String(editingProduct?.supplier || '').trim();
+        const isUnchangedLegacySupplier = modalMode === 'edit'
+            && Boolean(normalizedSupplier)
+            && normalizedSupplier.toLowerCase() === existingSupplier.toLowerCase();
         const combinedSize = legacyAttributes.size;
         const normalizedPrice = formatMoneyInput(formData.price);
         
@@ -843,13 +1018,29 @@ const ProductList = () => {
             return;
         }
 
-        if (rules.showSupplier && normalizedSupplier && !supplierExists) {
+        if (modalMode === 'add') {
+            const sellingUnitMessages = {
+                loading: 'Selling units are still loading. Please wait.',
+                error: 'Unable to load selling units. Retry and try again.',
+                'no-category': 'Select a category first.',
+                empty: 'No selling units are available for this category.',
+                available: 'Please select a selling unit.',
+            };
+            if (sellingUnitState !== 'available' || !hasConfiguredSellingUnit) {
+                setSellingUnitError(sellingUnitMessages[sellingUnitState] || sellingUnitMessages.available);
+                showToast('Selling Unit Required', sellingUnitMessages[sellingUnitState] || sellingUnitMessages.available, 'error', 'product-validation');
+                return;
+            }
+        }
+
+        if (rules.showSupplier && normalizedSupplier && !supplierExists && !isUnchangedLegacySupplier) {
                 showToast('Invalid Supplier', 'Supplier must be selected from Supplier Partners.', 'error', 'product-validation');
                 return;
         }
 
         productSubmitInFlightRef.current = true;
         setIsSavingProduct(true);
+        let familyKeyAfterSave = variantFamilyKey;
         try {
             const maxStockLimit = (settings && settings.maxStockLimit) ? parseInt(settings.maxStockLimit) : 100;
             if (modalMode === 'add') {
@@ -880,7 +1071,7 @@ const ProductList = () => {
                 size: finalSize,
                 price: Number(normalizedPrice),
                 stock: stockVal,
-                supplier: normalizedSupplier || 'Local Supplier',
+                supplier: normalizedSupplier,
                 attributes: formData.attributes,
                 clientRequestId: productCreateRequestIdRef.current || (productCreateRequestIdRef.current = createClientRequestId('product')),
             };
@@ -921,12 +1112,13 @@ const ProductList = () => {
                 (String(formData.imageUrl || '').trim()) !== (String(editingProduct.imageUrl || '').trim()) ||
                 formData.category !== editingProduct.category ||
                 (finalSize || '') !== (editingProduct.size || '') ||
+                String(formData.sellingUnit || '').trim().toLowerCase() !== String(editingProduct.sellingUnit || '').trim().toLowerCase() ||
                 parseFloat(formData.price) !== editingProduct.price ||
-                (normalizedSupplier || 'Local Supplier') !== (editingProduct.supplier || 'Local Supplier');
+                normalizedSupplier !== (editingProduct.supplier || '');
             const attributesChanged = JSON.stringify(formData.attributes || {}) !== JSON.stringify(productAttributeValues(editingProduct, attributeDefinitions));
 
             if (!hasChanges && !attributesChanged) {
-               setIsModalOpen(false);
+               handleCloseProductForm();
                return; 
             }
 
@@ -942,7 +1134,7 @@ const ProductList = () => {
                 size: finalSize,
                 price: Number(normalizedPrice),
                 stock: editingProduct.stock,
-                supplier: normalizedSupplier || 'Local Supplier',
+                supplier: normalizedSupplier,
                 attributes: formData.attributes,
             };
             localUpdatedProduct.status = deriveStatus(localUpdatedProduct);
@@ -959,6 +1151,11 @@ const ProductList = () => {
                 });
             } catch (error) {
                 if (Number(error?.status || 0) === 409) {
+                    if (/Sold By cannot be changed/i.test(error.message || '')) {
+                        setSellingUnitError(error.message);
+                        showToast('Sold By Cannot Change', error.message, 'error', 'product-selling-unit');
+                        return;
+                    }
                     if (/SKU already exists/i.test(error.message || '')) {
                         showToast('Duplicate SKU', error.message, 'error', 'product-duplicate');
                         return;
@@ -976,7 +1173,7 @@ const ProductList = () => {
                     } catch {
                         // Keep current UI state if refresh fails.
                     }
-                    setIsModalOpen(false);
+                    handleCloseProductForm();
                     return;
                 }
                 showToast(
@@ -993,11 +1190,17 @@ const ProductList = () => {
                     ? { ...item, ...mergedUpdatedProduct }
                     : item
             ));
+            if (variantFamilyKey) {
+                familyKeyAfterSave = getProductFamilyKey({
+                    category: mergedUpdatedProduct.category,
+                    name: mergedUpdatedProduct.name,
+                });
+            }
             log('UPDATE', editingProduct.code, `Updated product details`);
             logActivity(currentUserName, 'Updated Product', `${editingProduct.code} - ${editingProduct.name}`);
             showToast("Product Updated", "Product details have been saved.", "success", "product-action");
         }
-        setIsModalOpen(false);
+        handleCloseProductForm(familyKeyAfterSave);
         productCreateRequestIdRef.current = '';
         } finally {
             productSubmitInFlightRef.current = false;
@@ -1058,30 +1261,6 @@ const ProductList = () => {
             setIsArchiveSubmitting(false);
         }
     };
-
-    const stockLegendItems = [
-        {
-            key: 'in-stock',
-            label: 'In Stock',
-            description: 'Good quantity available',
-            dotClass: 'bg-green-500',
-            chipClass: 'bg-green-50 text-green-700 border-green-200 dark:bg-green-900/20 dark:text-green-300 dark:border-green-800',
-        },
-        {
-            key: 'low-stock',
-            label: 'Low Stock',
-            description: 'Reorder soon',
-            dotClass: 'bg-yellow-500',
-            chipClass: 'bg-yellow-50 text-yellow-700 border-yellow-200 dark:bg-yellow-900/20 dark:text-yellow-300 dark:border-yellow-800',
-        },
-        {
-            key: 'out-of-stock',
-            label: 'Out of Stock',
-            description: 'No quantity left',
-            dotClass: 'bg-red-500',
-            chipClass: 'bg-red-50 text-red-700 border-red-200 dark:bg-red-900/20 dark:text-red-300 dark:border-red-800',
-        },
-    ];
 
     const activeProductCount = useMemo(
         () => inventory.filter((item) => !item.isArchived).length,
@@ -1237,22 +1416,20 @@ const ProductList = () => {
                             {isFilterPanelOpen && (
                                 <div className="absolute top-full mt-2 w-72 bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-100 dark:border-gray-700 py-2 z-50 left-0 animate-in fade-in slide-in-from-top-2 duration-200 max-h-[70vh] overflow-y-auto">
                                     
-                                    {/* Status Section */}
+                                    {/* Archive view */}
                                     <div className="px-3 pt-2 pb-1">
-                                        <div className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">Status</div>
+                                        <div className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">View</div>
                                     </div>
                                     <div className="px-2 pb-2 flex flex-wrap gap-1">
-                                        {['All', 'In Stock', 'Low Stock', 'Out of Stock', 'Archived'].map(status => (
+                                        {['All', 'Archived'].map(status => (
                                             <button key={status} onClick={() => setStatusFilter(status)}
                                                 className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all ${
                                                     statusFilter === status
                                                     ? 'bg-gray-900 dark:bg-gray-600 text-white shadow-sm'
-                                                    : status === 'Low Stock' ? 'bg-yellow-50 text-yellow-600 hover:bg-yellow-100 dark:bg-yellow-900/20 dark:text-yellow-400'
-                                                    : status === 'Out of Stock' ? 'bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-900/20 dark:text-red-400'
                                                     : status === 'Archived' ? 'bg-orange-50 text-orange-600 hover:bg-orange-100 dark:bg-orange-900/20 dark:text-orange-400'
                                                     : 'bg-gray-50 text-gray-600 hover:bg-gray-100 dark:bg-gray-700 dark:text-gray-300'
                                                 }`}>
-                                                {status === 'All' ? 'All Status' : status}
+                                                {status === 'All' ? 'Active' : status}
                                             </button>
                                         ))}
                                     </div>
@@ -1319,18 +1496,6 @@ const ProductList = () => {
                     )}
                 </div>
 
-                <div className="px-3 pb-2 flex flex-wrap items-center gap-2">
-                    {stockLegendItems.map((item) => (
-                        <span
-                            key={item.key}
-                            className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full border text-[11px] font-semibold ${item.chipClass}`}
-                        >
-                            <span className={`w-2 h-2 rounded-full ${item.dotClass}`} aria-hidden="true" />
-                            <span>{item.label}</span>
-                        </span>
-                    ))}
-                </div>
-
                 {/* Backdrop for closing panel */}
                 {isFilterPanelOpen && (
                     <div className="fixed inset-0 z-10 bg-transparent" onClick={() => setIsFilterPanelOpen(false)} />
@@ -1338,27 +1503,38 @@ const ProductList = () => {
 
                  {/* Data Table */}
                 <div ref={listContainerRef} className="w-full md:flex-1 md:overflow-y-auto px-1 md:px-3 pb-3 overflow-x-auto">
-                    <table className="main-data-table w-full text-left border-separate border-spacing-0 table-fixed min-w-175 md:min-w-225">
+                    <table className="main-data-table w-full text-center border-separate border-spacing-0 table-fixed min-w-225 lg:min-w-250">
+                        <colgroup>
+                            <col className={isAdminOrAbove() ? 'w-[9%]' : 'w-[10%]'} />
+                            <col className={isAdminOrAbove() ? 'w-[8%]' : 'w-[9%]'} />
+                            <col className={isAdminOrAbove() ? 'w-[21%]' : 'w-[22%]'} />
+                            <col className={isAdminOrAbove() ? 'w-[11%]' : 'w-[12%]'} />
+                            <col className={isAdminOrAbove() ? 'w-[17%]' : 'w-[18%]'} />
+                            <col className={isAdminOrAbove() ? 'w-[17%]' : 'w-[19%]'} />
+                            <col className="w-[10%]" />
+                            {isAdminOrAbove() && <col className="w-[7%]" />}
+                        </colgroup>
                         <thead className="sticky top-0 z-10 shadow-sm">
                             <tr className="bg-gray-900 dark:bg-gray-700 text-white uppercase tracking-wider">
-                                <th className="px-4 py-2 text-[11px] font-semibold text-center border border-gray-700 w-[10%]">SKU</th>
-                                <th className="px-4 py-2 text-[11px] font-semibold text-center border border-gray-700 w-[10%]">Photo</th>
-                                <th className="px-4 py-2 text-[11px] font-semibold text-center border border-gray-700 w-[25%]">Product</th>
-                                <th className="px-4 py-2 text-[11px] font-semibold text-center border border-gray-700 w-[20%]">Category</th>
-                                <th className="px-4 py-2 text-[11px] font-semibold text-center border border-gray-700 w-[15%]">Price</th>
-                                <th className="px-4 py-2 text-[11px] font-semibold text-center border border-gray-700 w-[15%]">Stock</th>
-                                {isAdminOrAbove() && <th className="px-4 py-2 text-[11px] font-semibold text-center border border-gray-700 w-42.5">Actions</th>}
+                                <th className="px-3 py-2 text-[11px] font-semibold text-center border border-gray-700">SKU</th>
+                                <th className="px-3 py-2 text-[11px] font-semibold text-center border border-gray-700">Photo</th>
+                                <th className="px-3 py-2 text-[11px] font-semibold text-center border border-gray-700">Product</th>
+                                <th className="px-3 py-2 text-[11px] font-semibold text-center border border-gray-700">Variants</th>
+                                <th className="px-3 py-2 text-[11px] font-semibold text-center border border-gray-700">Category</th>
+                                <th className="px-3 py-2 text-[11px] font-semibold text-center border border-gray-700">Price</th>
+                                <th className="px-3 py-2 text-[11px] font-semibold text-center border border-gray-700">Stock</th>
+                                {isAdminOrAbove() && <th className="px-3 py-2 text-[11px] font-semibold text-center border border-gray-700">Actions</th>}
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-50 dark:divide-gray-700">
                             {isInventoryLoading ? (
                                 <TableSkeletonRows
                                     rowKeyPrefix="products-skeleton"
-                                    columnTypes={[...Array(6).fill('text'), ...(isAdminOrAbove() ? ['actions'] : [])]}
+                                    columnTypes={[...Array(7).fill('text'), ...(isAdminOrAbove() ? ['actions'] : [])]}
                                 />
-                            ) : filteredProducts.length === 0 ? (
+                            ) : filteredProductFamilies.length === 0 ? (
                                 <tr>
-                                    <td colSpan={isAdminOrAbove() ? "7" : "6"} className="px-6 py-12 text-center text-gray-400 dark:text-gray-500">
+                                    <td colSpan={isAdminOrAbove() ? "8" : "7"} className="px-6 py-12 text-center text-gray-400 dark:text-gray-500">
                                         <div className="flex flex-col items-center justify-center">
                                             <svg className="w-12 h-12 mb-3 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293H9.414a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 005.586 13H4"></path></svg>
                                             <p className="text-sm font-medium">No products found.</p>
@@ -1366,33 +1542,38 @@ const ProductList = () => {
                                     </td>
                                 </tr>
                             ) : (
-                                paginatedProducts.map((product) => (
-                                    <tr key={product.code} className={`hover:bg-gray-50/80 dark:hover:bg-gray-700/50 transition-colors group ${
-                                        product.isArchived 
+                                paginatedProductFamilies.map((family) => {
+                                    const product = family.representative;
+                                    const isArchivedFamily = family.activeCount === 0;
+                                    return (
+                                    <tr key={family.key} className={`hover:bg-gray-50/80 dark:hover:bg-gray-700/50 transition-colors group ${
+                                        isArchivedFamily
                                         ? 'bg-gray-50/50 dark:bg-gray-800'
                                         : ''
                                     }`}>
-                                        {/* Code */}
-                                        <td className={`px-4 py-1.5 whitespace-nowrap text-center border border-gray-200 dark:border-gray-700`}>
-                                            <IdentifierChip className={product.isArchived ? 'opacity-60' : ''}>{product.code}</IdentifierChip>
+                                        {/* SKU summary */}
+                                        <td className="px-3 py-1.5 align-middle whitespace-nowrap text-center border border-gray-200 dark:border-gray-700">
+                                            <IdentifierChip className={isArchivedFamily ? 'opacity-60' : ''}>
+                                                {family.variants.length === 1 ? product.code : `${family.variants.length} SKUs`}
+                                            </IdentifierChip>
                                         </td>
                                         {/* Photo */}
-                                        <td className="px-4 py-1.5 whitespace-nowrap text-center border border-gray-200 dark:border-gray-700">
-                                            {product.imageUrl ? (
+                                        <td className="px-3 py-1.5 align-middle whitespace-nowrap text-center border border-gray-200 dark:border-gray-700">
+                                            {family.representativeImageUrl ? (
                                                 <button
                                                     type="button"
-                                                    onClick={() => openProductImagePreview(product)}
+                                                    onClick={() => openProductImagePreview(family.imageProduct)}
                                                     className={`group/photo mx-auto relative h-12 w-12 rounded-xl overflow-hidden border flex items-center justify-center transition-transform duration-150 hover:scale-105 focus:outline-none focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-300 ${
-                                                        product.isArchived
+                                                        isArchivedFamily
                                                             ? 'bg-gray-50 border-gray-100 dark:bg-gray-800 dark:border-gray-700'
                                                             : 'bg-gray-100 border-gray-200 dark:bg-gray-700 dark:border-gray-600'
                                                     }`}
                                                     aria-label={`Enlarge image for ${product.name}`}
                                                 >
                                                     <img
-                                                        src={product.imageUrl}
+                                                        src={family.representativeImageUrl}
                                                         alt={product.name}
-                                                        className={`h-full w-full object-cover transition-all duration-200 group-hover/photo:scale-110 group-hover/photo:opacity-35 group-hover/photo:blur-[1.5px] ${product.isArchived ? 'opacity-40 grayscale' : ''}`}
+                                                        className={`h-full w-full object-cover transition-all duration-200 group-hover/photo:scale-110 group-hover/photo:opacity-35 group-hover/photo:blur-[1.5px] ${isArchivedFamily ? 'opacity-40 grayscale' : ''}`}
                                                     />
                                                     <div className="absolute inset-0 flex items-center justify-center pointer-events-none bg-black/0 opacity-0 transition-all duration-150 group-hover/photo:bg-black/45 group-hover/photo:opacity-100">
                                                         <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-white/92 text-gray-900 shadow-md ring-1 ring-black/5">
@@ -1408,84 +1589,53 @@ const ProductList = () => {
                                                 </div>
                                             )}
                                         </td>
-                                        {/* Product (Brand + Name) */}
-                                        <td className="px-4 py-1.5 whitespace-nowrap border border-gray-200 dark:border-gray-700">
-                                            <div className="flex flex-col min-w-0">
-                                                <div className="flex items-center gap-2 min-w-0">
-                                                    <span className={`text-sm font-semibold leading-tight truncate ${product.isArchived ? 'text-gray-400 dark:text-gray-500 line-through' : 'text-gray-900 dark:text-white'}`}>
-                                                        {product.name}
-                                                    </span>
-                                                    {product.brand && isCompactLegacyAttributeVisible(product.category, 'brand') && (
-                                                        <span className={`shrink-0 text-[10px] font-medium leading-tight px-1.5 py-0.5 rounded-md ${product.isArchived ? 'bg-gray-50 text-gray-300 dark:bg-gray-800 dark:text-gray-600' : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'}`}>
-                                                            {product.brand}
-                                                        </span>
-                                                    )}
-                                                    {product.isArchived && (
-                                                        <span className="shrink-0 px-1.5 py-0.5 rounded text-[10px] bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400 font-semibold uppercase">Archived</span>
-                                                    )}
-                                                </div>
-                                                {((product.size && isCompactLegacyAttributeVisible(product.category, 'size'))
-                                                    || (product.color && isCompactLegacyAttributeVisible(product.category, 'color'))) && (
-                                                    <div className="mt-1 flex items-center gap-1.5 min-w-0">
-                                                        <span className={`min-w-0 truncate px-1.5 py-0.5 rounded text-[10px] font-medium border ${product.isArchived ? 'bg-gray-50 text-gray-400 border-gray-200 dark:bg-gray-800 dark:text-gray-600 dark:border-gray-700' : 'bg-gray-50 text-black border-gray-300 dark:bg-gray-700 dark:text-white dark:border-gray-600'}`}>
-                                                            {product.size && isCompactLegacyAttributeVisible(product.category, 'size') ? `Size: ${product.size}` : ''}
-                                                            {product.size && product.color
-                                                                && isCompactLegacyAttributeVisible(product.category, 'size')
-                                                                && isCompactLegacyAttributeVisible(product.category, 'color') ? ' • ' : ''}
-                                                            {product.color && isCompactLegacyAttributeVisible(product.category, 'color') ? `Color: ${product.color}` : ''}
-                                                        </span>
-                                                    </div>
-                                                )}
-                                            </div>
+                                        {/* Product family */}
+                                        <td className="px-3 py-1.5 align-middle text-center border border-gray-200 dark:border-gray-700">
+                                            <span className={`block truncate text-center text-sm font-semibold leading-tight ${isArchivedFamily ? 'text-gray-400 dark:text-gray-500 line-through' : 'text-gray-900 dark:text-white'}`}>
+                                                {family.name}
+                                            </span>
+                                        </td>
+
+                                        {/* Variant count */}
+                                        <td className="px-3 py-1.5 align-middle whitespace-nowrap text-center border border-gray-200 dark:border-gray-700">
+                                            <span className={`inline-flex rounded-md bg-slate-100 px-2 py-1 text-[10px] font-medium text-slate-600 dark:bg-slate-700 dark:text-slate-300 ${isArchivedFamily ? 'opacity-60' : ''}`}>
+                                                {family.variants.length} {family.variants.length === 1 ? 'variant' : 'variants'}
+                                            </span>
                                         </td>
                                         
                                         {/* Category */}
-                                        <td className={`px-4 py-1.5 whitespace-nowrap text-center border border-gray-200 dark:border-gray-700`}>
-                                            <span className={`px-2.5 py-1.5 rounded-md text-xs font-semibold ${product.isArchived ? 'bg-gray-50 text-gray-300 dark:bg-gray-800 dark:text-gray-600' : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'}`}>{product.category}</span>
+                                        <td className={`px-3 py-1.5 align-middle whitespace-nowrap text-center border border-gray-200 dark:border-gray-700`}>
+                                            <span className={`px-2.5 py-1.5 rounded-md text-xs font-semibold ${isArchivedFamily ? 'bg-gray-50 text-gray-300 dark:bg-gray-800 dark:text-gray-600' : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'}`}>{family.categoryName}</span>
                                         </td>
                                         {/* Price */}
-                                        <td className={`px-4 py-1.5 whitespace-nowrap text-sm font-semibold text-center border border-gray-200 dark:border-gray-700 tabular-nums ${product.isArchived ? 'text-gray-300 dark:text-gray-600' : 'text-gray-900 dark:text-white'}`}>
-                                            ₱{formatMoney(product.price)}
+                                        <td className={`px-3 py-1.5 align-middle whitespace-nowrap text-sm font-semibold text-center border border-gray-200 dark:border-gray-700 tabular-nums ${isArchivedFamily ? 'text-gray-300 dark:text-gray-600' : 'text-gray-900 dark:text-white'}`}>
+                                            ₱{formatMoney(family.minPrice)}{family.minPrice !== family.maxPrice ? ` – ₱${formatMoney(family.maxPrice)}` : ''}
                                         </td>
                                         {/* Stock */}
-                                        <td className="px-4 py-1.5 whitespace-nowrap text-center border border-gray-200 dark:border-gray-700">
-                                            <div className={`flex flex-col items-center ${product.isArchived ? 'opacity-30' : ''}`}>
-                                                <span className={`px-2 py-0.5 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                                                    getStockBadgeClass(product)
-                                                }`}>
-                                                    {product.stock} Qty
+                                        <td className="px-3 py-1.5 align-middle whitespace-nowrap text-center border border-gray-200 dark:border-gray-700">
+                                            <div className={`flex flex-col items-center ${isArchivedFamily ? 'opacity-30' : ''}`}>
+                                                <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs font-semibold leading-5 text-slate-600 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                                                    {family.totalStock} total
                                                 </span>
                                             </div>
                                         </td>
                                         {/* Actions */}
                                         {isAdminOrAbove() && (
-                                        <td className="w-42.5 px-4 py-2 whitespace-nowrap text-center text-sm font-medium border border-gray-200 dark:border-gray-700 overflow-hidden">
+                                        <td className="px-3 py-1.5 align-middle whitespace-nowrap text-center text-sm font-medium border border-gray-200 dark:border-gray-700 overflow-hidden">
                                             <div className="flex items-center justify-center gap-2">
                                                 <TableActionButton
-                                                    onClick={() => handleOpenEdit(product)}
-                                                    label="Edit"
-                                                    aria-label={`Edit ${product.name}`}
+                                                    onClick={() => handleOpenFamily(family)}
+                                                    label="Manage variants"
+                                                    aria-label={`Manage variants for ${family.name}`}
                                                 >
                                                     <EditIcon />
-                                                </TableActionButton>
-                                                
-                                                <TableActionButton
-                                                    onClick={() => toggleArchive(product)}
-                                                    variant={product.isArchived ? 'positive' : 'destructive'}
-                                                    label={product.isArchived ? 'Restore' : 'Archive'}
-                                                    aria-label={`${product.isArchived ? 'Restore' : 'Archive'} ${product.name}`}
-                                                >
-                                                    {product.isArchived ? (
-                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-                                                    ) : (
-                                                        <ArchiveIcon />
-                                                    )}
                                                 </TableActionButton>
                                             </div>
                                         </td>
                                         )}
                                     </tr>
-                                ))
+                                    );
+                                })
                             )}
                         </tbody>
                     </table>
@@ -1494,16 +1644,29 @@ const ProductList = () => {
                 {/* Pagination Controls */}
                 <div className="mt-auto flex shrink-0 flex-col items-start gap-3 border-t border-slate-300 bg-transparent pt-3 pb-1 sm:flex-row sm:items-center sm:justify-between dark:border-gray-700">
                         <div className="text-xs text-gray-500 dark:text-gray-400 font-medium">
-                            Showing <span className="font-semibold text-gray-900 dark:text-white">{filteredProducts.length === 0 ? 0 : indexOfFirstItem + 1}</span> to <span className="font-semibold text-gray-900 dark:text-white">{Math.min(indexOfLastItem, filteredProducts.length)}</span> of <span className="font-semibold text-gray-900 dark:text-white">{filteredProducts.length}</span> results
+                            Showing <span className="font-semibold text-gray-900 dark:text-white">{filteredProductFamilies.length === 0 ? 0 : indexOfFirstItem + 1}</span> to <span className="font-semibold text-gray-900 dark:text-white">{Math.min(indexOfLastItem, filteredProductFamilies.length)}</span> of <span className="font-semibold text-gray-900 dark:text-white">{filteredProductFamilies.length}</span> product families
                         </div>
                         <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} pageSize={itemsPerPage} onPageSizeChange={(pageSize) => { setItemsPerPage(pageSize); setCurrentPage(1); }} />
                 </div>
             </div>
             </div>
 
+            {isFamilyModalOpen && managedFamily && (
+                <ProductFamilyModal
+                    family={managedFamily}
+                    canManage={isAdminOrAbove()}
+                    canAddVariant={isAdminOrAbove() && statusFilter !== 'Archived'}
+                    settings={settings}
+                    onClose={() => setIsFamilyModalOpen(false)}
+                    onAddVariant={handleOpenAddVariant}
+                    onEditVariant={handleOpenVariantEdit}
+                    onToggleArchive={toggleArchive}
+                />
+            )}
+
             {/* Modal */}
-            {isModalOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+            {isModalOpen && !isCategoryChangeOpen && (
+                <div className="app-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
                     <div onClick={e => e.stopPropagation()} className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md overflow-visible animate-in fade-in zoom-in-95 duration-200">
                         {/* Header */}
                         <div className="px-5 py-3.5 border-b border-gray-100 dark:border-gray-700 bg-linear-to-r from-gray-50 to-white dark:from-gray-800 dark:to-gray-800 flex justify-between items-center rounded-t-2xl">
@@ -1517,14 +1680,16 @@ const ProductList = () => {
                                 </div>
                                 <div>
                                     <h3 className="font-semibold text-sm text-gray-900 dark:text-white leading-tight">
-                                        {modalMode === 'add' ? 'New Product' : 'Edit Product'}
+                                        {variantFamilyKey ? (modalMode === 'add' ? 'Add Variant' : 'Edit Variant') : (modalMode === 'add' ? 'New Product' : 'Edit Product')}
                                     </h3>
                                     <p className="text-gray-400 dark:text-gray-500 text-[10px] mt-0.5">
-                                        {modalMode === 'add' ? 'Add a new item to inventory' : `Editing ${formData.code}`}
+                                        {variantFamilyKey
+                                            ? (modalMode === 'add' ? `Adding a variant to ${formData.name}` : `Editing ${formData.code}`)
+                                            : (modalMode === 'add' ? 'Add a new item to inventory' : `Editing ${formData.code}`)}
                                     </p>
                                 </div>
                             </div>
-                            <button type="button" onClick={() => setIsModalOpen(false)} disabled={isSavingProduct} className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 dark:hover:text-gray-200 transition-all disabled:cursor-not-allowed disabled:opacity-50">
+                            <button type="button" onClick={handleCloseProductForm} disabled={isSavingProduct} className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 dark:hover:text-gray-200 transition-all disabled:cursor-not-allowed disabled:opacity-50">
                                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                             </button>
                         </div>
@@ -1598,12 +1763,26 @@ const ProductList = () => {
                                     </div>
                                     <div className="col-span-3">
                                         <label className="block text-[10px] font-semibold text-gray-500 dark:text-gray-400 mb-1">Category <span className="text-red-400">*</span></label>
+                                        {modalMode === 'edit' && variantFamilyKey ? (
+                                            <div className="flex h-9 items-center justify-between gap-2 rounded-lg border border-gray-200 bg-gray-50 px-2.5 dark:border-gray-600 dark:bg-gray-800">
+                                                <span className="min-w-0 truncate text-xs font-medium text-gray-800 dark:text-gray-100">{formData.category}</span>
+                                                <button
+                                                    type="button"
+                                                    onClick={openVariantCategoryChange}
+                                                    className="shrink-0 rounded-md border border-gray-300 bg-white px-2 py-1 text-[10px] font-semibold text-gray-700 transition-colors hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+                                                >
+                                                    Change Category
+                                                </button>
+                                            </div>
+                                        ) : (
                                         <select 
                                             value={formData.category}
+                                            disabled={Boolean(variantFamilyKey)}
                                             onChange={e => {
                                                 const newCat = e.target.value;
                                                 const newRules = getCategoryFieldRules(newCat);
                                                 const newSizeUnits = getCategorySizeUnits(newCat);
+                                                const newSellingUnits = getCategorySellingUnits(newCat);
                                                 const nextDefinitions = getEffectiveProductAttributes(customCategories.find((category) => category.name === newCat) || {});
                                                 const hasEnteredAttributes = Object.values(formData.attributes || {}).some((value) => String(value ?? '').trim());
                                                 if (hasEnteredAttributes && !window.confirm('Changing category may remove attribute values that are not used by the new category. Continue?')) return;
@@ -1620,6 +1799,7 @@ const ProductList = () => {
                                                                 : (modalMode === 'add' ? (newSizeUnits[0] || '') : prev.sizeUnit)
                                                         )
                                                         : '',
+                                                    sellingUnit: resolveConfiguredSellingUnit(prev.sellingUnit, newSellingUnits),
                                                     supplier: newRules.showSupplier ? prev.supplier : '',
                                                     attributes: nextDefinitions.reduce((values, definition) => {
                                                         values[definition.key] = prev.attributes?.[definition.key] ?? '';
@@ -1628,12 +1808,13 @@ const ProductList = () => {
                                                 }));
                                             }}
                                             required
-                                            className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
+                                            className={`w-full p-2 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium outline-none text-gray-900 dark:text-white ${variantFamilyKey ? 'cursor-not-allowed bg-gray-50 dark:bg-gray-800' : 'bg-white dark:bg-gray-700 focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500'}`}
                                         >
                                             {CATEGORY_LIST.map(cat => (
                                                 <option key={cat} value={cat}>{cat}</option>
                                             ))}
                                         </select>
+                                        )}
                                     </div>
                                 </div>
                             </div>
@@ -1670,10 +1851,11 @@ const ProductList = () => {
                                             <input 
                                                 type="text" 
                                                 value={formData.name}
+                                                disabled={Boolean(variantFamilyKey) && modalMode === 'add'}
                                                 onChange={e => setFormData({...formData, name: e.target.value})}
                                                 onBlur={e => setFormData((prev) => ({ ...prev, name: normalizeHumanReadable(e.target.value) }))}
                                                 required
-                                                className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
+                                                className={`w-full p-2 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium outline-none text-gray-900 dark:text-white ${variantFamilyKey && modalMode === 'add' ? 'cursor-not-allowed bg-gray-50 dark:bg-gray-800' : 'bg-white dark:bg-gray-700 focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500'}`}
                                                 placeholder={
                                                     ['Paints'].includes(formData.category) ? 'e.g. Flat Latex, Enamel' :
                                                     ['Lumbers'].includes(formData.category) ? 'e.g. Coco Lumber, Good Lumber' :
@@ -1686,13 +1868,24 @@ const ProductList = () => {
                                                     'e.g. Product name'
                                                 }
                                             />
+                                            {modalMode === 'edit' && variantFamilyKey && normalizeHumanReadable(formData.name) !== normalizeHumanReadable(editingProduct?.name) && (
+                                                <p className="mt-1 text-[10px] leading-relaxed text-amber-600 dark:text-amber-300">Changing the product name may move this variant to a different product family.</p>
+                                            )}
                                         </div>
                                     </div>
                                     <ProductAttributeFields
                                         definitions={attributeDefinitions}
                                         values={formData.attributes}
                                         onChange={(attributes) => setFormData((prev) => ({ ...prev, attributes }))}
+                                        renderSupplementaryField={hasMeasurementAttribute ? renderSoldByField : undefined}
                                     />
+                                    {!hasMeasurementAttribute && (
+                                        modalMode === 'add'
+                                            ? <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                                                <div>{renderSoldByField()}</div>
+                                            </div>
+                                            : renderSoldByField()
+                                    )}
                                     {(categoryFieldRules.showColor || categoryFieldRules.showSize) && (
                                     <div className="grid grid-cols-2 gap-2.5">
                                         {categoryFieldRules.showColor && (
@@ -1761,7 +1954,7 @@ const ProductList = () => {
                                 <p className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-2">Pricing & Stock</p>
                                 <div className="grid grid-cols-2 gap-2.5">
                                     <div>
-                                        <label className="block text-[10px] font-semibold text-gray-500 dark:text-gray-400 mb-1">Price (₱) <span className="text-red-400">*</span></label>
+                                        <label className="block text-[10px] font-semibold text-gray-500 dark:text-gray-400 mb-1">{selectedSellingUnit ? `Price per ${selectedSellingUnit} (₱)` : 'Price per Unit (₱)'} <span className="text-red-400">*</span></label>
                                         <div className="relative">
                                             <div className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none">
                                                 <span className="text-gray-400 font-semibold text-xs">₱</span>
@@ -1784,7 +1977,9 @@ const ProductList = () => {
                                     </div>
                                     <div>
                                         <label className="block text-[10px] font-semibold text-gray-500 dark:text-gray-400 mb-1">
-                                            {modalMode === 'add' ? 'Initial Stock' : 'Current Stock'} <span className="text-red-400">*</span>
+                                            {modalMode === 'add'
+                                                ? (selectedSellingUnit ? `Initial Stock (${selectedSellingUnit})` : 'Initial Stock')
+                                                : (selectedSellingUnit ? `Current Stock (${selectedSellingUnit})` : 'Current Stock')} <span className="text-red-400">*</span>
                                         </label>
                                         <input
                                             type="text"
@@ -1809,57 +2004,31 @@ const ProductList = () => {
                             {categoryFieldRules.showSupplier && (
                             <div>
                                 <p className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-2">Supplier</p>
-                                <div className="w-full relative" ref={node => {
-                                    if (node) {
-                                        const handleClickOutside = (e) => {
-                                            if (!node.contains(e.target)) setIsSupplierDropdownOpen(false);
-                                        };
-                                        document.addEventListener('mousedown', handleClickOutside);
-                                        return () => document.removeEventListener('mousedown', handleClickOutside);
-                                    }
-                                }}>
-                                    <div className="relative">
-                                        <input 
-                                            type="text" 
-                                            value={formData.supplier || ''}
-                                            onChange={e => {
-                                                setFormData({...formData, supplier: e.target.value});
-                                                if (!isSupplierDropdownOpen) setIsSupplierDropdownOpen(true);
-                                            }}
-                                            onFocus={() => setIsSupplierDropdownOpen(true)}
-                                            className="w-full pl-3 pr-10 py-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
-                                            placeholder={supplierPartnerNames.length > 0 ? 'Select supplier...' : 'No supplier partners available'}
-                                        />
-                                        <button
-                                            type="button"
-                                            onClick={() => setIsSupplierDropdownOpen(!isSupplierDropdownOpen)}
-                                            className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors rounded-full hover:bg-gray-100 dark:hover:bg-gray-600"
-                                        >
-                                           <svg className={`w-4 h-4 transition-transform ${isSupplierDropdownOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
-                                        </button>
-                                    </div>
-                                    
-                                    {isSupplierDropdownOpen && (
-                                        <ul className="absolute z-50 w-full mt-1 bg-white dark:bg-gray-700 border border-gray-100 dark:border-gray-600 max-h-36 overflow-y-auto shadow-xl rounded-lg animate-in fade-in zoom-in-95 duration-100">
-                                            {suggestedSuppliers.length === 0 && (
-                                                <li className="p-3 text-xs text-center text-gray-400 italic">No matching supplier partners.</li>
-                                            )}
-                                            {suggestedSuppliers.map(s => (
-                                                <li 
-                                                    key={s} 
-                                                    className={`px-3 py-2 cursor-pointer text-xs flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors border-b border-gray-50 dark:border-gray-600/50 last:border-0 ${formData.supplier === s ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 font-semibold' : 'text-gray-700 dark:text-gray-200'}`}
-                                                    onClick={() => {
-                                                        setFormData({...formData, supplier: s});
-                                                        setIsSupplierDropdownOpen(false);
-                                                    }}
-                                                >
-                                                    <span>{s}</span>
-                                                    {formData.supplier === s && <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7"></path></svg>}
-                                                </li>
-                                            ))}
-                                        </ul>
-                                    )}
-                                </div>
+                                <SupplierSelector
+                                    isOpen={isSupplierDropdownOpen}
+                                    onOpenChange={setIsSupplierDropdownOpen}
+                                    options={matchingSuppliers}
+                                    query={supplierSearchQuery}
+                                    onQueryChange={setSupplierSearchQuery}
+                                    selectedValue={formData.supplier}
+                                    onSelect={(supplier) => {
+                                        setFormData((previous) => ({ ...previous, supplier }));
+                                        setSupplierSearchQuery(supplier);
+                                    }}
+                                    placeholder={supplierPartnerNames.length > 0
+                                        ? (modalMode === 'edit' && !currentSupplierName ? 'No supplier assigned' : 'Search or select supplier...')
+                                        : 'No supplier partners available'}
+                                />
+                                {modalMode === 'edit' && !currentSupplierName && (
+                                    <p className="mt-1 text-[10px] text-gray-400 dark:text-gray-500">No supplier assigned.</p>
+                                )}
+                                {isPreservingUnchangedSupplier && (
+                                    <p className="mt-1 text-[10px] text-amber-600 dark:text-amber-300">
+                                        {currentSupplierPartner?.isArchived
+                                            ? 'Existing supplier is archived and cannot be selected for a new assignment.'
+                                            : 'Legacy supplier value. Select a registered Supplier Partner to replace it.'}
+                                    </p>
+                                )}
                             </div>
                             )}
 
@@ -1874,16 +2043,34 @@ const ProductList = () => {
                                     : 'cursor-not-allowed opacity-50'
                                 }`}
                             >
-                                {isSavingProduct ? (modalMode === 'add' ? 'Creating...' : 'Saving...') : (modalMode === 'add' ? 'Create Product' : 'Save Changes')}
+                                {isSavingProduct
+                                    ? (modalMode === 'add' ? 'Creating...' : 'Saving...')
+                                    : (modalMode === 'add' ? (variantFamilyKey ? 'Create Variant' : 'Create Product') : 'Save Changes')}
                             </button>
                         </form>
                     </div>
                 </div>
             )}
 
+            {isCategoryChangeOpen && editingProduct && (
+                <VariantCategoryChangeModal
+                    product={{
+                        ...editingProduct,
+                        category: formData.category,
+                        attributes: formData.attributes,
+                        brand: formData.brand,
+                        color: formData.color,
+                        size: resolveCombinedSize(formData.size, formData.sizeUnit, formData.category),
+                    }}
+                    categories={customCategories}
+                    onCancel={() => setIsCategoryChangeOpen(false)}
+                    onApply={applyVariantCategoryChange}
+                />
+            )}
+
             {/* Archive Confirmation Modal */}
             {isArchiveModalOpen && productToArchive && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                <div className="app-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
                     <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-sm md:max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
                         <div className="p-6 text-center">
                             <div className={`mx-auto flex items-center justify-center mb-4 ${productToArchive.isArchived ? 'text-emerald-600' : 'text-orange-600'}`}>

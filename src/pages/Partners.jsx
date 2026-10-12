@@ -141,6 +141,9 @@ const Partners = ({ viewOnly = false }) => {
         return {
             ...base,
             type: partner?.note || 'Regular',
+            attentionName: partner?.attentionName || '',
+            attentionPosition: partner?.attentionPosition || '',
+            taxTreatment: partner?.isVatExempt ? 'exempt' : (partner?.taxTreatment || 'standard'),
         };
     }, [syncSupplierNoteFromCapabilities]);
 
@@ -214,7 +217,7 @@ const Partners = ({ viewOnly = false }) => {
         };
     }, [loadPartners]);
 
-    const [newPartner, setNewPartner] = useState({ name: '', contact: '', email: '', address: '', note: '', supplierCapabilities: [] });
+    const [newPartner, setNewPartner] = useState({ name: '', contact: '', email: '', address: '', note: '', supplierCapabilities: [], attentionName: '', attentionPosition: '', taxTreatment: 'standard' });
 
     const supplierCategoryOptions = React.useMemo(
         () => [...new Set(inventory.map((item) => String(item?.category || '').trim()).filter(Boolean))]
@@ -374,6 +377,11 @@ const Partners = ({ viewOnly = false }) => {
             supplierCapabilities: activeTab === 'suppliers'
                 ? (Array.isArray(newPartner.supplierCapabilities) ? newPartner.supplierCapabilities : [])
                 : [],
+            ...(activeTab === 'customers' ? {
+                attentionName: normalizeHumanReadable(newPartner.attentionName),
+                attentionPosition: normalizeHumanReadable(newPartner.attentionPosition),
+                taxTreatment: newPartner.taxTreatment || 'standard',
+            } : {}),
             ...(!isEditMode ? {
                 clientRequestId: partnerCreateRequestIdRef.current || (partnerCreateRequestIdRef.current = createClientRequestId('partner')),
             } : {}),
@@ -394,7 +402,7 @@ const Partners = ({ viewOnly = false }) => {
 
             await loadPartners();
             setIsAddModalOpen(false);
-            setNewPartner({ name: '', contact: '', email: '', address: '', note: '', supplierCapabilities: [] });
+            setNewPartner({ name: '', contact: '', email: '', address: '', note: '', supplierCapabilities: [], attentionName: '', attentionPosition: '', taxTreatment: 'standard' });
             setCapabilityDraft({ category: '', brand: '' });
             setIsEditMode(false);
             setEditingId(null);
@@ -438,6 +446,9 @@ const Partners = ({ viewOnly = false }) => {
             address: item.address,
             note: activeTab === 'suppliers' ? item.products : item.type,
             supplierCapabilities: existingCapabilities,
+            attentionName: item.attentionName || '',
+            attentionPosition: item.attentionPosition || '',
+            taxTreatment: item.taxTreatment || 'standard',
         });
         setIsEditMode(true);
         setEditingId(item.id);
@@ -523,7 +534,7 @@ const Partners = ({ viewOnly = false }) => {
                                     partnerCreateRequestIdRef.current = '';
                                     setIsAddModalOpen(true);
                                     setCapabilityDraft({ category: '', brand: '' });
-                                    setNewPartner({ name: '', contact: '', email: '', address: '', note: '', supplierCapabilities: [] });
+                                    setNewPartner({ name: '', contact: '', email: '', address: '', note: '', supplierCapabilities: [], attentionName: '', attentionPosition: '', taxTreatment: 'standard' });
                                 }}
                                 className="w-full sm:w-auto px-4 py-2 rounded-lg text-white font-semibold text-xs shadow-md flex items-center justify-center gap-2 transition-all hover:opacity-90 transform hover:-translate-y-0.5 whitespace-nowrap"
                                 style={{ backgroundColor: '#111827' }}
@@ -535,7 +546,7 @@ const Partners = ({ viewOnly = false }) => {
                     </div>
 
                     {/* Tabs & Search */}
-                    <div className="flex flex-col sm:flex-row justify-between items-center gap-4 mb-6">
+                    <div className="mb-6 flex flex-col items-stretch justify-between gap-4 sm:flex-row sm:items-center">
                         <div className="inline-flex rounded-lg bg-gray-100 p-1 w-full sm:w-auto">
                             <button 
                                 onClick={() => setActiveTab('suppliers')}
@@ -560,7 +571,7 @@ const Partners = ({ viewOnly = false }) => {
                                 Regular Customers
                             </button>
                         </div>
-                        <div className="flex items-center gap-2 w-full sm:w-auto">
+                        <div className="flex w-full flex-wrap items-center gap-3 sm:w-auto sm:flex-nowrap">
                             {!isViewOnly && (
                                 <button
                                     onClick={() => setShowArchived(!showArchived)}
@@ -727,7 +738,7 @@ const Partners = ({ viewOnly = false }) => {
 
                 {/* Add Modal */}
                 {!isViewOnly && isAddModalOpen && (
-                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                    <div className="app-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
                         <div className="bg-white rounded-xl p-4 w-full max-w-sm md:max-w-md shadow-2xl border border-gray-100 ring-1 ring-black/5">
                             <div className="flex justify-between items-start mb-3 border-b-2 border-gray-200 pb-3">
                                 <div className="flex items-center gap-2">
@@ -880,6 +891,43 @@ const Partners = ({ viewOnly = false }) => {
                                                 value={newPartner.note}
                                                 onChange={e => setNewPartner({...newPartner, note: e.target.value})}
                                             />
+                                            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                                <div>
+                                                    <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-gray-500">Attention Name</label>
+                                                    <input
+                                                        type="text"
+                                                        value={newPartner.attentionName || ''}
+                                                        onChange={(e) => setNewPartner({...newPartner, attentionName: e.target.value})}
+                                                        onBlur={(e) => setNewPartner((previous) => ({ ...previous, attentionName: normalizeHumanReadable(e.target.value) }))}
+                                                        placeholder="Optional"
+                                                        className="w-full rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-xs outline-none transition-all focus:ring-2 focus:ring-gray-900"
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-gray-500">Position / Department</label>
+                                                    <input
+                                                        type="text"
+                                                        value={newPartner.attentionPosition || ''}
+                                                        onChange={(e) => setNewPartner({...newPartner, attentionPosition: e.target.value})}
+                                                        onBlur={(e) => setNewPartner((previous) => ({ ...previous, attentionPosition: normalizeHumanReadable(e.target.value) }))}
+                                                        placeholder="Optional"
+                                                        className="w-full rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-xs outline-none transition-all focus:ring-2 focus:ring-gray-900"
+                                                    />
+                                                </div>
+                                            </div>
+                                            <div>
+                                                <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-gray-500">Quotation Tax Treatment</label>
+                                                <select
+                                                    value={newPartner.taxTreatment || 'standard'}
+                                                    onChange={(e) => setNewPartner({...newPartner, taxTreatment: e.target.value})}
+                                                    className="w-full rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-xs outline-none transition-all focus:ring-2 focus:ring-gray-900"
+                                                >
+                                                    <option value="standard">Standard</option>
+                                                    <option value="vat_zero_rated">VAT Zero Rated</option>
+                                                    <option value="exempt">Exempt</option>
+                                                </select>
+                                                <p className="mt-1 text-[10px] text-gray-400">Used as presentation metadata on formal price quotations.</p>
+                                            </div>
                                         </div>
                                     )}
                                 </div>
@@ -983,7 +1031,7 @@ const Partners = ({ viewOnly = false }) => {
 
                 {/* Archive Confirmation Modal */}
                 {!isViewOnly && isArchiveModalOpen && partnerToArchive && (
-                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                    <div className="app-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
                         <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm md:max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
                             <div className="p-6 text-center">
                                 <div className="mx-auto flex items-center justify-center mb-4 text-orange-600">

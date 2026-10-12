@@ -1068,8 +1068,8 @@ const CreditTransactions = () => {
                 </div>
             </div>
 
-            {isDetailsOpen && selectedRecord && (
-                <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+            {isDetailsOpen && selectedRecord && !creditReceiptPreview && !proofLightbox && (
+                <div className="app-modal-backdrop fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
                     <div className="w-full max-w-3xl bg-white rounded-xl border border-gray-200 shadow-xl overflow-hidden">
                         <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between bg-gray-50">
                             <div>
@@ -1235,7 +1235,7 @@ const CreditTransactions = () => {
             )}
 
             {proofLightbox && (
-                <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/75 p-4" role="dialog" aria-modal="true" aria-label="Proof of Payment preview">
+                <div className="app-modal-backdrop fixed inset-0 z-[60] flex items-center justify-center bg-black/75 p-4" role="dialog" aria-modal="true" aria-label="Proof of Payment preview">
                     <div className="relative max-h-full max-w-4xl">
                         <img src={proofLightbox.url} alt={proofLightbox.fileName} className="max-h-[85vh] max-w-full rounded-lg bg-white object-contain shadow-2xl" />
                         <button
@@ -1250,8 +1250,8 @@ const CreditTransactions = () => {
                 </div>
             )}
 
-            {isMarkPaidModalOpen && markPaidTarget && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+            {isMarkPaidModalOpen && markPaidTarget && !isCancelModalOpen && (
+                <div className="app-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
                     <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-md flex-col overflow-hidden rounded-2xl bg-white shadow-2xl animate-in fade-in zoom-in-95 duration-200">
                         <div className="px-5 py-3.5 border-b border-gray-100 bg-linear-to-r from-gray-50 to-white flex items-center justify-between rounded-t-2xl">
                             <div className="flex items-center gap-2.5">
@@ -1573,7 +1573,7 @@ const CreditTransactions = () => {
             )}
 
             {isCancelModalOpen && markPaidTarget && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                <div className="app-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
                     <div className="w-full max-w-sm overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl animate-in fade-in zoom-in-95 duration-200 dark:border-slate-700 dark:bg-slate-900">
                         <div className="border-b border-slate-200 px-5 py-4 dark:border-slate-700">
                             <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Cancel Credit Order</h3>
