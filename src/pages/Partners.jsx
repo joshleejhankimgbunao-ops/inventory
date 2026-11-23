@@ -1,7 +1,6 @@
 import React, { useState, useRef } from 'react';
 import toast from 'react-hot-toast';
 import { showToast } from '../utils/toastHelper';
-import TableSkeletonRows from '../components/TableSkeletonRows';
 import { showPageLoadError } from '../utils/pageLoadError';
 import { getSupplierRestockRecommendations } from '../utils/recommendationLogic';
 import { useAuth } from '../context/AuthContext';
@@ -20,10 +19,18 @@ import Pagination from '../components/Pagination';
 import ArchiveIcon from '../components/ArchiveIcon';
 import EditIcon from '../components/EditIcon';
 import TableActionButton from '../components/TableActionButton';
+import ContextualEmptyState from '../components/ContextualEmptyState';
 import { createClientRequestId } from '../utils/clientRequestId';
 import { normalizeHumanReadable } from '../utils/textNormalization';
+import { setFormValidationErrors } from '../utils/formValidationNavigation';
 
 const EMAIL_RULE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const getDirectoryDisplayValue = (value) => {
+    if (value === null || value === undefined) return '—';
+    const text = String(value).trim();
+    return text || '—';
+};
 
 const parseLegacySupplierNoteToCapabilities = (noteValue) => {
     const note = String(noteValue || '').trim();
@@ -88,7 +95,10 @@ const Partners = ({ viewOnly = false }) => {
     const [showArchived, setShowArchived] = useState(false);
     const [isArchiveModalOpen, setIsArchiveModalOpen] = useState(false);
     const [partnerToArchive, setPartnerToArchive] = useState(null);
-    const [isLoadingPartners, setIsLoadingPartners] = useState(false);
+    const [isLoadingPartners, setIsLoadingPartners] = useState(true);
+    const [partnersLoadError, setPartnersLoadError] = useState(null);
+    const partnersRequestSequenceRef = useRef(0);
+    const partnersRealtimeTimerRef = useRef(null);
     const [isSavingPartner, setIsSavingPartner] = useState(false);
     const partnerSubmitInFlightRef = useRef(false);
     const partnerCreateRequestIdRef = useRef('');
@@ -148,7 +158,9 @@ const Partners = ({ viewOnly = false }) => {
     }, [syncSupplierNoteFromCapabilities]);
 
     const loadPartners = React.useCallback(async () => {
+        const requestSequence = ++partnersRequestSequenceRef.current;
         setIsLoadingPartners(true);
+        setPartnersLoadError(null);
         try {
             let [supplierRows, customerRows] = await Promise.all([
                 listPartnersApi({ type: 'supplier', includeArchived: true }),
@@ -189,12 +201,18 @@ const Partners = ({ viewOnly = false }) => {
                 }
             }
 
-            setSuppliers((supplierRows || []).map(mapPartnerToUi));
-            setCustomers((customerRows || []).map(mapPartnerToUi));
+            if (requestSequence === partnersRequestSequenceRef.current) {
+                setSuppliers((supplierRows || []).map(mapPartnerToUi));
+                setCustomers((customerRows || []).map(mapPartnerToUi));
+                setPartnersLoadError(null);
+            }
         } catch (error) {
-            showPageLoadError(showToast, error, 'partner-load');
+            if (requestSequence === partnersRequestSequenceRef.current) {
+                setPartnersLoadError(error);
+                showPageLoadError(showToast, error, 'partner-load');
+            }
         } finally {
-            setIsLoadingPartners(false);
+            if (requestSequence === partnersRequestSequenceRef.current) setIsLoadingPartners(false);
         }
     }, [isViewOnly, mapPartnerToUi, syncSupplierNoteFromCapabilities]);
 
@@ -208,16 +226,30 @@ const Partners = ({ viewOnly = false }) => {
             return undefined;
         }
 
-        const unsubscribe = subscribeRealtimeEvent('partners.updated', () => {
-            void loadPartners();
-        });
+        const scheduleRefresh = () => {
+            window.clearTimeout(partnersRealtimeTimerRef.current);
+            partnersRealtimeTimerRef.current = window.setTimeout(() => { void loadPartners(); }, 100);
+        };
+        const unsubscribe = subscribeRealtimeEvent('partners.updated', scheduleRefresh);
+        const unsubscribeResync = subscribeRealtimeEvent('realtime.resync', scheduleRefresh);
 
         return () => {
+            window.clearTimeout(partnersRealtimeTimerRef.current);
+            partnersRequestSequenceRef.current += 1;
             unsubscribe();
+            unsubscribeResync();
         };
     }, [loadPartners]);
 
     const [newPartner, setNewPartner] = useState({ name: '', contact: '', email: '', address: '', note: '', supplierCapabilities: [], attentionName: '', attentionPosition: '', taxTreatment: 'standard' });
+
+    const openAddPartner = () => {
+        setIsEditMode(false);
+        partnerCreateRequestIdRef.current = '';
+        setIsAddModalOpen(true);
+        setCapabilityDraft({ category: '', brand: '' });
+        setNewPartner({ name: '', contact: '', email: '', address: '', note: '', supplierCapabilities: [], attentionName: '', attentionPosition: '', taxTreatment: 'standard' });
+    };
 
     const supplierCategoryOptions = React.useMemo(
         () => [...new Set(inventory.map((item) => String(item?.category || '').trim()).filter(Boolean))]
@@ -257,6 +289,30 @@ const Partners = ({ viewOnly = false }) => {
     });
 
     const filteredData = filteredDataBase;
+    const currentPartnerRows = activeTab === 'suppliers' ? suppliers : customers;
+    const currentVisiblePartnerRows = showArchived ? currentPartnerRows.filter((item) => item.isArchived) : currentPartnerRows.filter((item) => !item.isArchived);
+    const partnerEmptyState = partnersLoadError && currentPartnerRows.length === 0
+        ? {
+            title: 'Directory could not be loaded',
+            description: partnersLoadError?.message || 'Please try again.',
+            actionLabel: 'Retry',
+            onAction: loadPartners,
+        }
+        : searchQuery.trim() && currentVisiblePartnerRows.length > 0
+            ? {
+                title: 'No matching results',
+                description: 'Try a different search or filter.',
+                actionLabel: 'Reset Search',
+                onAction: () => setSearchQuery(''),
+            }
+            : showArchived
+                ? { title: `No archived ${activeTab === 'suppliers' ? 'suppliers' : 'customers'}`, description: 'Archived records will appear here.' }
+                : {
+                    title: `No ${activeTab === 'suppliers' ? 'suppliers' : 'customers'} yet`,
+                    description: `Add a ${activeTab === 'suppliers' ? 'supplier' : 'customer'} to get started.`,
+                    actionLabel: isViewOnly ? '' : `Add ${activeTab === 'suppliers' ? 'Supplier' : 'Customer'}`,
+                    onAction: isViewOnly ? null : openAddPartner,
+                };
     const totalPages = Math.ceil(filteredData.length / itemsPerPage);
     const activePage = Math.min(currentPage, Math.max(totalPages, 1));
     const indexOfFirstPartner = (activePage - 1) * itemsPerPage;
@@ -348,6 +404,7 @@ const Partners = ({ viewOnly = false }) => {
         const normalizedEmail = (newPartner.email || '').trim().toLowerCase();
 
         if (!EMAIL_RULE.test(normalizedEmail)) {
+            setFormValidationErrors(e.currentTarget, { email: 'Enter a complete valid email address.' });
             showToast('Invalid Email', 'Please enter a complete valid email address (e.g. name@example.com).', 'error', 'partner-validation');
             return;
         }
@@ -355,6 +412,7 @@ const Partners = ({ viewOnly = false }) => {
         // Validate contact length if present
         const contactDigits = (newPartner.contact || '').toString().replace(/\D/g, '');
         if (contactDigits && contactDigits.length !== 11) {
+            setFormValidationErrors(e.currentTarget, { contact: 'Contact number must be exactly 11 digits.' });
             showToast('Invalid Contact', 'Contact number must be exactly 11 digits.', 'error', 'partner-validation');
             return;
         }
@@ -362,6 +420,7 @@ const Partners = ({ viewOnly = false }) => {
         if (activeTab === 'suppliers') {
             const capabilities = Array.isArray(newPartner.supplierCapabilities) ? newPartner.supplierCapabilities : [];
             if (capabilities.length === 0) {
+                setFormValidationErrors(e.currentTarget, { supplierCapabilities: 'Add at least one supply capability.' });
                 showToast('Missing Fields', 'Add at least one supply capability.', 'error', 'partner-validation');
                 return;
             }
@@ -518,10 +577,10 @@ const Partners = ({ viewOnly = false }) => {
     return (
         <div className="h-auto md:h-[calc(100vh-80px)] flex flex-col gap-2">
             <div className="bg-slate-200/50 rounded-2xl border border-slate-300 shadow-inner flex flex-col h-auto md:h-full relative">
-                <div className="p-5 pb-0 shrink-0">
-                    {/* Header */}
-                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-6 gap-3">
-                        <div>
+                <div className="p-2 pb-0 shrink-0 md:p-5 md:pb-0">
+                    {/* Header and mobile toolbar order */}
+                    <div className="mb-6 grid grid-cols-1 items-center gap-y-3 md:grid-cols-[minmax(0,1fr)_auto] md:gap-x-4 md:gap-y-4">
+                        <div className="md:col-start-1 md:row-start-1">
                             <p className="text-3xl md:text-4xl font-semibold tracking-tight text-gray-900 leading-tight">Partners & Directory</p>
                             <p className="text-gray-500 font-medium text-[11px] md:text-xs mt-0.5">
                                 {isViewOnly ? 'View suppliers and regular customers (read-only)' : 'Manage your suppliers and regular customers'}
@@ -529,28 +588,18 @@ const Partners = ({ viewOnly = false }) => {
                         </div>
                         {!isViewOnly && (
                             <button 
-                                onClick={() => {
-                                    setIsEditMode(false);
-                                    partnerCreateRequestIdRef.current = '';
-                                    setIsAddModalOpen(true);
-                                    setCapabilityDraft({ category: '', brand: '' });
-                                    setNewPartner({ name: '', contact: '', email: '', address: '', note: '', supplierCapabilities: [], attentionName: '', attentionPosition: '', taxTreatment: 'standard' });
-                                }}
-                                className="w-full sm:w-auto px-4 py-2 rounded-lg text-white font-semibold text-xs shadow-md flex items-center justify-center gap-2 transition-all hover:opacity-90 transform hover:-translate-y-0.5 whitespace-nowrap"
+                                onClick={openAddPartner}
+                                className="order-3 w-fit justify-self-end self-start px-4 py-2 rounded-lg text-white font-semibold text-xs shadow-md flex items-center justify-center gap-2 transition-all hover:opacity-90 transform hover:-translate-y-0.5 whitespace-nowrap md:order-none md:col-start-2 md:row-start-1 md:self-auto"
                                 style={{ backgroundColor: '#111827' }}
                             >
                                 <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"></path></svg>
                                 Add {activeTab === 'suppliers' ? 'Supplier' : 'Customer'}
                             </button>
                         )}
-                    </div>
-
-                    {/* Tabs & Search */}
-                    <div className="mb-6 flex flex-col items-stretch justify-between gap-4 sm:flex-row sm:items-center">
-                        <div className="inline-flex rounded-lg bg-gray-100 p-1 w-full sm:w-auto">
+                    <div className="order-2 inline-flex w-max max-w-full justify-self-start rounded-lg bg-gray-100 p-1 md:order-none md:col-start-1 md:row-start-2">
                             <button 
                                 onClick={() => setActiveTab('suppliers')}
-                                className={`flex-1 sm:flex-none px-4 py-2 rounded-md text-xs font-semibold transition-all ${
+                                className={`flex-none px-4 py-2 rounded-md text-xs font-semibold transition-all ${
                                     activeTab === 'suppliers' 
                                         ? 'text-white shadow-sm' 
                                         : 'text-gray-500 hover:text-gray-900'
@@ -561,7 +610,7 @@ const Partners = ({ viewOnly = false }) => {
                             </button>
                             <button 
                                 onClick={() => setActiveTab('customers')}
-                                className={`flex-1 sm:flex-none px-4 py-2 rounded-md text-xs font-semibold transition-all ${
+                                className={`flex-none px-4 py-2 rounded-md text-xs font-semibold transition-all ${
                                     activeTab === 'customers' 
                                         ? 'text-white shadow-sm' 
                                         : 'text-gray-500 hover:text-gray-900'
@@ -570,28 +619,24 @@ const Partners = ({ viewOnly = false }) => {
                             >
                                 Regular Customers
                             </button>
-                        </div>
-                        <div className="flex w-full flex-wrap items-center gap-3 sm:w-auto sm:flex-nowrap">
+                    </div>
+                    <div className="order-4 flex w-full flex-col items-start gap-2 md:order-none md:col-start-2 md:row-start-2 md:w-auto md:flex-row md:items-center md:gap-3">
                             {!isViewOnly && (
                                 <button
                                     onClick={() => setShowArchived(!showArchived)}
                                     title={showArchived ? `Back to Active ${activeTab === 'suppliers' ? 'Suppliers' : 'Customers'}` : `View Archived ${activeTab === 'suppliers' ? 'Suppliers' : 'Customers'}`}
                                     aria-label={showArchived ? `Back to Active ${activeTab === 'suppliers' ? 'Suppliers' : 'Customers'}` : `View Archived ${activeTab === 'suppliers' ? 'Suppliers' : 'Customers'}`}
-                                    className={`archive-toggle-button group/btn shrink-0 text-xs font-semibold ${showArchived ? 'archive-toggle-button--active' : ''}`}
+                                    className={`archive-toggle-button partners-archive-toggle group/btn shrink-0 text-xs font-semibold ${showArchived ? 'archive-toggle-button--active' : ''}`}
                                 >
                                     {showArchived ? (
                                         <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7 7-7M3 12h13a5 5 0 010 10h-1"></path></svg>
                                     ) : (
                                         <ArchiveIcon className="w-3.5 h-3.5" />
                                     )}
-                                    <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 group-hover/btn:ml-2 group-hover/btn:max-w-40 group-hover/btn:opacity-100">
-                                        {showArchived
-                                            ? `Back to Active ${activeTab === 'suppliers' ? 'Suppliers' : 'Customers'}`
-                                            : `View Archived ${activeTab === 'suppliers' ? 'Suppliers' : 'Customers'}${archivedCount > 0 ? ` (${archivedCount})` : ''}`}
-                                    </span>
+                                    <span>{showArchived ? 'Back to Active' : `View Archive${archivedCount > 0 ? ` (${archivedCount})` : ''}`}</span>
                                 </button>
                             )}
-                            <div className="main-toolbar-search group">
+                            <div className="main-toolbar-search group w-full max-w-none md:w-auto md:max-w-[27.5rem]">
                                 <input 
                                     type="text" 
                                     placeholder="Search directory..." 
@@ -609,90 +654,99 @@ const Partners = ({ viewOnly = false }) => {
                                     <svg className="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
                                 </div>
                             </div>
-                        </div>
+                    </div>
                     </div>
                 </div>
 
-                <div className="mx-5 mb-5 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-                    <div className="min-h-[280px] flex-1 overflow-auto">
-                        <table className={`main-data-table w-full table-fixed border-separate border-spacing-0 text-left ${showActionsColumn ? 'min-w-[960px]' : 'min-w-[800px]'}`}>
-                            <thead className="sticky top-0 z-10 shadow-sm">
-                                <tr className="bg-gray-900 text-white uppercase tracking-wider">
-                                    <th className={`${showActionsColumn ? 'w-[18%]' : 'w-[21%]'} border border-gray-700 px-3 py-3 text-center text-[11px] font-semibold`}>{activeTab === 'suppliers' ? 'Supplier' : 'Customer'}</th>
-                                    <th className={`${showActionsColumn ? 'w-[18%]' : 'w-[21%]'} border border-gray-700 px-3 py-3 text-center text-[11px] font-semibold`}>{activeTab === 'suppliers' ? 'Category / Product Type' : 'Customer Type'}</th>
-                                    <th className={`${showActionsColumn ? 'w-[14%]' : 'w-[16%]'} border border-gray-700 px-3 py-3 text-center text-[11px] font-semibold`}>Contact</th>
-                                    <th className={`${showActionsColumn ? 'w-[18%]' : 'w-[21%]'} border border-gray-700 px-3 py-3 text-center text-[11px] font-semibold`}>Email</th>
-                                    <th className={`${showActionsColumn ? 'w-[18%]' : 'w-[21%]'} border border-gray-700 px-3 py-3 text-center text-[11px] font-semibold`}>Location</th>
-                                    {showActionsColumn && <th className="w-[14%] border border-gray-700 px-3 py-3 text-center text-[11px] font-semibold">Actions</th>}
-                                </tr>
-                            </thead>
-                            <tbody className="text-sm">
-                                {isLoadingPartners ? (
-                                    <TableSkeletonRows
-                                        rowKeyPrefix="partners-skeleton"
-                                        columnTypes={[...Array(5).fill('text'), ...(showActionsColumn ? ['actions'] : [])]}
-                                    />
-                                ) : filteredData.length === 0 ? (
-                                    <tr>
-                                        <td colSpan={showActionsColumn ? 6 : 5} className="p-8 text-center">
-                                            <div className="mx-auto flex max-w-xl flex-col items-center justify-center rounded-3xl border-2 border-dashed border-gray-300 bg-gray-50/50 p-8 text-gray-500">
-                                                <h3 className="mb-1 text-lg font-semibold text-gray-900">
-                                                    {isLoadingPartners
-                                                        ? `Loading ${activeTab === 'suppliers' ? 'suppliers' : 'customers'}...`
-                                                        : showArchived
-                                                            ? 'No archive records'
-                                                            : searchQuery
-                                                                ? `No matching ${activeTab === 'suppliers' ? 'suppliers' : 'customers'}`
-                                                                : `No ${activeTab === 'suppliers' ? 'suppliers' : 'customers'} recorded`}
-                                                </h3>
-                                                <p className="text-sm text-gray-500">
-                                                    {isLoadingPartners
-                                                        ? 'Fetching partner records from the backend. Please wait a moment.'
-                                                        : showArchived
-                                                            ? 'Archived records will appear here once a partner is archived.'
-                                                            : searchQuery
-                                                                ? 'Try a different name, contact number, or email address.'
-                                                                : `Use the Add ${activeTab === 'suppliers' ? 'Supplier' : 'Customer'} button to create the first record.`}
+                    <div className="mx-2 mb-5 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden md:mx-5">
+                    <div className="min-h-[280px] flex-1 overflow-auto p-1">
+                        {isLoadingPartners ? (
+                            <div role="status" aria-live="polite" aria-busy="true">
+                                <span className="sr-only">Loading {activeTab === 'suppliers' ? 'suppliers' : 'customers'}...</span>
+                                <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2 xl:grid-cols-3" aria-hidden="true">
+                                    {Array.from({ length: 6 }, (_, index) => (
+                                        <div key={`partner-card-skeleton-${index}`} className="min-h-[190px] animate-pulse rounded-xl border border-slate-200 bg-white p-3 motion-reduce:animate-none md:p-4">
+                                            <div className="h-4 w-2/3 rounded bg-slate-200" />
+                                            <div className="mt-2 h-3 w-1/3 rounded bg-slate-100" />
+                                            <div className="mt-5 space-y-3">
+                                                <div className="h-3 rounded bg-slate-100" />
+                                                <div className="h-3 rounded bg-slate-100" />
+                                                <div className="h-3 rounded bg-slate-100" />
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        ) : filteredData.length === 0 ? (
+                            <div className="flex min-h-[220px] items-center justify-center p-3">
+                                <ContextualEmptyState {...partnerEmptyState} className="w-full max-w-xl rounded-xl border border-slate-200 bg-white" />
+                            </div>
+                        ) : (
+                            <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                                {paginatedData.map((item) => {
+                                    const details = [
+                                        { label: 'Contact', value: item.contact },
+                                        { label: 'Email', value: item.email, isEmail: true },
+                                        { label: 'Location', value: item.address },
+                                    ];
+
+                                    return (
+                                        <article
+                                            key={item.id}
+                                            className={`min-w-0 rounded-xl border p-3 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-lg motion-reduce:transform-none motion-reduce:transition-none md:p-4 ${item.isArchived ? 'border-orange-200 bg-orange-50/50 hover:border-orange-300' : 'border-gray-200 bg-white hover:border-slate-400'}`}
+                                        >
+                                            <div className="min-w-0 border-b border-slate-200 pb-3">
+                                                <div className="flex min-w-0 items-start justify-between gap-2">
+                                                    <h2 className="min-w-0 break-words text-sm font-semibold leading-snug text-slate-900 [overflow-wrap:anywhere]">
+                                                        {getDirectoryDisplayValue(item.name)}
+                                                    </h2>
+                                                    {item.isArchived && <span className="shrink-0 rounded border border-orange-200 bg-orange-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-orange-700">Archived</span>}
+                                                </div>
+                                                <p className="mt-1 break-words text-xs font-medium text-slate-600 [overflow-wrap:anywhere]">
+                                                    {getDirectoryDisplayValue(activeTab === 'suppliers' ? item.products : item.type)}
                                                 </p>
                                             </div>
-                                        </td>
-                                    </tr>
-                                ) : (
-                                    paginatedData.map((item) => (
-                                        <tr key={item.id} className={`border-b border-gray-200 transition-colors duration-200 ${item.isArchived ? 'bg-orange-50/50 hover:bg-orange-50' : 'hover:bg-gray-50'}`}>
-                                            <td className="border border-gray-200 px-3 py-2 text-center">
-                                                <div className="flex flex-col items-center leading-tight">
-                                                    <span className="max-w-full truncate text-xs font-semibold text-gray-900">{item.name}</span>
-                                                    {item.isArchived && <span className="mt-1 rounded border border-orange-200 bg-orange-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-orange-600">Archived</span>}
-                                                </div>
-                                            </td>
-                                            <td className="border border-gray-200 px-3 py-2 text-center text-xs font-medium text-gray-700">{activeTab === 'suppliers' ? item.products : item.type}</td>
-                                            <td className="border border-gray-200 px-3 py-2 text-center text-xs font-medium text-gray-700">{item.contact || '-'}</td>
-                                            <td className="truncate border border-gray-200 px-3 py-2 text-center text-xs font-medium text-gray-700">
-                                                {item.email ? <a href={`mailto:${item.email}`} className="hover:text-gray-900 hover:underline">{item.email}</a> : '-'}
-                                            </td>
-                                            <td className="border border-gray-200 px-3 py-2 text-center text-xs font-medium text-gray-700">{item.address || '-'}</td>
+
+                                            <dl className="mt-3 space-y-2">
+                                                {details.map(({ label, value, isEmail }) => {
+                                                    const displayValue = getDirectoryDisplayValue(value);
+                                                    return (
+                                                        <div key={label} className="grid min-w-0 grid-cols-[4.25rem_minmax(0,1fr)] gap-2 text-xs leading-4">
+                                                            <dt className="text-slate-500">{label}</dt>
+                                                            <dd className="min-w-0 break-words font-medium text-slate-700 [overflow-wrap:anywhere]">
+                                                                {isEmail && displayValue !== '—'
+                                                                    ? <a href={`mailto:${displayValue}`} className="hover:text-slate-900 hover:underline focus-visible:rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-500">{displayValue}</a>
+                                                                    : displayValue}
+                                                            </dd>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </dl>
+
                                             {showActionsColumn && (
-                                            <td className="border border-gray-200 px-2 py-2 text-center">
-                                                <div className="flex items-center justify-center gap-1">
+                                                <div className="mt-3 flex flex-wrap items-center justify-end gap-1 border-t border-slate-200 pt-3">
                                                     {activeTab === 'suppliers' && (
                                                         <TableActionButton
                                                             type="button"
                                                             onClick={() => handleOpenRecommendations(item)}
+                                                            dismissTooltipOnClick
                                                             label="View Restock Plan"
                                                             aria-label={`View restock plan for ${item.name}`}
                                                         >
                                                             <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                                                            <span className="ml-1 md:hidden">Restock Plan</span>
                                                         </TableActionButton>
                                                     )}
                                                     {!isViewOnly && (item.isArchived ? (
                                                         <TableActionButton
                                                             type="button"
                                                             onClick={() => handleRestore(item.id)}
+                                                            dismissTooltipOnClick
                                                             variant="positive"
                                                             label="Restore"
                                                             aria-label={`Restore ${item.name}`}
                                                         >
+                                                            <span className="mr-1 md:hidden">Restore</span>
                                                             <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
                                                         </TableActionButton>
                                                     ) : (
@@ -700,30 +754,31 @@ const Partners = ({ viewOnly = false }) => {
                                                             <TableActionButton
                                                                 type="button"
                                                                 onClick={() => handleEdit(item)}
+                                                                dismissTooltipOnClick
                                                                 label="Edit"
                                                                 aria-label={`Edit ${item.name}`}
                                                             >
-                                                                <EditIcon />
+                                                                <EditIcon /><span className="ml-1 md:hidden">Edit</span>
                                                             </TableActionButton>
                                                             <TableActionButton
                                                                 type="button"
                                                                 onClick={() => handleArchive(item.id)}
+                                                                dismissTooltipOnClick
                                                                 variant="destructive"
                                                                 label="Archive"
                                                                 aria-label={`Archive ${item.name}`}
                                                             >
-                                                                <ArchiveIcon />
+                                                                <ArchiveIcon /><span className="ml-1 md:hidden">Archive</span>
                                                             </TableActionButton>
                                                         </>
                                                     ))}
                                                 </div>
-                                            </td>
                                             )}
-                                        </tr>
-                                    ))
-                                )}
-                            </tbody>
-                        </table>
+                                        </article>
+                                    );
+                                })}
+                            </div>
+                        )}
                     </div>
 
                     <div className="shrink-0 border-t border-gray-200 bg-slate-200/95 px-4 py-2 shadow-[0_-8px_24px_rgba(0,0,0,0.08)] backdrop-blur-sm md:px-6 md:py-3">
@@ -739,7 +794,7 @@ const Partners = ({ viewOnly = false }) => {
                 {/* Add Modal */}
                 {!isViewOnly && isAddModalOpen && (
                     <div className="app-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-                        <div className="bg-white rounded-xl p-4 w-full max-w-sm md:max-w-md shadow-2xl border border-gray-100 ring-1 ring-black/5">
+                        <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-xl p-4 w-full max-w-sm md:max-w-md shadow-2xl border border-gray-100 ring-1 ring-black/5">
                             <div className="flex justify-between items-start mb-3 border-b-2 border-gray-200 pb-3">
                                 <div className="flex items-center gap-2">
                                     <div className="p-1.5 rounded-xl">
@@ -764,6 +819,8 @@ const Partners = ({ viewOnly = false }) => {
                                     <input 
                                         required 
                                         minLength="2"
+                                        name="name"
+                                        data-validation-key="name"
                                         type="text" 
                                         title="Please enter a valid name (at least 2 characters)"
                                         placeholder={activeTab === 'suppliers' ? "e.g. ABC Hardware Inc." : "e.g. John A. Doe"}
@@ -778,6 +835,8 @@ const Partners = ({ viewOnly = false }) => {
                                         <label className="block text-xs font-semibold text-gray-700 mb-1">Contact No.</label>
                                         <input 
                                             required 
+                                            name="contact"
+                                            data-validation-key="contact"
                                             type="text"
                                             inputMode="numeric"
                                             placeholder="Enter 11-digit contact number"
@@ -797,6 +856,8 @@ const Partners = ({ viewOnly = false }) => {
                                         <label className="block text-xs font-semibold text-gray-700 mb-1">Email</label>
                                         <input 
                                             type="email" 
+                                            name="email"
+                                            data-validation-key="email"
                                             placeholder="e.g. partner@example.com"
                                             className="w-full bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-gray-900 outline-none transition-all" 
                                             value={newPartner.email}
@@ -811,6 +872,8 @@ const Partners = ({ viewOnly = false }) => {
                                     <input 
                                         required
                                         minLength="5"
+                                        name="address"
+                                        data-validation-key="address"
                                         type="text" 
                                         placeholder="e.g. Mandaue City, Cebu"
                                         className="w-full bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-gray-900 outline-none transition-all" 
@@ -825,6 +888,8 @@ const Partners = ({ viewOnly = false }) => {
                                         <>
                                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
                                                 <select
+                                                    name="supplierCapabilities"
+                                                    data-validation-key="supplierCapabilities"
                                                     value={capabilityDraft.category}
                                                     onChange={(e) => setCapabilityDraft({ category: e.target.value, brand: '' })}
                                                     className="w-full bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-gray-900 outline-none transition-all"
@@ -885,6 +950,8 @@ const Partners = ({ viewOnly = false }) => {
                                         <div className="space-y-2.5">
                                             <input 
                                                 required
+                                                name="note"
+                                                data-validation-key="note"
                                                 type="text" 
                                                 placeholder="e.g. Contractor, Retail"
                                                 className="w-full bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-gray-900 outline-none transition-all" 
@@ -950,7 +1017,7 @@ const Partners = ({ viewOnly = false }) => {
             {/* Smart Restock Recommendation Modal - OUTSIDE the relative container but inside the main flex col */}
             {isRecModalOpen && selectedSupplierRecs.supplier && (
                 <div className="fixed inset-0 flex items-center justify-center z-50 transition-opacity duration-300" style={{ backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)' }}>
-                        <div className="bg-white rounded-2xl p-0 w-full max-w-lg md:max-w-xl shadow-2xl border border-gray-100 ring-1 ring-black/5 overflow-hidden flex flex-col max-h-[80vh]">
+                        <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-2xl p-0 w-full max-w-lg md:max-w-xl shadow-2xl border border-gray-100 ring-1 ring-black/5 overflow-hidden flex flex-col max-h-[80vh]">
                             {/* Modal Header */}
                             <div className="p-6 border-b border-gray-100 bg-gray-50 flex justify-between items-start">
                                 <div>
@@ -964,7 +1031,7 @@ const Partners = ({ viewOnly = false }) => {
                                         Suggested order for <span className="text-gray-900 font-semibold">{selectedSupplierRecs.supplier.name}</span>
                                     </p>
                                 </div>
-                                <button onClick={() => setIsRecModalOpen(false)} className="text-gray-400 hover:text-gray-600 p-2 hover:bg-gray-200 rounded-full transition-colors">
+                                <button type="button" onClick={() => setIsRecModalOpen(false)} aria-label="Close restock recommendations" className="text-gray-400 hover:text-gray-600 p-2 hover:bg-gray-200 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500">
                                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                                 </button>
                             </div>
@@ -1012,19 +1079,6 @@ const Partners = ({ viewOnly = false }) => {
                                 </p>
                             </div>
 
-                            {/* Footer */}
-                            <div className="p-4 bg-gray-50 border-t border-gray-100 flex justify-end gap-3">
-                                <button 
-                                    onClick={() => {
-                                        setIsRecModalOpen(false);
-                                    }}
-                                    className="px-5 py-2.5 rounded-xl font-semibold transition-all shadow-md transform hover:-translate-y-0.5 text-xs text-white"
-                                    style={{ backgroundColor: '#111827' }}
-                                >
-                                    Close
-                                </button>
-                                {/* Removed Create Order Simulation */}
-                            </div>
                         </div>
                     </div>
                 )}
@@ -1032,7 +1086,7 @@ const Partners = ({ viewOnly = false }) => {
                 {/* Archive Confirmation Modal */}
                 {!isViewOnly && isArchiveModalOpen && partnerToArchive && (
                     <div className="app-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-                        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm md:max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+                        <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-2xl shadow-2xl w-full max-w-sm md:max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
                             <div className="p-6 text-center">
                                 <div className="mx-auto flex items-center justify-center mb-4 text-orange-600">
                                     <ArchiveIcon className="w-12 h-12" />

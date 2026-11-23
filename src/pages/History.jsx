@@ -1,33 +1,39 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import Pagination from '../components/Pagination';
 import IdentifierChip from '../components/IdentifierChip';
-import ArchiveIcon from '../components/ArchiveIcon';
 import ToolbarDropdown from '../components/ToolbarDropdown';
 import ReceiptPreviewModal from '../components/ReceiptPreviewModal';
+import OrderConfirmationModal from '../components/OrderConfirmationModal';
 import TableActionButton from '../components/TableActionButton';
+import RecordActionIcon from '../components/RecordActionIcon';
+import EvidenceUploadField from '../components/EvidenceUploadField';
 import TransactionReferenceModal from '../components/TransactionReferenceModal';
 import TransactionReferenceCorrectionModal from '../components/TransactionReferenceCorrectionModal';
 import { useLocation } from 'react-router-dom';
 import { showToast } from '../utils/toastHelper';
 import TableSkeletonRows from '../components/TableSkeletonRows';
+import ContextualEmptyState from '../components/ContextualEmptyState';
 import { showPageLoadError } from '../utils/pageLoadError';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
-import { declineSaleVoidRequestApi, getCreditTransactionByIdApi, getSaleHistoryViewApi, getSaleSupportingDocumentApi, getSaleVoidProofApi, listCreditTransactionsApi, requestSaleVoidApi, voidSaleApi } from '../services/inventoryApi';
+import { declineSaleVoidRequestApi, getCreditCancellationProofApi, getCreditPaymentProofApi, getCreditTransactionByIdApi, getSaleHistoryViewApi, getSaleSupportingDocumentApi, getSaleVoidProofApi, listCreditTransactionsApi, requestSaleVoidApi, voidSaleApi } from '../services/inventoryApi';
 import { printReceipt } from '../services/receiptPrinter';
 import { formatMoney as formatMoneyValue } from '../utils/numberFormat';
 import { getActorDisplayName, getActorRoleLabel } from '../utils/actorDisplay';
 import { createClientRequestId } from '../utils/clientRequestId';
 import { canOfferSaleVoid } from '../utils/saleVoid';
 import { PENDING_VOID_REQUEST_FILTER, countPendingVoidRequests, isPendingVoidRequest } from '../utils/pendingVoidRequests';
+import { subscribeRealtimeEvent } from '../services/realtimeClient';
+import { getTransactionProductDisplayName } from '../utils/productDisplayName';
 
-const MAX_VOID_PROOF_SIZE = 5 * 1024 * 1024;
-const VOID_PROOF_TYPES = new Map([
-    ['.jpg', 'image/jpeg'],
-    ['.jpeg', 'image/jpeg'],
-    ['.png', 'image/png'],
-    ['.pdf', 'application/pdf'],
-]);
+const isSpecialOrderSale = (transaction) => String(transaction?.saleType || '').trim().toLowerCase() === 'special-order'
+    || Boolean(String(transaction?.specialOrderId || '').trim());
+
+const mobileHistoryActionBaseClass = 'inline-flex min-h-11 min-w-0 items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-center text-xs font-semibold leading-tight transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-700 focus-visible:ring-offset-2';
+const mobileHistoryActionClass = {
+    primary: 'border-slate-900 bg-slate-900 text-white hover:border-slate-700 hover:bg-slate-700',
+    secondary: 'border-slate-300 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-50',
+};
 
 const History = () => {
     const location = useLocation();
@@ -37,15 +43,24 @@ const History = () => {
         transactions, 
         setTransactions, 
         processedInventory,
+        categories: productCategories = [],
         inventoryLogs, 
         isTransactionsLoading,
+        transactionsError,
+        retryTransactions,
         isInventoryLogsLoading,
+        inventoryLogsError,
+        retryInventoryLogs,
     } = useInventory();
 
     const currentUser = currentUserName;
     const adminName = appSettings.adminDisplayName;
+    const getHistoryProductDisplayName = useCallback((item) => getTransactionProductDisplayName(item, processedInventory, productCategories), [processedInventory, productCategories]);
     const [creditTransactions, setCreditTransactions] = useState([]);
-    const [isCreditLoading, setIsCreditLoading] = useState(false);
+    const [isCreditLoading, setIsCreditLoading] = useState(true);
+    const [creditHistoryError, setCreditHistoryError] = useState(null);
+    const [creditRetryVersion, setCreditRetryVersion] = useState(0);
+    const retryCreditHistory = () => setCreditRetryVersion((version) => version + 1);
 
     const getProcessorRoleLabel = (trx) => {
         const role = String(trx?.cashierRole || '').trim().toLowerCase();
@@ -67,11 +82,6 @@ const History = () => {
 
     const getCreditProcessorDisplayName = (credit) => {
         return getActorDisplayName(credit?.cashierUser, credit?.cashierName, '-');
-    };
-
-    // Internal handler for archiving
-    const onArchiveTransaction = (id) => {
-        setTransactions(prev => prev.map(t => t.id === id ? { ...t, isArchived: !t.isArchived } : t));
     };
 
     const [activeTab, setActiveTab] = useState('sales');
@@ -96,7 +106,7 @@ const History = () => {
     const [customEndDate, setCustomEndDate] = useState('');
 
     const pendingVoidRequestCount = useMemo(
-        () => countPendingVoidRequests(transactions),
+        () => countPendingVoidRequests(transactions.filter((transaction) => !isSpecialOrderSale(transaction))),
         [transactions]
     );
 
@@ -123,12 +133,15 @@ const History = () => {
         let isMounted = true;
         const loadCredits = async () => {
             setIsCreditLoading(true);
+            setCreditHistoryError(null);
             try {
                 const rows = await listCreditTransactionsApi({ status: 'All' });
                 if (isMounted) {
                     setCreditTransactions(Array.isArray(rows) ? rows : []);
+                    setCreditHistoryError(null);
                 }
             } catch (error) {
+                if (isMounted) setCreditHistoryError(error);
                 showPageLoadError(showToast, error, 'credit-history-load');
             } finally {
                 if (isMounted) {
@@ -141,6 +154,24 @@ const History = () => {
 
         return () => {
             isMounted = false;
+        };
+    }, [creditRetryVersion]);
+
+    useEffect(() => {
+        let refreshTimer = null;
+        const scheduleCreditRefresh = () => {
+            if (refreshTimer) window.clearTimeout(refreshTimer);
+            refreshTimer = window.setTimeout(() => {
+                refreshTimer = null;
+                setCreditRetryVersion((version) => version + 1);
+            }, 80);
+        };
+        const unsubscribeCredit = subscribeRealtimeEvent('credit-transactions.updated', scheduleCreditRefresh);
+        const unsubscribeResync = subscribeRealtimeEvent('realtime.resync', scheduleCreditRefresh);
+        return () => {
+            if (refreshTimer) window.clearTimeout(refreshTimer);
+            unsubscribeCredit();
+            unsubscribeResync();
         };
     }, []);
 
@@ -168,7 +199,7 @@ const History = () => {
                 const code = String(item?.code || '').trim();
                 if (!code) return;
 
-                const name = String(item?.name || '').trim();
+                const name = getHistoryProductDisplayName(item);
                 const label = name ? `${code} - ${name}` : code;
                 if (!map.has(code)) {
                     map.set(code, label);
@@ -182,7 +213,7 @@ const History = () => {
                 .sort((a, b) => a[1].localeCompare(b[1], undefined, { sensitivity: 'base' }))
                 .map(([value, label]) => ({ value, label })),
         ];
-    }, [transactions]);
+    }, [getHistoryProductDisplayName, transactions]);
 
     const creditCustomerOptions = useMemo(() => {
         const unique = new Set(
@@ -253,7 +284,7 @@ const History = () => {
                 });
 
             (trx?.items || []).forEach((item) => {
-                [item?.code, item?.name]
+                [item?.code, getHistoryProductDisplayName(item)]
                     .forEach((value) => {
                         const text = String(value || '').trim();
                         if (text) {
@@ -286,7 +317,7 @@ const History = () => {
         return Array.from(terms)
             .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
             .slice(0, 120);
-    }, [transactions, inventoryLogs, creditTransactions]);
+    }, [transactions, inventoryLogs, creditTransactions, getHistoryProductDisplayName]);
     
     // Pagination
     const [currentPage, setCurrentPage] = useState(1);
@@ -312,6 +343,9 @@ const History = () => {
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
         return transactions.filter(trx => {
+            // `specialOrderId` is the authoritative finalized-order relation;
+            // do not classify incomplete legacy data from labels or amounts.
+            if (isSpecialOrderSale(trx)) return false;
             // Role Based Filtering: Cashier only sees their own transactions
             if (userRole === ROLES.CASHIER) {
                 const cashierName = currentUser || 'Cashier';
@@ -357,27 +391,55 @@ const History = () => {
                 end.setHours(23, 59, 59, 999);
                 matchesDate = tDate >= start && tDate <= end;
             }
-            const isArchived = Boolean(trx.isArchived);
             const isVoided = String(trx.status || '').trim().toUpperCase() === 'VOIDED';
-            const matchesRecordView = salesRecordView === 'ARCHIVED'
-                ? isArchived
-                : salesRecordView === 'VOIDED'
-                    ? !isArchived && isVoided
-                    : salesRecordView === PENDING_VOID_REQUEST_FILTER
-                        ? !isArchived && isPendingVoidRequest(trx)
-                    : !isArchived;
+            const matchesRecordView = salesRecordView === 'VOIDED'
+                ? isVoided
+                : salesRecordView === PENDING_VOID_REQUEST_FILTER
+                    ? isPendingVoidRequest(trx)
+                    : true;
             
             return matchesSearch && matchesDate && matchesProduct && matchesCategory && matchesRecordView;
         });
     }, [transactions, debouncedSearchTerm, dateRange, specificDate, customStartDate, customEndDate, salesRecordView, processedByFilter, userRole, productFilter, categoryFilter]);
 
+    const filteredSpecialOrders = useMemo(() => {
+        const now = new Date();
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        return transactions.filter((trx) => {
+            if (!isSpecialOrderSale(trx)) return false;
+            if (userRole === ROLES.CASHIER && trx.cashier !== (currentUser || 'Cashier')) return false;
+            if (processedByFilter !== 'ALL' && (trx.cashier || 'Admin') !== processedByFilter) return false;
+            const searchNeedle = debouncedSearchTerm.toLowerCase();
+            const matchesSearch = String(trx.id || '').toLowerCase().includes(searchNeedle)
+                || String(trx.specialOrderNumber || '').toLowerCase().includes(searchNeedle)
+                || String(trx.customerName || '').toLowerCase().includes(searchNeedle)
+                || String(trx.cashier || '').toLowerCase().includes(searchNeedle)
+                || (trx.items || []).some((item) => String(item.code || '').toLowerCase().includes(searchNeedle) || getHistoryProductDisplayName(item).toLowerCase().includes(searchNeedle));
+            const matchesProduct = productFilter === 'ALL' || (trx.items || []).some((item) => String(item?.code || '').trim() === productFilter);
+            const matchesCategory = categoryFilter === 'ALL' || (trx.items || []).some((item) => String(item?.category || categoryByCode.get(String(item?.code || '').trim()) || '').trim() === categoryFilter);
+            const tDate = new Date(trx.date);
+            let matchesDate = true;
+            if (dateRange === 'today') matchesDate = tDate >= today;
+            else if (dateRange === 'week') { const weekAgo = new Date(today); weekAgo.setDate(weekAgo.getDate() - 7); matchesDate = tDate >= weekAgo; }
+            else if (dateRange === 'month') { const monthAgo = new Date(today); monthAgo.setMonth(monthAgo.getMonth() - 1); matchesDate = tDate >= monthAgo; }
+            else if (dateRange === 'specific_date' && specificDate) { const start = new Date(specificDate); const end = new Date(specificDate); end.setHours(23, 59, 59, 999); matchesDate = tDate >= start && tDate <= end; }
+            else if (dateRange === 'custom' && customStartDate && customEndDate) { const start = new Date(customStartDate); const end = new Date(customEndDate); end.setHours(23, 59, 59, 999); matchesDate = tDate >= start && tDate <= end; }
+            const isVoided = String(trx.status || '').trim().toUpperCase() === 'VOIDED';
+            const matchesRecordView = salesRecordView === 'VOIDED' ? isVoided : salesRecordView === PENDING_VOID_REQUEST_FILTER ? isPendingVoidRequest(trx) : true;
+            return matchesSearch && matchesDate && matchesProduct && matchesCategory && matchesRecordView;
+        });
+    }, [transactions, debouncedSearchTerm, dateRange, specificDate, customStartDate, customEndDate, salesRecordView, processedByFilter, userRole, productFilter, categoryFilter, ROLES.CASHIER, currentUser, categoryByCode, getHistoryProductDisplayName]);
+
     const salesSummary = useMemo(() => {
         const summary = {
             totalSoldQty: 0,
+            totalAmount: 0,
             matchingTransactions: filteredTransactions.length,
         };
 
         filteredTransactions.forEach((trx) => {
+            const amount = Number(trx?.total);
+            if (Number.isFinite(amount)) summary.totalAmount += amount;
             (trx?.items || []).forEach((item) => {
                 const productMatch = productFilter === 'ALL' || String(item?.code || '').trim() === productFilter;
                 const categoryMatch = categoryFilter === 'ALL' || resolveItemCategory(item) === categoryFilter;
@@ -390,6 +452,13 @@ const History = () => {
 
         return summary;
     }, [filteredTransactions, productFilter, categoryFilter]);
+
+    const specialOrdersSummary = useMemo(() => filteredSpecialOrders.reduce((summary, trx) => {
+        summary.totalSoldQty += (trx.items || []).reduce((sum, item) => sum + Number(item?.qty || 0), 0);
+        const amount = Number(trx?.total);
+        if (Number.isFinite(amount)) summary.totalAmount += amount;
+        return summary;
+    }, { totalSoldQty: 0, totalAmount: 0 }), [filteredSpecialOrders]);
 
     // Filter Logic for Inventory Logs
     const filteredLogs = useMemo(() => {
@@ -504,10 +573,64 @@ const History = () => {
     // Pagination Logic
     const currentList = activeTab === 'sales'
         ? filteredTransactions
-        : (activeTab === 'credit' ? filteredCredits : filteredLogs);
-    const isCurrentTabLoading = activeTab === 'sales'
+        : (activeTab === 'special-orders' ? filteredSpecialOrders : (activeTab === 'credit' ? filteredCredits : filteredLogs));
+    const isCurrentTabLoading = activeTab === 'sales' || activeTab === 'special-orders'
         ? isTransactionsLoading
         : (activeTab === 'credit' ? isCreditLoading : isInventoryLogsLoading);
+    const currentTabLoadError = activeTab === 'sales' || activeTab === 'special-orders'
+        ? transactionsError
+        : (activeTab === 'credit' ? creditHistoryError : inventoryLogsError);
+    const hasCurrentTabFilters = Boolean(debouncedSearchTerm.trim()) || (activeTab === 'sales' || activeTab === 'special-orders'
+        ? salesRecordView !== 'ALL' || processedByFilter !== 'ALL' || productFilter !== 'ALL' || categoryFilter !== 'ALL'
+            || dateRange !== 'all' || Boolean(specificDate) || Boolean(customStartDate) || Boolean(customEndDate)
+        : activeTab === 'credit'
+            ? creditStatusFilter !== 'All' || creditCustomerFilter !== 'ALL' || creditProcessedByFilter !== 'ALL'
+                || dateRange !== 'all' || Boolean(specificDate) || Boolean(customStartDate) || Boolean(customEndDate)
+            : filterAction !== 'ALL' || inventoryProcessedByFilter !== 'ALL'
+                || dateRange !== 'all' || Boolean(specificDate) || Boolean(customStartDate) || Boolean(customEndDate));
+    const resetCurrentTabFilters = () => {
+        setSearchTerm('');
+        setDateRange('all');
+        setSpecificDate('');
+        setCustomStartDate('');
+        setCustomEndDate('');
+        if (activeTab === 'sales' || activeTab === 'special-orders') {
+            setSalesRecordView('ALL');
+            setProcessedByFilter('ALL');
+            setProductFilter('ALL');
+            setCategoryFilter('ALL');
+        } else if (activeTab === 'credit') {
+            setCreditStatusFilter('All');
+            setCreditCustomerFilter('ALL');
+            setCreditProcessedByFilter('ALL');
+        } else {
+            setFilterAction('ALL');
+            setInventoryProcessedByFilter('ALL');
+        }
+        setIsFilterPanelOpen(false);
+    };
+    const retryCurrentTab = activeTab === 'sales' || activeTab === 'special-orders'
+        ? retryTransactions
+        : (activeTab === 'credit' ? retryCreditHistory : retryInventoryLogs);
+    const currentEmptyState = currentTabLoadError
+        ? {
+            title: 'Records could not be loaded',
+            description: currentTabLoadError?.message || 'Please try again.',
+            actionLabel: 'Retry',
+            onAction: retryCurrentTab,
+        }
+        : hasCurrentTabFilters
+            ? { title: 'No matching results', description: 'Try a different search or filter.', actionLabel: 'Clear Filters', onAction: resetCurrentTabFilters }
+            : {
+                title: activeTab === 'inventory' ? 'No activity recorded' : activeTab === 'credit' ? 'No credit transactions recorded' : activeTab === 'special-orders' ? 'No Special Order transactions recorded' : 'No sales recorded',
+                description: activeTab === 'inventory'
+                    ? 'Inventory movements will appear here when activity is recorded.'
+                    : activeTab === 'credit'
+                        ? 'Credit transactions will appear here when customers purchase on credit.'
+                        : activeTab === 'special-orders'
+                            ? 'Completed Special Order transactions will appear here.'
+                            : 'Sales transactions will appear here after POS payments are processed.',
+            };
     const totalPages = Math.ceil(currentList.length / itemsPerPage);
     const indexOfLastItem = currentPage * itemsPerPage;
     const indexOfFirstItem = indexOfLastItem - itemsPerPage;
@@ -570,7 +693,7 @@ const History = () => {
     const [isCreditDetailsOpen, setIsCreditDetailsOpen] = useState(false);
     const [isVoidModalOpen, setIsVoidModalOpen] = useState(false);
     const [voidReason, setVoidReason] = useState('');
-    const [voidProofFile, setVoidProofFile] = useState(null);
+    const [voidProofFiles, setVoidProofFiles] = useState([]);
     const [voidProofPreview, setVoidProofPreview] = useState(null);
     const isSaleDetailsChildActive = Boolean(
         isEditingSaleReference
@@ -583,34 +706,9 @@ const History = () => {
     const [isVoidSubmitting, setIsVoidSubmitting] = useState(false);
     const voidRequestIdRef = useRef('');
     const voidRequestInFlightRef = useRef(false);
-    const voidProofInputRef = useRef(null);
 
-    // Archive Modal State
-    const [isArchiveModalOpen, setIsArchiveModalOpen] = useState(false);
-    const [transactionToArchive, setTransactionToArchive] = useState(null);
     const autoReceiptHandledRef = useRef(false);
     const [autoReceiptMode, setAutoReceiptMode] = useState(null);
-
-    const toggleArchive = (trx) => {
-        setTransactionToArchive(trx);
-        setIsArchiveModalOpen(true);
-    };
-
-    const confirmArchive = () => {
-        if (!transactionToArchive) return;
-        
-        if (onArchiveTransaction) {
-            onArchiveTransaction(transactionToArchive.id);
-            if (transactionToArchive.isArchived) {
-                showToast('Restored', `Transaction ${transactionToArchive.id} restored successfully.`, 'save', 'archive-restore');
-            } else {
-                showToast('Archived', `Transaction ${transactionToArchive.id} archived successfully.`, 'error', 'archive-delete');
-            }
-        }
-        
-        setIsArchiveModalOpen(false);
-        setTransactionToArchive(null);
-    };
 
     const formatExact = (value) => {
         if (!value) return '';
@@ -628,6 +726,11 @@ const History = () => {
         const d = new Date(value);
         if (Number.isNaN(d.getTime())) return '-';
         return d.toLocaleDateString();
+    };
+
+    const formatOptionalDate = (value) => {
+        const formatted = formatDateShort(value);
+        return formatted === '-' ? '' : formatted;
     };
 
     const getLastPaymentDate = (payments) => {
@@ -651,6 +754,19 @@ const History = () => {
         return labels[method.toLowerCase()] || method || '-';
     };
 
+    const getDownPayment = (credit) => {
+        const event = (credit?.paymentHistory || []).find((payment) => payment?.type === 'down_payment');
+        const amount = Number(event?.amount ?? credit?.downPaymentAmount ?? 0);
+        return Number.isFinite(amount) && amount > 0 ? { amount, method: String(event?.method || credit?.creditPaymentMode || '').trim() } : null;
+    };
+
+    const getCreditPaymentEventLabel = (credit, payment, index) => {
+        if (payment?.type === 'down_payment') return 'Down Payment';
+        const payments = Array.isArray(credit?.paymentHistory) ? credit.paymentHistory : [];
+        if (String(credit?.status || '').toLowerCase() === 'paid' && index === payments.length - 1) return 'Final Payment';
+        return 'Partial Payment';
+    };
+
     const creditStatusBadgeClass = (status) => {
         const value = String(status || '').toLowerCase();
         if (value === 'paid') return 'bg-emerald-50 text-emerald-700 border-emerald-100';
@@ -660,8 +776,7 @@ const History = () => {
         return 'bg-gray-100 text-gray-600 border-gray-200';
     };
 
-    const isRegularSale = (transaction) => String(transaction?.saleType || '').toLowerCase() !== 'special-order'
-        && !transaction?.specialOrderNumber;
+    const isRegularSale = (transaction) => !isSpecialOrderSale(transaction);
 
     const handleViewReceipt = async (transaction) => {
         try {
@@ -691,7 +806,7 @@ const History = () => {
     const openVoidModal = () => {
         if (!canVoidSale(selectedSaleDetails) && !canRequestVoid(selectedSaleDetails)) return;
         setVoidReason(selectedSaleDetails?.voidRequest?.status === 'pending' ? selectedSaleDetails.voidRequest.reason : '');
-        setVoidProofFile(null);
+        setVoidProofFiles([]);
         voidRequestIdRef.current = createClientRequestId('sale-void');
         setIsVoidModalOpen(true);
     };
@@ -700,24 +815,8 @@ const History = () => {
         if (voidRequestInFlightRef.current) return;
         setIsVoidModalOpen(false);
         setVoidReason('');
-        setVoidProofFile(null);
+        setVoidProofFiles([]);
         voidRequestIdRef.current = '';
-    };
-
-    const handleVoidProofSelection = (event) => {
-        const file = event.target.files?.[0] || null;
-        event.target.value = '';
-        if (!file) return;
-        const extension = `.${String(file.name || '').split('.').pop() || ''}`.toLowerCase();
-        if (!VOID_PROOF_TYPES.has(extension) || VOID_PROOF_TYPES.get(extension) !== String(file.type || '').toLowerCase()) {
-            showToast('Invalid Supporting Proof', 'Choose a JPG, JPEG, PNG, or PDF file.', 'error', 'sale-void-proof-type');
-            return;
-        }
-        if (file.size > MAX_VOID_PROOF_SIZE) {
-            showToast('Supporting Proof Too Large', 'Supporting Proof must be 5 MB or smaller.', 'error', 'sale-void-proof-size');
-            return;
-        }
-        setVoidProofFile(file);
     };
 
     const confirmVoidSale = async () => {
@@ -732,11 +831,11 @@ const History = () => {
         try {
             const isCashierRequest = userRole === ROLES.CASHIER;
             const result = isCashierRequest
-                ? await requestSaleVoidApi(selectedSaleDetails.sourceId, { reason, proofFile: voidProofFile })
+                ? await requestSaleVoidApi(selectedSaleDetails.sourceId, { reason, proofFiles: voidProofFiles })
                 : await voidSaleApi(selectedSaleDetails.sourceId, {
                     reason,
                     requestId: voidRequestIdRef.current || createClientRequestId('sale-void'),
-                    proofFile: voidProofFile,
+                    proofFiles: voidProofFiles,
                 });
             const updated = isCashierRequest ? result : result.sale;
             setTransactions((previous) => previous.map((transaction) => (
@@ -747,7 +846,7 @@ const History = () => {
             if (typeof window !== 'undefined') window.dispatchEvent(new Event('sale:void-requests-changed'));
             setIsVoidModalOpen(false);
             setVoidReason('');
-            setVoidProofFile(null);
+            setVoidProofFiles([]);
             voidRequestIdRef.current = '';
             showToast(
                 isCashierRequest ? 'Void Requested' : result.replayed ? 'Sale Already Voided' : 'Sale Voided',
@@ -820,11 +919,12 @@ const History = () => {
         }
     };
 
-    const viewSaleVoidProof = async () => {
-        const proof = selectedSaleDetails?.voidInfo?.supportingProof || selectedSaleDetails?.voidRequest?.supportingProof;
+    const viewSaleVoidProof = async (stage = 'void', index = 0) => {
+        const source = stage === 'request' ? selectedSaleDetails?.voidRequest : selectedSaleDetails?.voidInfo;
+        const proof = source?.supportingProofs?.[index] || (index === 0 ? source?.supportingProof : null);
         if (!selectedSaleDetails?.sourceId || !proof) return;
         try {
-            const blob = await getSaleVoidProofApi(selectedSaleDetails.sourceId);
+            const blob = await getSaleVoidProofApi(selectedSaleDetails.sourceId, { stage, index });
             setVoidProofPreview({
                 url: URL.createObjectURL(blob),
                 name: proof.originalName || 'Supporting Proof',
@@ -832,6 +932,20 @@ const History = () => {
             });
         } catch (error) {
             showToast('Proof Unavailable', error.message || 'Unable to load the Supporting Proof.', 'error', 'sale-void-proof-view');
+        }
+    };
+
+    const viewCreditEvidence = async ({ payment, index = 0, cancellation = false }) => {
+        if (!selectedCredit?._id) return;
+        const proof = cancellation ? selectedCredit.cancelProofs?.[index] : payment?.proofs?.[index] || (index === 0 ? payment?.proof : null);
+        if (!proof?.storageKey) return;
+        try {
+            const blob = cancellation
+                ? await getCreditCancellationProofApi(selectedCredit._id, index)
+                : await getCreditPaymentProofApi(selectedCredit._id, payment.clientRequestId, index);
+            setVoidProofPreview({ url: URL.createObjectURL(blob), name: proof.fileName || 'Credit evidence', mimeType: blob.type });
+        } catch (error) {
+            showToast('Proof Unavailable', error.message || 'Unable to load credit evidence.', 'error', 'credit-history-proof-view');
         }
     };
 
@@ -928,39 +1042,60 @@ const History = () => {
 
     return (
         <div className="h-auto md:h-[calc(100vh-80px)] flex flex-col md:overflow-hidden gap-2">
-            <div className="relative bg-slate-200/50 rounded-2xl shadow-inner border border-slate-300 md:flex-1 flex flex-col md:overflow-hidden">
+            <div className="relative rounded-none border-0 bg-transparent shadow-none md:flex-1 md:rounded-2xl md:border md:border-slate-300 md:bg-slate-200/50 md:shadow-inner flex flex-col md:overflow-hidden">
                 {/* Header + Controls */}
-                <div className="p-4 flex flex-col gap-5 md:shrink-0">
-                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <div className="flex flex-col gap-3 px-2 py-4 md:shrink-0 md:p-4">
+                    <div className="relative z-40 flex flex-col gap-3 border-b border-gray-200 pb-3 sm:flex-row sm:items-center sm:justify-between">
                         <div>
                             <p className="text-3xl md:text-4xl font-semibold tracking-tight text-gray-900 leading-tight">History Logs</p>
                             <p className="text-gray-500 dark:text-gray-400 text-[11px] md:text-xs font-medium mt-1">Review past transactions and inventory movements</p>
                         </div>
-
-                        {/* Section Selector */}
-                        <div className="flex items-center gap-2">
+                        <div className="w-full sm:w-44 sm:shrink-0">
                             <ToolbarDropdown
                                 value={activeTab}
                                 onChange={setActiveTab}
                                 ariaLabel="Select history log type"
-                                className="w-full sm:w-40 [&_[role=option]]:whitespace-nowrap"
+                                className="w-full [&_[role=option]]:whitespace-nowrap"
                                 options={[
                                     { value: 'sales', label: 'Sales Transactions' },
                                     { value: 'credit', label: 'Credit Transactions' },
-                                    ...(isAdminOrAbove() ? [{ value: 'inventory', label: 'Inventory Logs' }] : []),
+                                    { value: 'special-orders', label: 'Special Orders' },
+                                    ...(userRole === ROLES.SUPER_ADMIN || userRole === ROLES.ADMIN || userRole === ROLES.CASHIER ? [{ value: 'inventory', label: 'Inventory Logs' }] : []),
                                 ]}
                             />
                         </div>
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-2 mb-1">
+                    {(activeTab === 'sales' || activeTab === 'special-orders') && (
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3" aria-label="History summary">
+                            {[
+                                { label: 'Total Transactions', value: activeTab === 'special-orders' ? filteredSpecialOrders.length : salesSummary.matchingTransactions, icon: <><rect x="4" y="3" width="16" height="18" rx="2" /><path d="M8 8h8M8 12h8M8 16h5" /></> },
+                                { label: 'Total Sold Quantity', value: activeTab === 'special-orders' ? specialOrdersSummary.totalSoldQty : salesSummary.totalSoldQty, icon: <><path d="M3 7l9-4 9 4v10l-9 4-9-4V7z" /><path d="M3 7l9 4 9-4M12 11v10" /></> },
+                                { label: 'Total Amount', value: `₱${formatMoney(activeTab === 'special-orders' ? specialOrdersSummary.totalAmount : salesSummary.totalAmount)}`, icon: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M3 9h18M15 14h3" /></> },
+                            ].map(({ label, value, icon }) => (
+                                <div key={label} className="app-dashboard-card-hover rounded-xl border border-gray-100 bg-white p-3 shadow-sm">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <div className="min-w-0">
+                                            <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">{label}</p>
+                                            <p className="mt-1 break-words text-lg font-semibold tabular-nums text-gray-900">{isCurrentTabLoading ? '—' : value}</p>
+                                        </div>
+                                        <div className="shrink-0 rounded-lg bg-gray-900 p-2 text-white">
+                                            <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{icon}</svg>
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
+                    <div className="flex flex-wrap items-center gap-2">
                         {/* Search */}
                         <div className="main-toolbar-search group">
                             <input 
                                 type="text" 
                                 placeholder={activeTab === 'sales'
                                     ? "Search Transaction ID..."
-                                    : (activeTab === 'credit' ? "Search Credit ID / Customer..." : "Search SKU...")}
+                                    : (activeTab === 'special-orders' ? "Search Transaction ID / Special Order..." : (activeTab === 'credit' ? "Search Credit ID / Customer..." : "Search SKU..."))}
                                 value={searchTerm}
                                 list="history-search-suggestions"
                                 onChange={(e) => setSearchTerm(e.target.value)}
@@ -991,7 +1126,7 @@ const History = () => {
 
                             {/* Filter Panel */}
                             {isFilterPanelOpen && (
-                                <div className="absolute top-full mt-2 w-80 bg-white rounded-xl shadow-2xl border border-gray-100 py-2 z-50 right-0 md:left-0 animate-in fade-in slide-in-from-top-2 duration-200 max-h-[50vh] sm:max-h-[56vh] overflow-y-auto overscroll-contain">
+                                <div className="absolute top-full mt-2 w-[min(20rem,calc(100vw-2rem))] bg-white rounded-xl shadow-2xl border border-gray-100 py-2 z-50 right-0 md:left-0 animate-in fade-in slide-in-from-top-2 duration-200 max-h-[50vh] sm:max-h-[56vh] overflow-y-auto overscroll-contain">
 
                                     {/* Date Range */}
                                     <div className="px-3 pt-2 pb-1">
@@ -1041,7 +1176,7 @@ const History = () => {
                                         ))}
                                     </div>
 
-                                    {activeTab === 'sales' && (
+                                    {(activeTab === 'sales' || activeTab === 'special-orders') && (
                                         <>
                                             <div className="border-t border-gray-100 mx-3" />
                                             <div className="px-3 pt-2 pb-1">
@@ -1059,14 +1194,13 @@ const History = () => {
                                                     <option value="ALL">All</option>
                                                     {isAdminOrAbove() && <option value={PENDING_VOID_REQUEST_FILTER}>Pending Void Requests ({pendingVoidRequestCount})</option>}
                                                     <option value="VOIDED">Voided</option>
-                                                    <option value="ARCHIVED">Archived</option>
                                                 </select>
                                             </div>
                                         </>
                                     )}
 
                                     {/* Staff Filter (Sales tab, Admin only) */}
-                                    {activeTab === 'sales' && isAdminOrAbove() && (
+                                    {(activeTab === 'sales' || activeTab === 'special-orders') && isAdminOrAbove() && (
                                         <>
                                             <div className="border-t border-gray-100 mx-3"></div>
                                             <div className="px-3 pt-2 pb-1">
@@ -1086,7 +1220,7 @@ const History = () => {
                                         </>
                                     )}
 
-                                    {activeTab === 'sales' && (
+                                    {(activeTab === 'sales' || activeTab === 'special-orders') && (
                                         <>
                                             <div className="border-t border-gray-100 mx-3"></div>
                                             <div className="px-3 pt-2 pb-1">
@@ -1225,35 +1359,163 @@ const History = () => {
                             )}
                         </div>
 
-                        {activeTab === 'sales' && (
-                            <div className="ml-auto flex flex-wrap items-center gap-2">
-                                <span className="inline-flex items-center rounded-md border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700">
-                                    Total Transactions: <span className="font-semibold text-gray-900 ml-1">{salesSummary.matchingTransactions}</span>
-                                </span>
-                                <span className="inline-flex items-center rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs text-emerald-700">
-                                    Sold Qty: <span className="font-semibold text-emerald-800 ml-1">{salesSummary.totalSoldQty}</span>
-                                </span>
-                            </div>
-                        )}
-
                         {/* Backdrop */}
                         {isFilterPanelOpen && (
                             <div className="fixed inset-0 z-20 bg-transparent" onClick={() => setIsFilterPanelOpen(false)} />
                         )}
                 </div>
                 {/* Content Area */}
-                <div ref={historyListRef} className="w-full overflow-x-auto overscroll-x-contain pb-32 pt-0 md:flex-1 md:overflow-y-auto md:max-h-[calc(100vh-220px)] md:pb-28">
-                        {activeTab === 'sales' ? (
-                            <table className="main-data-table w-full text-left border-separate border-spacing-0 table-fixed min-w-[940px] md:min-w-0">
+                <div ref={historyListRef} className="w-full min-w-0 overflow-x-hidden pb-32 pt-0 md:flex-1 md:overflow-x-auto md:overflow-y-auto md:max-h-[calc(100vh-220px)] md:pb-28">
+                    <div className="flex flex-col gap-3 px-2 py-2 md:hidden" aria-busy={isCurrentTabLoading}>
+                        {isCurrentTabLoading ? (
+                            <div className="flex flex-col gap-3" role="status" aria-label="Loading history records">
+                                {[0, 1, 2].map((card) => (
+                                    <div key={card} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                                        <div className="h-4 w-2/3 animate-pulse rounded bg-slate-200" />
+                                        <div className="mt-4 grid grid-cols-2 gap-3">
+                                            <div className="h-9 animate-pulse rounded bg-slate-100" />
+                                            <div className="h-9 animate-pulse rounded bg-slate-100" />
+                                        </div>
+                                    </div>
+                                ))}
+                                <span className="sr-only">Loading history records</span>
+                            </div>
+                        ) : currentList.length === 0 ? (
+                            <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+                                <ContextualEmptyState {...currentEmptyState} />
+                            </div>
+                        ) : activeTab === 'sales' || activeTab === 'special-orders' ? (
+                            currentItems.map((trx) => {
+                                const items = Array.isArray(trx?.items) ? trx.items : [];
+                                const hasCompleteQuantities = items.length > 0 && items.every((item) => item?.qty !== null && item?.qty !== undefined && String(item.qty).trim() !== '' && Number.isFinite(Number(item.qty)));
+                                const quantitySold = hasCompleteQuantities ? items.reduce((sum, item) => sum + Number(item.qty), 0) : null;
+                                const amount = trx?.total !== null && trx?.total !== undefined && String(trx.total).trim() !== '' && Number.isFinite(Number(trx.total)) ? Number(trx.total) : null;
+                                const rawPaymentMethod = String(trx?.paymentMethod || '').trim().toLowerCase();
+                                const transactionType = activeTab === 'special-orders' ? 'Special Order' : ({ cash: 'Cash', credit: 'Credit', gcash: 'GCash', cheque: 'Cheque', 'bank transfer': 'Bank Transfer', other: 'Other' }[rawPaymentMethod] || (rawPaymentMethod ? rawPaymentMethod.replace(/(^|[\s_-])\w/g, (part) => part.toUpperCase()) : ''));
+                                const status = String(trx?.status || '').trim();
+                                const isVoided = status.toLowerCase() === 'voided';
+                                const pendingVoid = isPendingVoidRequest(trx);
+
+                                return (
+                                    <article key={trx.id} className="app-dashboard-card-hover min-w-0 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                                        <div className="flex min-w-0 items-start justify-between gap-3">
+                                            <div className="min-w-0">
+                                                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Transaction ID</p>
+                                                <h3 className="mt-0.5 break-all font-mono text-sm font-bold leading-5 text-slate-900">{trx.id}</h3>
+                                                {activeTab === 'special-orders' && trx.specialOrderNumber && <p className="mt-1 break-words text-xs font-medium text-amber-700">{trx.specialOrderNumber}</p>}
+                                            </div>
+                                            <div className="flex shrink-0 flex-col items-end gap-1">
+                                                {trx.isArchived && <span className="rounded-full border border-slate-200 bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-700">Archived</span>}
+                                                {status && <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${isVoided ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-slate-200 bg-slate-50 text-slate-700'}`}>{status}</span>}
+                                                {pendingVoid && <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700">Void Request Pending</span>}
+                                            </div>
+                                        </div>
+                                        <dl className="mt-4 grid min-w-0 grid-cols-2 gap-x-4 gap-y-3 border-t border-slate-100 pt-3">
+                                            {[
+                                                { label: 'Date & time', value: formatExact(trx.date) },
+                                                { label: 'Customer', value: trx.customerName },
+                                                { label: 'Transaction type', value: transactionType },
+                                                { label: 'Total amount', value: amount === null ? '' : `₱${formatMoney(amount)}`, valueClass: 'font-semibold tabular-nums text-slate-900' },
+                                                { label: 'Quantity sold', value: quantitySold === null ? '' : quantitySold.toLocaleString() },
+                                            ].filter((field) => field.value !== null && field.value !== undefined && String(field.value).trim() !== '').map((field) => (
+                                                <div key={field.label} className="min-w-0">
+                                                    <dt className="text-[10px] font-medium uppercase tracking-wide text-slate-500">{field.label}</dt>
+                                                    <dd className={`mt-0.5 break-words text-xs text-slate-800 ${field.valueClass || ''}`}>{field.value}</dd>
+                                                </div>
+                                            ))}
+                                        </dl>
+                                        <div className="mt-4 grid grid-cols-2 gap-2 border-t border-slate-100 pt-3">
+                                            {activeTab === 'sales' && (
+                                                <button type="button" onClick={() => handleViewReceipt(trx)} className={`${mobileHistoryActionBaseClass} ${mobileHistoryActionClass.primary}`}>
+                                                    <RecordActionIcon name={isRegularSale(trx) ? 'file-text' : 'receipt-text'} />
+                                                    {isRegularSale(trx) ? 'View Order Confirmation' : 'View Receipt'}
+                                                </button>
+                                            )}
+                                            <button type="button" onClick={() => setSelectedSaleDetails(trx)} className={`${mobileHistoryActionBaseClass} ${activeTab === 'special-orders' ? mobileHistoryActionClass.primary : mobileHistoryActionClass.secondary} ${activeTab === 'special-orders' ? 'col-span-2' : ''}`}>
+                                                <RecordActionIcon name={activeTab === 'special-orders' ? 'eye' : 'file-search'} />
+                                                {activeTab === 'special-orders' ? 'View Transaction' : 'Sale Details'}
+                                            </button>
+                                        </div>
+                                    </article>
+                                );
+                            })
+                        ) : activeTab === 'credit' ? (
+                            currentItems.map((credit) => (
+                                <article key={credit._id || credit.creditTransactionId} className="app-dashboard-card-hover min-w-0 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                                    <div className="flex min-w-0 items-start justify-between gap-3">
+                                        <div className="min-w-0">
+                                            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Credit transaction</p>
+                                            <h3 className="mt-0.5 break-all font-mono text-sm font-bold leading-5 text-slate-900">{credit.creditTransactionId}</h3>
+                                        </div>
+                                        {credit.status && <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${creditStatusBadgeClass(credit.status)}`}>{credit.status}</span>}
+                                    </div>
+                                    <dl className="mt-4 grid min-w-0 grid-cols-2 gap-x-4 gap-y-3 border-t border-slate-100 pt-3">
+                                        {[
+                                            { label: 'Created', value: formatExact(credit.createdAt || credit.date) },
+                                            { label: 'Customer', value: credit.customerName },
+                                            { label: 'Due date', value: formatOptionalDate(credit.dueDate) },
+                                            { label: 'Last payment', value: formatOptionalDate(getLastPaymentDate(credit.paymentHistory)) },
+                                            { label: 'Order reference', value: credit.orderReference },
+                                            { label: 'Transaction type', value: 'Credit' },
+                                            { label: 'Total amount', value: credit.totalAmount !== null && credit.totalAmount !== undefined && String(credit.totalAmount).trim() !== '' && Number.isFinite(Number(credit.totalAmount)) ? `₱${formatMoney(credit.totalAmount)}` : '', valueClass: 'font-semibold tabular-nums text-slate-900' },
+                                        ].filter((field) => field.value !== null && field.value !== undefined && String(field.value).trim() !== '').map((field) => (
+                                            <div key={field.label} className="min-w-0">
+                                                <dt className="text-[10px] font-medium uppercase tracking-wide text-slate-500">{field.label}</dt>
+                                                <dd className={`mt-0.5 break-words text-xs text-slate-800 ${field.valueClass || ''}`}>{field.value}</dd>
+                                            </div>
+                                        ))}
+                                    </dl>
+                                    <div className="mt-4 border-t border-slate-100 pt-3">
+                                        <button type="button" onClick={() => handleViewCreditDetails(credit)} className={`${mobileHistoryActionBaseClass} ${mobileHistoryActionClass.primary} w-full`}><RecordActionIcon name="eye" />View Details</button>
+                                    </div>
+                                </article>
+                            ))
+                        ) : (
+                            currentItems.map((log, index) => {
+                                const actor = getActorDisplayName(log?.userRef, log?.user);
+                                const hasQuantity = log?.quantity !== null && log?.quantity !== undefined && String(log.quantity).trim() !== '' && Number.isFinite(Number(log.quantity));
+                                const quantityUnit = String(log?.sellingUnit || log?.unit || '').trim();
+                                const actionClass = log.action === 'ADD' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : log.action === 'DEDUCT' ? 'bg-amber-50 text-amber-700 border-amber-100' : log.action === 'UPDATE' ? 'bg-blue-50 text-blue-700 border-blue-100' : log.action === 'CREATE' ? 'bg-purple-50 text-purple-700 border-purple-100' : log.action === 'ARCHIVE' ? 'bg-orange-50 text-orange-700 border-orange-100' : 'bg-gray-100 text-gray-600 border-gray-200';
+                                return (
+                                    <article key={log._id || `${log.code}-${log.date}-${index}`} className="app-dashboard-card-hover min-w-0 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                                        <div className="flex min-w-0 items-start justify-between gap-3">
+                                            <div className="min-w-0">
+                                                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">SKU</p>
+                                                <h3 className="mt-0.5 break-all font-mono text-sm font-bold leading-5 text-slate-900">{log.code}</h3>
+                                            </div>
+                                            {log.action && <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${actionClass}`}>{log.action}</span>}
+                                        </div>
+                                        <dl className="mt-4 grid min-w-0 grid-cols-2 gap-x-4 gap-y-3 border-t border-slate-100 pt-3">
+                                            {[
+                                                { label: 'Date & time', value: formatExact(log.date || log.createdAt) },
+                                                { label: 'Quantity changed', value: hasQuantity ? `${Number(log.quantity).toLocaleString()}${quantityUnit ? ` ${quantityUnit}` : ''}` : '' },
+                                                { label: 'Reason / details', value: log.details, full: true },
+                                                { label: 'Recorded by', value: actor },
+                                            ].filter((field) => field.value !== null && field.value !== undefined && String(field.value).trim() !== '').map((field) => (
+                                                <div key={field.label} className={`min-w-0 ${field.full ? 'col-span-2' : ''}`}>
+                                                    <dt className="text-[10px] font-medium uppercase tracking-wide text-slate-500">{field.label}</dt>
+                                                    <dd className="mt-0.5 break-words text-xs text-slate-800">{field.value}</dd>
+                                                </div>
+                                            ))}
+                                        </dl>
+                                    </article>
+                                );
+                            })
+                        )}
+                    </div>
+
+                    <div className="hidden md:block">
+                        {(activeTab === 'sales' || activeTab === 'special-orders') ? (
+                            <table className={`main-data-table w-full text-left border-separate border-spacing-0 table-fixed ${activeTab === 'sales' ? 'min-w-[1200px]' : 'min-w-[920px]'}`}>
                                <thead className="sticky top-0 z-10 shadow-sm">
                                     <tr className="bg-gray-900 dark:bg-gray-700 text-white uppercase tracking-wider">
-                                        <th className="w-[130px] py-3 px-3 text-center text-[11px] font-semibold border border-gray-700 md:w-[13%]">Transaction ID</th>
-                                        <th className="w-[185px] py-3 px-3 text-center text-[11px] font-semibold border border-gray-700 md:w-[17%]">Date & Time</th>
-                                        <th className="w-[145px] py-3 px-3 text-center text-[11px] font-semibold border border-gray-700 md:w-[14%]">Processed By</th>
-                                        <th className="w-[120px] py-3 px-3 text-center text-[11px] font-semibold border border-gray-700 md:w-[13%]">Items</th>
-                                        <th className="w-[130px] py-3 px-3 text-center text-[11px] font-semibold border border-gray-700 md:w-[16%]">Total Amount</th>
-                                        <th className="w-[130px] py-3 px-3 text-center text-[11px] font-semibold border border-gray-700 md:w-[13%]">Payment Method</th>
-                                        <th className="w-[100px] py-3 px-3 text-center text-[11px] font-semibold border border-gray-700 md:w-[14%]">Action</th>
+                                        <th className="w-[13%] py-3 px-3 text-center text-[11px] font-semibold border border-gray-700">Transaction ID</th>
+                                        <th className={`py-3 px-3 text-center text-[11px] font-semibold border border-gray-700 ${activeTab === 'special-orders' ? 'w-[16%]' : 'w-[14%]'}`}>Date & Time</th>
+                                        <th className={`py-3 px-3 text-center text-[11px] font-semibold border border-gray-700 ${activeTab === 'special-orders' ? 'w-[15%]' : 'w-[14%]'}`}>{activeTab === 'special-orders' ? 'Customer' : 'Processed By'}</th>
+                                        <th className={`py-3 px-3 text-center text-[11px] font-semibold border border-gray-700 ${activeTab === 'special-orders' ? 'w-[11%]' : 'w-[12%]'}`}>Items</th>
+                                        <th className={`py-3 px-3 text-center text-[11px] font-semibold border border-gray-700 ${activeTab === 'special-orders' ? 'w-[15%]' : 'w-[14%]'}`}>Total Amount</th>
+                                        <th className={`py-3 px-3 text-center text-[11px] font-semibold border border-gray-700 ${activeTab === 'special-orders' ? 'w-[14%]' : 'w-[15%]'}`}>{activeTab === 'special-orders' ? 'Status' : 'Payment Method'}</th>
+                                        <th className={`py-3 px-2 text-center text-[11px] font-semibold border border-gray-700 ${activeTab === 'sales' ? 'w-[18%]' : 'w-[16%]'}`}>Action</th>
                                     </tr>
                                 </thead>
                                 <tbody className="text-sm">
@@ -1261,33 +1523,17 @@ const History = () => {
                                         <TableSkeletonRows rowKeyPrefix="sales-history-skeleton" columnTypes={['text', 'text', 'text', 'text', 'text', 'pill', 'actions']} />
                                     ) : currentList.length === 0 ? (
                                         <tr>
-                                            <td colSpan="7" className="p-8 text-center">
-                                                <div className="flex flex-col items-center justify-center text-gray-500 border-2 border-dashed border-gray-300 rounded-3xl p-8 bg-gray-50/50">
-                                                    <div className="bg-white p-4 rounded-full mb-4 shadow-sm ring-1 ring-gray-200">
-                                                        <svg className="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path>
-                                                        </svg>
-                                                    </div>
-                                                    <h3 className="text-lg font-semibold text-gray-900 mb-1">
-                                                        {isCurrentTabLoading ? 'Loading sales history...' : (searchTerm ? 'No transactions found' : 'No sales recorded')}
-                                                    </h3>
-                                                    <p className="text-gray-500 text-sm max-w-md mx-auto">
-                                                        {isCurrentTabLoading
-                                                            ? 'Fetching sales records from backend. Please wait a moment.'
-                                                            : (searchTerm 
-                                                            ? `We couldn't find any transactions matching "${searchTerm}". Try a different ID or keyword.`
-                                                            : 'Sales transactions will appear here once you process payments in the POS system.'
-                                                            )}
-                                                    </p>
-                                                </div>
+                                            <td colSpan="7" className="p-3">
+                                                <ContextualEmptyState {...currentEmptyState} className="mx-auto max-w-xl rounded-xl border border-slate-200 bg-white" />
                                             </td>
                                         </tr>
                                     ) : (
                                         currentItems.map((trx) => (
-                                            <tr key={trx.id} className="border-b border-gray-200 hover:bg-gray-50 transition-colors duration-200 group">
+                                            <tr key={trx.id} className="app-dashboard-table-row-hover border-b border-gray-200 group">
                                                 <td className="py-2 px-3 text-center border border-gray-200">
                                                     <div className="flex flex-col items-center gap-1">
                                                         <IdentifierChip>{trx.id}</IdentifierChip>
+                                                        {activeTab === 'special-orders' && trx.specialOrderNumber && <span className="text-[10px] font-medium text-amber-700">{trx.specialOrderNumber}</span>}
                                                         {String(trx.status || '').toLowerCase() === 'voided' && (
                                                             <span className="inline-flex rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-rose-700 dark:border-rose-900/70 dark:bg-rose-950/40 dark:text-rose-300">
                                                                 Voided
@@ -1302,14 +1548,14 @@ const History = () => {
                                                 </td>
                                                 <td className="whitespace-nowrap py-2 px-3 text-gray-800 font-medium text-xs text-center border border-gray-200">{formatExact(trx.date)}</td>
                                                 <td className="py-2 px-3 text-center border border-gray-200">
-                                                    <div className="flex flex-col items-center">
+                                                    {activeTab === 'special-orders' ? <span className="text-xs font-semibold text-gray-900">{trx.customerName || '-'}</span> : <div className="flex flex-col items-center">
                                                         <span className="whitespace-nowrap text-gray-900 font-semibold text-xs leading-tight">
                                                             {getProcessorDisplayName(trx)}
                                                         </span>
                                                         <span className="text-[10px] font-medium text-gray-400 leading-tight">
                                                             {getActorRoleLabel(trx?.cashierUser, getProcessorRoleLabel(trx)) || getProcessorRoleLabel(trx)}
                                                         </span>
-                                                    </div>
+                                                    </div>}
                                                 </td>
                                                 <td className="py-2 px-3 text-gray-600 font-medium text-xs text-center border border-gray-200">
                                                     <div className="flex flex-col items-center leading-tight">
@@ -1317,43 +1563,33 @@ const History = () => {
                                                         <span className="text-[10px] font-semibold text-gray-800">
                                                             {(trx.items || []).reduce((sum, item) => sum + Number(item?.qty || 0), 0)} qty sold
                                                         </span>
-                                                        {String(trx?.saleType || '').toLowerCase() === 'special-order' && (
-                                                            <span className="mt-1 inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-700">
-                                                                Special Order
-                                                            </span>
-                                                        )}
                                                     </div>
                                                 </td>
                                                 <td className="py-2 px-3 font-semibold text-black text-sm text-center border border-gray-200 tabular-nums">₱{formatMoney(trx.total)}</td>
                                                 <td className="py-2 px-3 text-center border border-gray-200">
                                                     <span className="inline-flex whitespace-nowrap rounded-full border border-gray-300 bg-white px-2 py-0.5 text-[10px] font-semibold text-gray-700">
-                                                        {trx.paymentMethod || 'Cash'}
+                                                        {activeTab === 'special-orders' ? (trx.status || 'Completed') : (trx.paymentMethod || 'Cash')}
                                                     </span>
                                                 </td>
-                                                <td className="py-2 px-3 text-center border border-gray-200">
-                                                    <div className="flex flex-nowrap items-center justify-center gap-1 whitespace-nowrap">
-                                                        <TableActionButton
-                                                            onClick={() => handleViewReceipt(trx)}
-                                                            label={isRegularSale(trx) ? 'View Order Confirmation' : 'View Receipt'}
-                                                            aria-label={isRegularSale(trx) ? `View Order Confirmation for ${trx.id}` : `View Receipt for ${trx.id}`}
-                                                        >
-                                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
-                                                        </TableActionButton>
-                                                        <TableActionButton onClick={() => setSelectedSaleDetails(trx)} label="Sale Details" aria-label={`View sale details for ${trx.id}`}><svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M8 4h8l3 3v13H5V4h3Zm2 7h4m-4 4h6" /></svg></TableActionButton>
-                                                        {onArchiveTransaction && (
+                                                <td className={`py-2 text-center border border-gray-200 ${activeTab === 'sales' ? 'px-0' : 'px-1'}`}>
+                                                    <div className={`history-action-group mx-auto grid w-fit max-w-full gap-1.5 ${activeTab === 'sales' ? 'history-sales-action-group grid-cols-[max-content_max-content]' : 'grid-cols-1'}`}>
+                                                        {activeTab === 'sales' && <div className="history-action-cell">
                                                             <TableActionButton
-                                                                onClick={() => toggleArchive(trx)}
-                                                                variant={trx.isArchived ? 'positive' : 'destructive'}
-                                                                label={trx.isArchived ? 'Restore' : 'Archive'}
-                                                                aria-label={`${trx.isArchived ? 'Restore' : 'Archive'} transaction ${trx.id}`}
+                                                                onClick={() => handleViewReceipt(trx)}
+                                                                label={isRegularSale(trx) ? 'View Order Confirmation' : 'View Receipt'}
+                                                                aria-label={isRegularSale(trx) ? `View Order Confirmation for ${trx.id}` : `View Receipt for ${trx.id}`}
+                                                                className="history-labeled-action reference-table-action history-sales-action history-labeled-action--primary"
                                                             >
-                                                                {trx.isArchived ? (
-                                                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-                                                                ) : (
-                                                                    <ArchiveIcon />
-                                                                )}
+                                                                <svg className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+                                                                <span className="history-action-label">Confirmation</span>
                                                             </TableActionButton>
-                                                        )}
+                                                        </div>}
+                                                        <div className="history-action-cell">
+                                                            <TableActionButton onClick={() => setSelectedSaleDetails(trx)} label={activeTab === 'special-orders' ? 'View Transaction' : 'Sale Details'} aria-label={`View ${activeTab === 'special-orders' ? 'Special Order transaction details' : 'sale details'} for ${trx.id}`} className={`history-labeled-action reference-table-action ${activeTab === 'sales' ? 'history-sales-action' : ''} ${activeTab === 'special-orders' ? 'history-labeled-action--primary' : ''}`}>
+                                                                <svg className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M8 4h8l3 3v13H5V4h3Zm2 7h4m-4 4h6" /></svg>
+                                                                <span className="history-action-label">{activeTab === 'special-orders' ? 'View Transaction' : 'Details'}</span>
+                                                            </TableActionButton>
+                                                        </div>
                                                     </div>
                                                 </td>
                                             </tr>
@@ -1362,18 +1598,18 @@ const History = () => {
                                 </tbody>
                             </table>
                         ) : activeTab === 'credit' ? (
-                            <table className="main-data-table w-full text-left border-separate border-spacing-0 table-fixed min-w-[980px]">
+                            <table className="main-data-table w-full text-left border-separate border-spacing-0 table-fixed min-w-[920px]">
                                 <thead className="sticky top-0 z-10 shadow-sm">
                                     <tr className="bg-gray-900 dark:bg-gray-700 text-white uppercase tracking-wider">
-                                        <th className="py-3 px-3 w-[15%] text-center text-[11px] font-semibold border border-gray-700">Credit ID</th>
-                                        <th className="py-3 px-3 w-[12%] text-center text-[11px] font-semibold border border-gray-700">Created</th>
-                                        <th className="py-3 px-3 w-[12%] text-center text-[11px] font-semibold border border-gray-700">Due Date</th>
-                                        <th className="py-3 px-3 w-[12%] text-center text-[11px] font-semibold border border-gray-700">Last Payment</th>
-                                        <th className="py-3 px-3 w-[18%] text-center text-[11px] font-semibold border border-gray-700">Customer</th>
-                                        <th className="py-3 px-3 w-[12%] text-center text-[11px] font-semibold border border-gray-700">Order Ref</th>
-                                        <th className="py-3 px-3 w-[10%] text-center text-[11px] font-semibold border border-gray-700">Total</th>
-                                        <th className="py-3 px-3 w-[7%] text-center text-[11px] font-semibold border border-gray-700">Status</th>
-                                        <th className="py-3 px-3 w-[10%] text-center text-[11px] font-semibold border border-gray-700">Action</th>
+                                        <th className="py-3 px-2 w-[12%] text-center text-[11px] font-semibold border border-gray-700">Credit ID</th>
+                                        <th className="py-3 px-2 w-[9%] text-center text-[11px] font-semibold border border-gray-700">Created</th>
+                                        <th className="py-3 px-2 w-[9%] text-center text-[11px] font-semibold border border-gray-700">Due Date</th>
+                                        <th className="py-3 px-2 w-[9%] text-center text-[11px] font-semibold border border-gray-700">Last Payment</th>
+                                        <th className="py-3 px-2 w-[14%] text-center text-[11px] font-semibold border border-gray-700">Customer</th>
+                                        <th className="py-3 px-2 w-[12%] text-center text-[11px] font-semibold border border-gray-700">Order Ref</th>
+                                        <th className="py-3 px-2 w-[10%] text-center text-[11px] font-semibold border border-gray-700">Total</th>
+                                        <th className="py-3 px-2 w-[13%] text-center text-[11px] font-semibold border border-gray-700">Status</th>
+                                        <th className="py-3 px-2 w-[12%] text-center text-[11px] font-semibold border border-gray-700">Action</th>
                                     </tr>
                                 </thead>
                                 <tbody className="text-sm">
@@ -1381,30 +1617,13 @@ const History = () => {
                                         <TableSkeletonRows rowKeyPrefix="credit-history-skeleton" columnTypes={['text', 'text', 'text', 'text', 'text', 'text', 'text', 'pill', 'actions']} />
                                     ) : currentList.length === 0 ? (
                                         <tr>
-                                            <td colSpan="9" className="p-8 text-center">
-                                                <div className="flex flex-col items-center justify-center text-gray-500 border-2 border-dashed border-gray-300 rounded-3xl p-8 bg-gray-50/50">
-                                                    <div className="bg-white p-4 rounded-full mb-4 shadow-sm ring-1 ring-gray-200">
-                                                        <svg className="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path>
-                                                        </svg>
-                                                    </div>
-                                                    <h3 className="text-lg font-semibold text-gray-900 mb-1">
-                                                        {isCurrentTabLoading ? 'Loading credit transactions...' : (searchTerm ? 'No credit transactions found' : 'No credit transactions recorded')}
-                                                    </h3>
-                                                    <p className="text-gray-500 text-sm max-w-md mx-auto">
-                                                        {isCurrentTabLoading
-                                                            ? 'Fetching credit records from backend. Please wait a moment.'
-                                                            : (searchTerm
-                                                            ? `We couldn't find any credit transactions matching "${searchTerm}". Try a different keyword.`
-                                                            : 'Credit transactions will appear here once customers purchase on credit.'
-                                                            )}
-                                                    </p>
-                                                </div>
+                                            <td colSpan="9" className="p-3">
+                                                <ContextualEmptyState {...currentEmptyState} className="mx-auto max-w-xl rounded-xl border border-slate-200 bg-white" />
                                             </td>
                                         </tr>
                                     ) : (
                                         currentItems.map((credit) => (
-                                            <tr key={credit._id} className="border-b border-gray-200 hover:bg-gray-50 transition-colors duration-200 group">
+                                            <tr key={credit._id} className="app-dashboard-table-row-hover border-b border-gray-200 group">
                                                 <td className="py-2 px-2 text-center border border-gray-200">
                                                     <IdentifierChip className="!whitespace-nowrap !break-normal">{credit.creditTransactionId}</IdentifierChip>
                                                 </td>
@@ -1416,8 +1635,8 @@ const History = () => {
                                                 <td className="py-2 px-2 text-gray-900 font-semibold text-xs text-center border border-gray-200">{credit.customerName}</td>
                                                 <td className="py-2 px-2 text-center border border-gray-200">{credit.orderReference ? <IdentifierChip>{credit.orderReference}</IdentifierChip> : '-'}</td>
                                                 <td className="py-2 px-2 font-semibold text-black text-sm text-center border border-gray-200 tabular-nums">₱{formatMoney(credit.totalAmount)}</td>
-                                                <td className="py-2 px-2 text-center border border-gray-200">
-                                                    <span className={`px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide border ${creditStatusBadgeClass(credit.status)}`}>
+                                                <td className="whitespace-nowrap py-2 px-2 text-center border border-gray-200">
+                                                    <span className={`inline-flex whitespace-nowrap px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide border ${creditStatusBadgeClass(credit.status)}`}>
                                                         {credit.status}
                                                     </span>
                                                 </td>
@@ -1425,9 +1644,12 @@ const History = () => {
                                                     <div className="flex items-center justify-center gap-1">
                                                         <TableActionButton
                                                             onClick={() => handleViewCreditDetails(credit)}
-                                                            label="View Details"
+                                                            label="View Credit Details"
+                                                            aria-label={`View credit transaction details for ${credit.creditTransactionId}`}
+                                                            className="history-labeled-action reference-table-action history-labeled-action--primary"
                                                         >
-                                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+                                                            <svg className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5 16.478 5 20.268 7.943 21.542 12c-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+                                                            <span className="history-action-label">View Details</span>
                                                         </TableActionButton>
                                                     </div>
                                                 </td>
@@ -1452,30 +1674,13 @@ const History = () => {
                                         <TableSkeletonRows rowKeyPrefix="inventory-history-skeleton" columnTypes={['text', 'pill', 'text', 'text', 'text']} />
                                     ) : currentList.length === 0 ? (
                                         <tr>
-                                            <td colSpan="5" className="p-8 text-center">
-                                                <div className="flex flex-col items-center justify-center text-gray-500 border-2 border-dashed border-gray-300 rounded-3xl p-8 bg-gray-50/50">
-                                                    <div className="bg-white p-4 rounded-full mb-4 shadow-sm ring-1 ring-gray-200">
-                                                        <svg className="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path>
-                                                        </svg>
-                                                    </div>
-                                                    <h3 className="text-lg font-semibold text-gray-900 mb-1">
-                                                        {isCurrentTabLoading ? 'Loading inventory logs...' : (searchTerm ? 'No logs found' : 'No activity recorded')}
-                                                    </h3>
-                                                    <p className="text-gray-500 text-sm max-w-md mx-auto">
-                                                        {isCurrentTabLoading
-                                                            ? 'Fetching inventory activity from backend. Please wait a moment.'
-                                                            : (searchTerm 
-                                                            ? `We couldn't find any logs matching "${searchTerm}". Try a different SKU or keyword.`
-                                                            : 'Inventory movements such as adding stock or sales will be logged here automatically.'
-                                                            )}
-                                                    </p>
-                                                </div>
+                                            <td colSpan="5" className="p-3">
+                                                <ContextualEmptyState {...currentEmptyState} className="mx-auto max-w-xl rounded-xl border border-slate-200 bg-white" />
                                             </td>
                                         </tr>
                                     ) : (
                                         currentItems.map((log, index) => (
-                                            <tr key={index} className="border-b border-gray-200 hover:bg-gray-50 transition-colors duration-200 group">
+                                            <tr key={index} className="app-dashboard-table-row-hover border-b border-gray-200 group">
                                                 <td className="py-2 px-3 text-gray-800 font-medium text-xs text-center whitespace-nowrap border border-gray-200">{formatExact(log.date)}</td>
                                                 <td className="py-2 px-3 text-center border border-gray-200">
                                                     <span className={`inline-flex whitespace-nowrap px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide border ${
@@ -1498,10 +1703,11 @@ const History = () => {
                                 </tbody>
                             </table>
                         )}
-                        </div>
+                    </div>
+                </div>
 
                 {/* Floating Pagination Controls */}
-                <div className="absolute bottom-0 left-0 right-0 z-30 w-full border-t border-gray-200 bg-slate-200/95 px-4 py-2 shadow-[0_-8px_24px_rgba(0,0,0,0.08)] backdrop-blur-sm md:px-6 md:py-3 dark:border-gray-700 dark:bg-slate-800/90">
+                <div className="absolute bottom-0 left-0 right-0 z-30 w-full border-t border-gray-200 bg-slate-200/95 px-2 py-2 shadow-[0_-8px_24px_rgba(0,0,0,0.08)] backdrop-blur-sm md:px-6 md:py-3 dark:border-gray-700 dark:bg-slate-800/90">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="text-xs text-gray-500 dark:text-gray-400 font-medium">
                             Showing <span className="font-semibold text-gray-900 dark:text-white">{displayStart}</span> to <span className="font-semibold text-gray-900 dark:text-white">{displayEnd}</span> of <span className="font-semibold text-gray-900 dark:text-white">{currentList.length}</span> results
@@ -1516,7 +1722,7 @@ const History = () => {
 
             {isCreditDetailsOpen && selectedCredit && (
                 <div className="app-modal-backdrop fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-                    <div className="w-full max-w-3xl bg-white rounded-xl border border-gray-200 shadow-xl overflow-hidden">
+                    <div onClick={(e) => e.stopPropagation()} className="w-full max-w-3xl bg-white rounded-xl border border-gray-200 shadow-xl overflow-hidden">
                         <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between bg-gray-50">
                             <div>
                                 <h3 className="font-semibold text-gray-900">Credit Transaction Details</h3>
@@ -1534,10 +1740,15 @@ const History = () => {
                             </button>
                         </div>
                         <div className="p-4 space-y-3 max-h-[70vh] overflow-y-auto">
-                            <div className="grid grid-cols-1 sm:grid-cols-6 gap-2 text-sm">
+                            <div className="grid grid-cols-1 sm:grid-cols-7 gap-2 text-sm">
                                 <div className="bg-gray-50 rounded-lg border border-gray-100 p-2">
                                     <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Total</p>
                                     <p className="font-semibold text-gray-900">₱{formatMoney(selectedCredit.totalAmount)}</p>
+                                </div>
+                                <div className="bg-gray-50 rounded-lg border border-gray-100 p-2">
+                                    <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Down Payment</p>
+                                    <p className="font-semibold text-gray-900">{getDownPayment(selectedCredit) ? `₱${formatMoney(getDownPayment(selectedCredit).amount)}` : '—'}</p>
+                                    {getDownPayment(selectedCredit)?.method && <p className="mt-0.5 text-[10px] capitalize text-gray-500">{getDownPayment(selectedCredit).method}</p>}
                                 </div>
                                 <div className="bg-gray-50 rounded-lg border border-gray-100 p-2">
                                     <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Paid</p>
@@ -1566,7 +1777,7 @@ const History = () => {
                             <div className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-xs text-gray-700">
                                 <span className="font-semibold uppercase tracking-wider text-gray-500">Payment Type:</span> Credit
                                 <span className="mx-2 text-gray-300">|</span>
-                                <span className="font-semibold uppercase tracking-wider text-gray-500">Payment Method:</span> {getCreditPaymentMethod(selectedCredit)}
+                                <span className="font-semibold uppercase tracking-wider text-gray-500">Latest Payment Method:</span> {getCreditPaymentMethod(selectedCredit)}
                             </div>
 
                             <div>
@@ -1590,7 +1801,7 @@ const History = () => {
                                                 (selectedCredit.orderId?.items || []).map((item, idx) => (
                                                     <tr key={`${item.code || item.name || 'item'}-${idx}`} className="border-b border-gray-100">
                                                         <td className="px-2 py-1.5">
-                                                            <div className="font-semibold text-gray-900">{item.name || 'Item'}</div>
+                                                            <div className="font-semibold text-gray-900">{getHistoryProductDisplayName(item)}</div>
                                                             <div className="text-[10px] text-gray-500">{item.code || '-'}</div>
                                                         </td>
                                                         <td className="px-2 py-1.5 text-center font-semibold">{item.quantity}</td>
@@ -1612,24 +1823,28 @@ const History = () => {
                                             <tr className="text-left text-[11px] uppercase tracking-wider text-gray-500">
                                                 <th className="px-2 py-1.5">Date</th>
                                                 <th className="px-2 py-1.5">Amount</th>
+                                                <th className="px-2 py-1.5">Type</th>
                                                 <th className="px-2 py-1.5">Method</th>
                                                 <th className="px-2 py-1.5">Recorded By</th>
                                                 <th className="px-2 py-1.5">Note</th>
+                                                <th className="px-2 py-1.5">Evidence</th>
                                             </tr>
                                         </thead>
                                         <tbody>
                                             {(selectedCredit.paymentHistory || []).length === 0 ? (
                                                 <tr>
-                                                    <td className="px-2 py-3 text-gray-500 text-center" colSpan={5}>No payments recorded yet.</td>
+                                                    <td className="px-2 py-3 text-gray-500 text-center" colSpan={7}>No payments recorded yet.</td>
                                                 </tr>
                                             ) : (
                                                 selectedCredit.paymentHistory.map((payment, idx) => (
                                                     <tr key={`${payment.paymentDate || 'date'}-${idx}`} className="border-b border-gray-100">
                                                         <td className="px-2 py-1.5">{payment.paymentDate ? new Date(payment.paymentDate).toLocaleString() : '-'}</td>
                                                         <td className="px-2 py-1.5 font-semibold">₱{formatMoney(payment.amount)}</td>
+                                                        <td className="px-2 py-1.5">{getCreditPaymentEventLabel(selectedCredit, payment, idx)}</td>
                                                         <td className="px-2 py-1.5 uppercase">{payment.method || '-'}</td>
                                                         <td className="px-2 py-1.5">{getActorDisplayName(payment.recordedByUser || payment.recordedById, payment.recordedBy, '-')}</td>
                                                         <td className="px-2 py-1.5">{payment.note || '-'}</td>
+                                                        <td className="px-2 py-1.5">{payment.clientRequestId && (payment.proofs?.length || payment.proof?.storageKey) ? (payment.proofs?.length ? payment.proofs : [payment.proof]).map((proof, index) => <button key={`${proof.storageKey}-${index}`} type="button" onClick={() => viewCreditEvidence({ payment, index })} className="mr-1 text-slate-800 underline focus-visible:ring-2 focus-visible:ring-slate-700">View {index + 1}</button>) : '—'}</td>
                                                     </tr>
                                                 ))
                                             )}
@@ -1637,6 +1852,7 @@ const History = () => {
                                     </table>
                                 </div>
                             </div>
+                            {String(selectedCredit.status || '').toLowerCase() === 'cancelled' && <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700"><p className="font-semibold text-slate-900">Cancellation</p><p className="mt-1">Reason: {selectedCredit.cancelReason || '—'}</p>{(selectedCredit.cancelProofs || []).map((proof, index) => <button key={`${proof.storageKey}-${index}`} type="button" onClick={() => viewCreditEvidence({ cancellation: true, index })} className="mr-2 mt-2 text-slate-800 underline focus-visible:ring-2 focus-visible:ring-slate-700">View Cancellation Proof {index + 1}</button>)}</div>}
                         </div>
                     </div>
                 </div>
@@ -1645,11 +1861,11 @@ const History = () => {
 
             {selectedSaleDetails && !isSaleDetailsChildActive && (
                 <div className="app-modal-backdrop fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-                    <div role="dialog" aria-modal="true" aria-label="Sale details" className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-[#202225]">
+                    <div role="dialog" aria-modal="true" aria-label={isSpecialOrderSale(selectedSaleDetails) ? 'Special Order transaction details' : 'Sale details'} onClick={(e) => e.stopPropagation()} className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-[#202225]">
                         <div className="flex items-start justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-700">
                             <div>
                                 <div className="flex items-center gap-2">
-                                    <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">Sale Details</h3>
+                                    <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">{isSpecialOrderSale(selectedSaleDetails) ? 'Special Order Transaction Details' : 'Sale Details'}</h3>
                                     {String(selectedSaleDetails.status || '').toLowerCase() === 'voided' && <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-rose-700 dark:border-rose-900/70 dark:bg-rose-950/40 dark:text-rose-300">Voided</span>}
                                 </div>
                                 <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{selectedSaleDetails.id}</p>
@@ -1663,22 +1879,23 @@ const History = () => {
                                 <div><p className="text-slate-500 dark:text-slate-400">Processed By</p><p className="mt-1 font-medium text-slate-900 dark:text-slate-100">{getProcessorDisplayName(selectedSaleDetails)}</p></div>
                                 <div><p className="text-slate-500 dark:text-slate-400">Total</p><p className="mt-1 font-semibold text-slate-900 dark:text-slate-100">₱{formatMoney(selectedSaleDetails.total)}</p></div>
                             </div>
+                            {isSpecialOrderSale(selectedSaleDetails) && <div className="grid grid-cols-2 gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs dark:border-slate-700 dark:bg-slate-800/30"><div><p className="text-slate-500 dark:text-slate-400">Customer</p><p className="mt-1 font-medium text-slate-900 dark:text-slate-100">{selectedSaleDetails.customerName || 'Not recorded'}</p></div><div><p className="text-slate-500 dark:text-slate-400">Special Order Reference</p><p className="mt-1 font-medium text-slate-900 dark:text-slate-100">{selectedSaleDetails.specialOrderNumber || 'Not recorded'}</p></div><div><p className="text-slate-500 dark:text-slate-400">Linked Sales Transaction</p><p className="mt-1 break-all font-medium text-slate-900 dark:text-slate-100">{selectedSaleDetails.id}</p></div>{selectedSaleDetails.specialOrderQuotationVersion && <div><p className="text-slate-500 dark:text-slate-400">Quotation Reference</p><p className="mt-1 font-medium text-slate-900 dark:text-slate-100">Version {selectedSaleDetails.specialOrderQuotationVersion}</p></div>}<div><p className="text-slate-500 dark:text-slate-400">Financial Sale</p><p className="mt-1 font-medium text-slate-900 dark:text-slate-100">Recorded</p></div>{selectedSaleDetails.specialOrderFulfillmentStatus && <div><p className="text-slate-500 dark:text-slate-400">{selectedSaleDetails.specialOrderFulfillmentStatus === 'Administrative Closure' ? 'Order Closure' : 'Fulfillment'}</p><p className="mt-1 font-medium text-slate-900 dark:text-slate-100">{selectedSaleDetails.specialOrderFulfillmentStatus}</p></div>}<div><p className="text-slate-500 dark:text-slate-400">Record Status</p><p className="mt-1 font-medium text-slate-900 dark:text-slate-100">{selectedSaleDetails.status || 'Completed'}</p></div></div>}
                             <div className="border-t border-slate-200 pt-3 dark:border-slate-700">
                                 <div className="flex items-center justify-between gap-2">
                                     <div className="flex items-center gap-2">
                                         <h4 className="text-xs font-semibold text-slate-900 dark:text-slate-100">Transaction Reference</h4>
                                         {selectedSaleDetails.transactionReference?.correctionHistory?.length > 0 && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-slate-600 dark:bg-slate-700 dark:text-slate-300">Corrected</span>}
                                     </div>
-                                    {selectedSaleDetails.sourceId && String(selectedSaleDetails.status || '').toLowerCase() !== 'voided' && !selectedSaleDetails.transactionReference?.referenceNumber && !selectedSaleDetails.transactionReference?.supportingDocument && <button type="button" onClick={() => setIsEditingSaleReference(true)} className="text-xs font-medium text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white">Add Reference</button>}
-                                    {selectedSaleDetails.sourceId && String(selectedSaleDetails.status || '').toLowerCase() !== 'voided' && isAdminOrAbove() && (selectedSaleDetails.transactionReference?.referenceNumber || selectedSaleDetails.transactionReference?.supportingDocument) && <button type="button" onClick={() => setIsCorrectingSaleReference(true)} className="text-xs font-medium text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white">Correct Reference</button>}
+                                    {!isSpecialOrderSale(selectedSaleDetails) && selectedSaleDetails.sourceId && String(selectedSaleDetails.status || '').toLowerCase() !== 'voided' && !selectedSaleDetails.transactionReference?.referenceNumber && !selectedSaleDetails.transactionReference?.supportingDocument && <button type="button" onClick={() => setIsEditingSaleReference(true)} className="text-xs font-medium text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white">Add Reference</button>}
+                                    {!isSpecialOrderSale(selectedSaleDetails) && selectedSaleDetails.sourceId && String(selectedSaleDetails.status || '').toLowerCase() !== 'voided' && isAdminOrAbove() && (selectedSaleDetails.transactionReference?.referenceNumber || selectedSaleDetails.transactionReference?.supportingDocument) && <button type="button" onClick={() => setIsCorrectingSaleReference(true)} className="text-xs font-medium text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white">Correct Reference</button>}
                                 </div>
-                                {selectedSaleDetails.transactionReference?.referenceNumber && <p className="mt-2 text-xs text-slate-700 dark:text-slate-200"><span className="text-slate-500 dark:text-slate-400">Reference No.</span> {selectedSaleDetails.transactionReference.referenceNumber}</p>}
+                                {selectedSaleDetails.transactionReference?.referenceNumber && <p className="mt-2 text-xs text-slate-700 dark:text-slate-200"><span className="text-slate-500 dark:text-slate-400">Invoice No.</span> {selectedSaleDetails.transactionReference.referenceNumber}</p>}
                                 {selectedSaleDetails.transactionReference?.supportingDocument && <button type="button" onClick={viewSaleDocument} className="mt-2 text-xs font-medium text-slate-700 underline underline-offset-2 hover:text-slate-900 dark:text-slate-200">View Supporting Document</button>}
                                 {isAdminOrAbove() && selectedSaleDetails.transactionReference?.correctionHistory?.length > 0 && <button type="button" onClick={() => setIsCorrectionHistoryOpen(true)} className="ml-3 mt-2 text-xs font-medium text-slate-500 underline underline-offset-2 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200">View correction history</button>}
                                 {!selectedSaleDetails.sourceId && <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">Reference details can be added after this sale syncs.</p>}
                                 {String(selectedSaleDetails.status || '').toLowerCase() === 'voided' && <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">Reference metadata is preserved and read-only after voiding.</p>}
                             </div>
-                            {selectedSaleDetails.voidRequest && String(selectedSaleDetails.status || '').toLowerCase() !== 'voided' && (
+                            {selectedSaleDetails.voidRequest && (
                                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs dark:border-slate-700 dark:bg-slate-800/30">
                                     <div className="flex items-center justify-between gap-3">
                                         <h4 className="font-semibold text-slate-800 dark:text-slate-200">Void Request</h4>
@@ -1687,10 +1904,10 @@ const History = () => {
                                     <p className="mt-2 text-slate-600 dark:text-slate-300">{selectedSaleDetails.voidRequest.reason}</p>
                                     <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{selectedSaleDetails.voidRequest.requestedByName} · {formatExact(selectedSaleDetails.voidRequest.requestedAt)}</p>
                                     {selectedSaleDetails.voidRequest.status === 'pending' && userRole === ROLES.CASHIER && <p className="mt-2 font-medium text-slate-600 dark:text-slate-300">Void request pending</p>}
-                                    {selectedSaleDetails.voidRequest.supportingProof && <button type="button" onClick={viewSaleVoidProof} className="mt-2 font-medium text-slate-700 underline underline-offset-2 dark:text-slate-200">View Proof</button>}
+                                    {(selectedSaleDetails.voidRequest.supportingProofs?.length ? selectedSaleDetails.voidRequest.supportingProofs : selectedSaleDetails.voidRequest.supportingProof ? [selectedSaleDetails.voidRequest.supportingProof] : []).map((proof, index) => <button key={`${proof.originalName}-${index}`} type="button" onClick={() => viewSaleVoidProof('request', index)} className="mr-2 mt-2 font-medium text-slate-700 underline underline-offset-2 dark:text-slate-200">View Request Proof {index + 1}</button>)}
                                 </div>
                             )}
-                            <div className="border-t border-slate-200 pt-3 dark:border-slate-700"><h4 className="text-xs font-semibold text-slate-900 dark:text-slate-100">Items</h4>{(selectedSaleDetails.items || []).map((item, index) => <div key={`${item.code || item.name}-${index}`} className="flex justify-between gap-3 border-b border-slate-100 py-2 text-xs text-slate-700 dark:border-slate-700 dark:text-slate-200"><span>{item.name} × {item.qty}</span><span className="shrink-0">₱{formatMoney(item.subtotal ?? item.qty * item.price)}</span></div>)}</div>
+                            <div className="border-t border-slate-200 pt-3 dark:border-slate-700"><h4 className="text-xs font-semibold text-slate-900 dark:text-slate-100">Items</h4>{(selectedSaleDetails.items || []).map((item, index) => <div key={`${item.code || item.name}-${index}`} className="flex justify-between gap-3 border-b border-slate-100 py-2 text-xs text-slate-700 dark:border-slate-700 dark:text-slate-200"><span>{getHistoryProductDisplayName(item)} × {item.qty}{item.sellingUnit ? ` ${item.sellingUnit}` : ''}{isSpecialOrderSale(selectedSaleDetails) ? ` · ₱${formatMoney(item.price)} each` : ''}</span><span className="shrink-0">₱{formatMoney(item.subtotal ?? item.qty * item.price)}</span></div>)}</div>
                             {String(selectedSaleDetails.status || '').toLowerCase() === 'voided' && (
                                 <div className="rounded-xl border border-rose-200 bg-rose-50/70 p-3 text-xs dark:border-rose-900/60 dark:bg-rose-950/20">
                                     <h4 className="font-semibold text-rose-800 dark:text-rose-200">Void Record</h4>
@@ -1698,12 +1915,11 @@ const History = () => {
                                         <div className="flex justify-between gap-3"><dt className="text-slate-500 dark:text-slate-400">Voided At</dt><dd className="text-right">{formatExact(selectedSaleDetails.voidInfo?.voidedAt)}</dd></div>
                                         <div className="flex justify-between gap-3"><dt className="text-slate-500 dark:text-slate-400">Voided By</dt><dd className="text-right">{selectedSaleDetails.voidInfo?.voidedByName || '-'}</dd></div>
                                         <div className="flex items-start justify-between gap-3"><dt className="shrink-0 text-slate-500 dark:text-slate-400">Reason</dt><dd className="break-words text-right">{selectedSaleDetails.voidInfo?.reason || '-'}</dd></div>
-                                        {selectedSaleDetails.voidInfo?.supportingProof && (
+                                        {(selectedSaleDetails.voidInfo?.supportingProofs?.length || selectedSaleDetails.voidInfo?.supportingProof) && (
                                             <div className="flex items-start justify-between gap-3">
                                                 <dt className="shrink-0 text-slate-500 dark:text-slate-400">Supporting Proof</dt>
                                                 <dd className="min-w-0 text-right">
-                                                    <p className="truncate" title={selectedSaleDetails.voidInfo.supportingProof.originalName}>{selectedSaleDetails.voidInfo.supportingProof.originalName}</p>
-                                                    <button type="button" onClick={viewSaleVoidProof} className="mt-1 font-medium text-rose-700 underline underline-offset-2 hover:text-rose-900 dark:text-rose-300 dark:hover:text-rose-200">View Proof</button>
+                                                    {(selectedSaleDetails.voidInfo.supportingProofs?.length ? selectedSaleDetails.voidInfo.supportingProofs : [selectedSaleDetails.voidInfo.supportingProof]).map((proof, index) => <button key={`${proof.originalName}-${index}`} type="button" onClick={() => viewSaleVoidProof('void', index)} className="ml-2 mt-1 font-medium text-rose-700 underline underline-offset-2 hover:text-rose-900 dark:text-rose-300 dark:hover:text-rose-200">View Void Proof {index + 1}</button>)}
                                                 </dd>
                                             </div>
                                         )}
@@ -1711,7 +1927,7 @@ const History = () => {
                                 </div>
                             )}
                         </div>
-                        {(canVoidSale(selectedSaleDetails) || canRequestVoid(selectedSaleDetails)) && (
+                        {!isSpecialOrderSale(selectedSaleDetails) && (canVoidSale(selectedSaleDetails) || canRequestVoid(selectedSaleDetails)) && (
                             <div className="flex justify-end gap-2 border-t border-slate-200 px-5 py-3 dark:border-slate-700">
                                 {isAdminOrAbove() && selectedSaleDetails.voidRequest?.status === 'pending' && <button type="button" onClick={declineVoidRequest} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:bg-[#202225] dark:text-slate-200 dark:hover:bg-slate-800">Decline</button>}
                                 <button type="button" onClick={openVoidModal} className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-700 transition-colors hover:bg-rose-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300 dark:border-rose-900/70 dark:bg-[#202225] dark:text-rose-300 dark:hover:bg-rose-950/30">
@@ -1722,14 +1938,14 @@ const History = () => {
                     </div>
                 </div>
             )}
-            {isEditingSaleReference && selectedSaleDetails?.sourceId && String(selectedSaleDetails.status || '').toLowerCase() !== 'voided' && (
+            {isEditingSaleReference && !isSpecialOrderSale(selectedSaleDetails) && selectedSaleDetails?.sourceId && String(selectedSaleDetails.status || '').toLowerCase() !== 'voided' && (
                 <TransactionReferenceModal saleId={selectedSaleDetails.sourceId} initialReference={selectedSaleDetails.transactionReference} saveLabel="Save Reference" onSkip={() => setIsEditingSaleReference(false)} onSaved={(updated) => {
                     setSelectedSaleDetails((previous) => ({ ...previous, transactionReference: updated.transactionReference }));
                     setTransactions((previous) => previous.map((transaction) => transaction.sourceId === updated.sourceId ? { ...transaction, transactionReference: updated.transactionReference } : transaction));
                     setIsEditingSaleReference(false);
                 }} />
             )}
-            {isCorrectingSaleReference && selectedSaleDetails?.sourceId && (
+            {isCorrectingSaleReference && !isSpecialOrderSale(selectedSaleDetails) && selectedSaleDetails?.sourceId && (
                 <TransactionReferenceCorrectionModal
                     saleId={selectedSaleDetails.sourceId}
                     currentReference={selectedSaleDetails.transactionReference}
@@ -1744,7 +1960,7 @@ const History = () => {
             )}
             {isCorrectionHistoryOpen && !documentPreview && selectedSaleDetails?.transactionReference?.correctionHistory?.length > 0 && (
                 <div className="app-modal-backdrop fixed inset-0 z-[85] flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-[2px]">
-                    <div role="dialog" aria-modal="true" aria-labelledby="correction-history-title" className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-slate-50 shadow-xl dark:border-slate-700/80 dark:bg-[#24262a]">
+                    <div role="dialog" aria-modal="true" aria-labelledby="correction-history-title" onClick={(e) => e.stopPropagation()} className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-slate-50 shadow-xl dark:border-slate-700/80 dark:bg-[#24262a]">
                         <div className="flex items-center justify-between border-b border-slate-200/70 px-5 py-4 dark:border-slate-700/70">
                             <h3 id="correction-history-title" className="text-base font-semibold text-slate-900 dark:text-slate-100">Correction History</h3>
                             <button type="button" onClick={() => setIsCorrectionHistoryOpen(false)} className="text-xs font-medium text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white">Close</button>
@@ -1753,8 +1969,8 @@ const History = () => {
                             {selectedSaleDetails.transactionReference.correctionHistory.map((entry, index) => (
                                 <div key={`${entry.correctedAt}-${index}`} className="rounded-xl border border-slate-200 bg-white p-3 text-xs dark:border-slate-700 dark:bg-[#2d3035]">
                                     <div className="grid grid-cols-2 gap-3">
-                                        <div><p className="text-slate-500 dark:text-slate-400">Previous Reference</p><p className="mt-1 break-all text-slate-800 dark:text-slate-100">{entry.previousReferenceNumber || 'Document only'}</p></div>
-                                        <div><p className="text-slate-500 dark:text-slate-400">Corrected Reference</p><p className="mt-1 break-all text-slate-800 dark:text-slate-100">{entry.correctedReferenceNumber || 'Document only'}</p></div>
+                                        <div><p className="text-slate-500 dark:text-slate-400">Previous Invoice No.</p><p className="mt-1 break-all text-slate-800 dark:text-slate-100">{entry.previousReferenceNumber || 'Document only'}</p></div>
+                                        <div><p className="text-slate-500 dark:text-slate-400">Corrected Invoice No.</p><p className="mt-1 break-all text-slate-800 dark:text-slate-100">{entry.correctedReferenceNumber || 'Document only'}</p></div>
                                     </div>
                                     <p className="mt-3 text-slate-600 dark:text-slate-300"><span className="text-slate-500 dark:text-slate-400">Reason:</span> {entry.reason}</p>
                                     <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{entry.correctedByName} · {formatExact(entry.correctedAt)}</p>
@@ -1770,35 +1986,18 @@ const History = () => {
             )}
             {isVoidModalOpen && selectedSaleDetails && (
                 <div className="app-modal-backdrop fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-[2px]">
-                    <div role="dialog" aria-modal="true" aria-labelledby="void-sale-title" className="w-full max-w-md overflow-hidden rounded-2xl border border-slate-200/80 bg-slate-50 shadow-[0_20px_50px_-24px_rgba(15,23,42,0.35)] dark:border-slate-700/80 dark:bg-[#24262a] dark:shadow-[0_20px_50px_-24px_rgba(0,0,0,0.6)]">
+                    <div role="dialog" aria-modal="true" aria-labelledby="void-sale-title" onClick={(e) => e.stopPropagation()} className="flex max-h-[90vh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-slate-50 shadow-[0_20px_50px_-24px_rgba(15,23,42,0.35)] dark:border-slate-700/80 dark:bg-[#24262a] dark:shadow-[0_20px_50px_-24px_rgba(0,0,0,0.6)]">
                         <div className="border-b border-slate-200/70 px-5 py-4 dark:border-slate-700/70">
                             <h3 id="void-sale-title" className="text-base font-semibold text-slate-900 dark:text-slate-100">{userRole === ROLES.CASHIER ? 'Request Void' : 'Void Transaction'}</h3>
                             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{selectedSaleDetails.id}</p>
                         </div>
-                        <div className="space-y-3 px-5 py-4">
+                        <div className="space-y-3 overflow-y-auto px-5 py-4">
                             <p className="text-sm leading-5 text-slate-700 dark:text-slate-200">{userRole === ROLES.CASHIER ? 'Submit this Sale for Admin review.' : 'This permanently voids the Sale and restores the exact sold quantities to inventory.'}</p>
                             <label className="block">
                                 <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Reason for voiding</span>
                                 <textarea value={voidReason} onChange={(event) => setVoidReason(event.target.value)} maxLength={500} rows={4} disabled={isVoidSubmitting} placeholder="Enter the reason for voiding this Sale" className="mt-1.5 w-full resize-none rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition-colors focus:border-slate-400 focus:ring-2 focus:ring-slate-300/40 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:opacity-70 dark:border-slate-600/80 dark:bg-[#2d3035] dark:text-slate-100 dark:focus:border-slate-500 dark:focus:ring-slate-500/25 dark:disabled:bg-[#292c30]" />
                             </label>
-                            <div>
-                                <div className="flex items-center justify-between gap-3">
-                                    <div>
-                                        <p className="text-xs font-medium text-slate-600 dark:text-slate-300">Supporting Proof <span className="font-normal text-slate-400">(Optional)</span></p>
-                                        <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">JPG, PNG, or PDF up to 5 MB.</p>
-                                    </div>
-                                    <input ref={voidProofInputRef} type="file" accept=".jpg,.jpeg,.png,.pdf,image/jpeg,image/png,application/pdf" onChange={handleVoidProofSelection} disabled={isVoidSubmitting} className="sr-only" />
-                                    <button type="button" onClick={() => voidProofInputRef.current?.click()} disabled={isVoidSubmitting} className="shrink-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400/40 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-[#2d3035] dark:text-slate-200 dark:hover:bg-[#373a40]">
-                                        {voidProofFile ? 'Replace' : 'Choose File'}
-                                    </button>
-                                </div>
-                                {voidProofFile && (
-                                    <div className="mt-2 flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 dark:border-slate-600/80 dark:bg-[#2d3035]">
-                                        <span className="min-w-0 truncate text-xs text-slate-700 dark:text-slate-200" title={voidProofFile.name}>{voidProofFile.name}</span>
-                                        <button type="button" onClick={() => setVoidProofFile(null)} disabled={isVoidSubmitting} className="shrink-0 text-xs font-medium text-slate-500 hover:text-rose-700 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-400 dark:hover:text-rose-300">Remove</button>
-                                    </div>
-                                )}
-                            </div>
+                            <EvidenceUploadField id="sale-void-proof" label="Supporting Proof" files={voidProofFiles} onChange={setVoidProofFiles} maxFiles={3} allowedTypes={['image/jpeg', 'image/png', 'application/pdf']} disabled={isVoidSubmitting} />
                         </div>
                         <div className="flex justify-end gap-2 border-t border-slate-200/70 px-5 py-3 dark:border-slate-700/70">
                             <button type="button" onClick={closeVoidModal} disabled={isVoidSubmitting} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400/40 disabled:opacity-50 dark:border-slate-600 dark:bg-[#2d3035] dark:text-slate-200 dark:hover:bg-[#373a40]">Cancel</button>
@@ -1817,61 +2016,38 @@ const History = () => {
                 </div>
             )}
             {showReceipt && selectedTransaction && (
-                <ReceiptPreviewModal
-                    transaction={selectedTransaction}
-                    settings={appSettings}
-                    isOrderConfirmation={isOrderConfirmation}
-                    subtitle={isOrderConfirmation ? 'For transaction reference only.' : isAutoReceipt ? 'Payment confirmed. Receipt generated.' : 'Official record copy'}
-                    isReprint={!isAutoReceipt && !isOrderConfirmation}
-                    printStatus={printStatus}
-                    printLabel={isOrderConfirmation ? 'Print Again' : 'Reprint'}
-                    printedLabel={isOrderConfirmation ? 'Print Again' : 'Printed!'}
-                    contentId="history-receipt-content"
-                    onClose={() => {
-                        setShowReceipt(false);
-                        setAutoReceiptMode(null);
-                    }}
-                    onPrint={handlePrint}
-                />
+                isOrderConfirmation ? (
+                    <OrderConfirmationModal
+                        transaction={selectedTransaction}
+                        settings={appSettings}
+                        inventory={processedInventory}
+                        categories={productCategories}
+                        readOnly
+                        onContinue={() => {
+                            setShowReceipt(false);
+                            setAutoReceiptMode(null);
+                        }}
+                    />
+                ) : (
+                    <ReceiptPreviewModal
+                        transaction={selectedTransaction}
+                        settings={appSettings}
+                        isOrderConfirmation={false}
+                        subtitle={isAutoReceipt ? 'Payment confirmed. Receipt generated.' : 'Official record copy'}
+                        isReprint={!isAutoReceipt}
+                        printStatus={printStatus}
+                        printLabel="Reprint"
+                        printedLabel="Printed!"
+                        contentId="history-receipt-content"
+                        onClose={() => {
+                            setShowReceipt(false);
+                            setAutoReceiptMode(null);
+                        }}
+                        onPrint={handlePrint}
+                    />
+                )
             )}
 
-            {/* Archive Confirmation Modal */}
-            {isArchiveModalOpen && transactionToArchive && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-                    <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-sm md:max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-                        <div className="p-6 text-center">
-                            <div className={`mx-auto flex items-center justify-center mb-4 ${transactionToArchive.isArchived ? 'text-emerald-600' : 'text-orange-600'}`}>
-                                {transactionToArchive.isArchived ? (
-                                    <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-                                ) : (
-                                    <ArchiveIcon className="w-12 h-12" />
-                                )}
-                            </div>
-                            <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
-                                {transactionToArchive.isArchived ? 'Restore Transaction?' : 'Archive Transaction?'}
-                            </h3>
-                            <p className="text-gray-500 dark:text-gray-400 text-sm mb-6">
-                                Are you sure you want to {transactionToArchive.isArchived ? 'restore' : 'archive'} <span className="font-semibold text-gray-900 dark:text-white">Transaction {transactionToArchive.id}</span>?
-                            </p>
-                            <div className="flex gap-3">
-                                <button
-                                    onClick={() => setIsArchiveModalOpen(false)}
-                                    className="flex-1 py-2.5 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-xl font-semibold text-sm hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
-                                >
-                                    Cancel
-                                </button>
-                                <button
-                                    onClick={confirmArchive}
-                                    style={{ backgroundColor: '#111827' }}
-                                    className="flex-1 py-2.5 text-white rounded-xl font-semibold text-sm shadow-md hover:opacity-90 transition-all transform hover:-translate-y-0.5"
-                                >
-                                    {transactionToArchive.isArchived ? 'Restore' : 'Archive'}
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            )}
         </div>
     );
 };

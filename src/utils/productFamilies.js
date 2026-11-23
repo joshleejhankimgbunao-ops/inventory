@@ -1,4 +1,5 @@
 import { getEffectiveProductAttributes, productAttributeValues } from './productAttributes.js';
+import { getProductDisplayName, hasStoredProductName } from './productDisplayName.js';
 
 export const normalizeProductFamilyText = (value) => String(value ?? '')
     .normalize('NFKC')
@@ -6,9 +7,12 @@ export const normalizeProductFamilyText = (value) => String(value ?? '')
     .replace(/\s+/g, ' ')
     .toLocaleLowerCase();
 
-export const getProductFamilyKey = (product) => JSON.stringify([
+export const getProductFamilyKey = (product, categories = []) => JSON.stringify([
     normalizeProductFamilyText(product?.category),
-    normalizeProductFamilyText(product?.name),
+    normalizeProductFamilyText(hasStoredProductName(product) ? product.name : getProductDisplayName(product, categories)),
+    hasStoredProductName(product)
+        ? ''
+        : `standalone:${normalizeProductFamilyText(product?.sku || product?.code || product?.id || product?._id)}`,
 ]);
 
 const categoryForProduct = (categories, categoryName) => (
@@ -30,6 +34,7 @@ const familySearchText = (family) => family.variants.map((variant) => {
         ? Object.fromEntries(variant.attributes)
         : (variant?.attributes || {});
     return [
+        family.name,
         variant?.name,
         variant?.code,
         variant?.category,
@@ -53,11 +58,26 @@ export const getMatchingFamilyVariants = (family, query) => {
     return family.variants.filter((_, index) => searchTexts[index].includes(normalizedQuery));
 };
 
+export const getFamilyGeneralImageUrl = (variants) => (Array.isArray(variants) ? variants : [])
+    .map((variant, index) => {
+        const createdAt = Date.parse(variant?.createdAt || '');
+        const id = String(variant?.id || '');
+        const fallbackCreatedAt = /^[a-f\d]{24}$/i.test(id) ? parseInt(id.slice(0, 8), 16) * 1000 : Infinity;
+        return {
+            imageUrl: String(variant?.imageUrl || '').trim(),
+            createdAt: Number.isFinite(createdAt) ? createdAt : fallbackCreatedAt,
+            id: /^[a-f\d]{24}$/i.test(id) ? id.toLowerCase() : '',
+            index,
+        };
+    })
+    .sort((left, right) => left.createdAt - right.createdAt || (left.id && right.id ? left.id.localeCompare(right.id) : 0) || left.index - right.index)
+    .find(({ imageUrl }) => imageUrl)?.imageUrl || '';
+
 export const groupProductsIntoFamilies = (products, categories = []) => {
     const groups = new Map();
 
     (Array.isArray(products) ? products : []).forEach((product) => {
-        const key = getProductFamilyKey(product);
+        const key = getProductFamilyKey(product, categories);
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push(product);
     });
@@ -77,7 +97,8 @@ export const groupProductsIntoFamilies = (products, categories = []) => {
 
         return {
             key,
-            name: String(representative?.name || '').trim(),
+            name: getProductDisplayName(representative, categories),
+            storedName: String(representative?.name || '').trim(),
             categoryName: String(representative?.category || '').trim(),
             category,
             variants,

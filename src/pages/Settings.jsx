@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { showToast } from '../utils/toastHelper';
 import { showPageLoadError } from '../utils/pageLoadError';
+import { setFormValidationErrors } from '../utils/formValidationNavigation';
 import ArchiveIcon from '../components/ArchiveIcon';
 import EditIcon from '../components/EditIcon';
 import TableActionButton from '../components/TableActionButton';
@@ -18,6 +19,7 @@ import {
     restoreSystemBackupApi,
 } from '../services/settingsApi';
 import { clearAuthToken } from '../services/apiClient';
+import { subscribeRealtimeEvent } from '../services/realtimeClient';
 import {
     isWholeNumberInput,
     preventInvalidWholeNumberKeyDown,
@@ -38,7 +40,15 @@ import {
 } from '../utils/automaticBackupSetting';
 
 const Settings = () => {
-    const { appSettings: initialSettings, updateSettings, userPreferences, updateUserPreferences, currentUserName, userRole, ROLES } = useAuth();
+    const {
+        appSettings: initialSettings,
+        updateSettings,
+        currentUserName,
+        userRole,
+        ROLES,
+        userPreferences,
+        updateUserPreferences,
+    } = useAuth();
     const { processedInventory: inventory, renameUserReferences, logActivity, categories: customCategories, fetchCategories } = useInventory();
 
     const isAdmin = userRole === ROLES.ADMIN;
@@ -88,6 +98,8 @@ const Settings = () => {
     const autoSyncSaveInFlightRef = useRef(false);
     const [isAutomaticBackupSaving, setIsAutomaticBackupSaving] = useState(false);
     const automaticBackupSaveInFlightRef = useRef(false);
+    const [isAutoPrintSaving, setIsAutoPrintSaving] = useState(false);
+    const autoPrintSaveInFlightRef = useRef(false);
     const [automaticBackupHistory, setAutomaticBackupHistory] = useState([]);
     const [automaticBackupHistoryFilter, setAutomaticBackupHistoryFilter] = useState('all');
     const [automaticBackupHistorySpecificDate, setAutomaticBackupHistorySpecificDate] = useState('');
@@ -99,6 +111,7 @@ const Settings = () => {
     const [automaticBackupDownloadId, setAutomaticBackupDownloadId] = useState('');
     const automaticBackupSelectAllRef = useRef(null);
     const restoreInputRef = useRef(null);
+    const backupHistoryRequestSequenceRef = useRef(0);
     
     const defaults = useMemo(() => ({
         storeName: 'Tableria La Confianza Co., Inc.',
@@ -213,24 +226,50 @@ const Settings = () => {
         }
 
         let cancelled = false;
-        setIsAutomaticBackupHistoryLoading(true);
-        setAutomaticBackupHistoryError('');
-        listAutomaticBackupHistoryApi()
-            .then((backups) => {
-                if (!cancelled) setAutomaticBackupHistory(backups);
-            })
-            .catch((error) => {
-                if (!cancelled) {
+        let requestInFlight = false;
+        let refreshPending = false;
+        const loadHistory = async (showLoader = false) => {
+            if (requestInFlight) {
+                refreshPending = true;
+                return;
+            }
+            requestInFlight = true;
+            const requestSequence = ++backupHistoryRequestSequenceRef.current;
+            if (showLoader) setIsAutomaticBackupHistoryLoading(true);
+            setAutomaticBackupHistoryError('');
+            try {
+                const backups = await listAutomaticBackupHistoryApi();
+                if (!cancelled && requestSequence === backupHistoryRequestSequenceRef.current) setAutomaticBackupHistory(backups);
+            } catch (error) {
+                if (!cancelled && requestSequence === backupHistoryRequestSequenceRef.current) {
                     setAutomaticBackupHistoryError(error?.message || 'Unable to load automatic backup history.');
                     showPageLoadError(showToast, error, 'automatic-backup-history-load');
                 }
-            })
-            .finally(() => {
-                if (!cancelled) setIsAutomaticBackupHistoryLoading(false);
-            });
+            } finally {
+                if (!cancelled && requestSequence === backupHistoryRequestSequenceRef.current) setIsAutomaticBackupHistoryLoading(false);
+                requestInFlight = false;
+                if (refreshPending && !cancelled) {
+                    refreshPending = false;
+                    void loadHistory(false);
+                }
+            }
+        };
+        let refreshTimer = null;
+        const scheduleRefresh = () => {
+            window.clearTimeout(refreshTimer);
+            refreshTimer = window.setTimeout(() => { void loadHistory(false); }, 100);
+        };
+
+        void loadHistory(true);
+        const unsubscribeSettings = subscribeRealtimeEvent('settings.updated', scheduleRefresh);
+        const unsubscribeResync = subscribeRealtimeEvent('realtime.resync', scheduleRefresh);
 
         return () => {
             cancelled = true;
+            window.clearTimeout(refreshTimer);
+            backupHistoryRequestSequenceRef.current += 1;
+            unsubscribeSettings();
+            unsubscribeResync();
         };
     }, [activeTab, isSuperAdmin]);
 
@@ -522,6 +561,8 @@ const Settings = () => {
     const handleSaveAutomaticBackup = async () => {
         if (automaticBackupSaveInFlightRef.current) return;
         if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(String(settings.automaticBackupTime || ''))) {
+            const scope = document.querySelector('[data-validation-scope="automatic-backup-settings"]');
+            setFormValidationErrors(scope, { automaticBackupTime: 'Choose a valid backup time.' });
             showToast('Invalid Backup Time', 'Choose a valid backup time.', 'error');
             return;
         }
@@ -872,7 +913,7 @@ const Settings = () => {
     };
 
     return (
-        <div className="h-auto md:h-[calc(100vh-80px)] flex flex-col gap-2 md:overflow-hidden">
+        <div data-validation-scope="system-settings" className="h-auto md:h-[calc(100vh-80px)] flex flex-col gap-2 md:overflow-hidden">
 
             {/* Header */}
             <div className="relative z-20 bg-slate-200/50 p-4 sm:p-5 rounded-2xl shadow-inner border border-slate-300 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shrink-0">
@@ -892,6 +933,7 @@ const Settings = () => {
                         )}
                         <button 
                             onClick={handleSave}
+                            data-validation-submit
                             disabled={!isGeneralModified || isGeneralSaving}
                             className={`w-full sm:w-auto bg-gray-900 text-white px-4 py-2 rounded-lg text-xs font-semibold uppercase tracking-widest transition-all duration-300 flex items-center justify-center gap-2 shadow-md transform ${isGeneralModified && !isGeneralSaving ? 'hover:opacity-90 hover:-translate-y-0.5 cursor-pointer' : 'opacity-50 cursor-not-allowed'}`}
                             style={{ backgroundColor: '#111827', border: '2px solid #111827' }}
@@ -1081,21 +1123,34 @@ const Settings = () => {
 
                                     <div className="flex items-center gap-4 p-4 transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-xl border border-gray-100 dark:border-gray-700">
                                         <div className="min-w-0 flex-1">
-                                            <p className="font-semibold text-gray-900 dark:text-white text-sm">Auto-Print Receipts</p>
-                                            <p className="text-xs text-gray-500">Automatically print receipt after transaction</p>
+                                            <p className="font-semibold text-gray-900 dark:text-white text-sm">Auto-Print Order List</p>
+                                            <p className="text-xs text-gray-500">Automatically print the Order List when an order is generated.</p>
                                         </div>
-                                        <button 
-                                            className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${!userPreferences.autoPrintReceipts ? 'bg-gray-200 dark:bg-gray-600' : ''}`}
+                                        <button
+                                            type="button"
+                                            aria-label="Auto-Print Order List"
+                                            aria-pressed={Boolean(userPreferences.autoPrintReceipts)}
+                                            disabled={isAutoPrintSaving}
+                                            className={`relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:cursor-wait disabled:opacity-60 ${!userPreferences.autoPrintReceipts ? 'bg-gray-200 dark:bg-gray-600' : ''}`}
                                             style={{ backgroundColor: userPreferences.autoPrintReceipts ? '#111827' : '' }}
-                                            onClick={() => {
-                                                void updateUserPreferences({ autoPrintReceipts: !userPreferences.autoPrintReceipts })
-                                                    .catch((error) => showToast('Update Failed', error?.message || 'Unable to save Auto Print preference.', 'error'));
+                                            onClick={async () => {
+                                                if (autoPrintSaveInFlightRef.current) return;
+                                                autoPrintSaveInFlightRef.current = true;
+                                                setIsAutoPrintSaving(true);
+                                                try {
+                                                    await updateUserPreferences({ autoPrintReceipts: !userPreferences.autoPrintReceipts });
+                                                } catch (error) {
+                                                    showToast('Preference Not Saved', error?.message || 'Unable to update Auto-Print Order List.', 'error', 'auto-print-order-list-preference');
+                                                } finally {
+                                                    autoPrintSaveInFlightRef.current = false;
+                                                    setIsAutoPrintSaving(false);
+                                                }
                                             }}
                                         >
                                             <span className={`absolute top-1 left-1 bg-white w-4 h-4 rounded-full shadow-sm transition-transform ${userPreferences.autoPrintReceipts ? 'translate-x-5' : ''}`}></span>
                                         </button>
                                     </div>
-                                    
+
                                     <div className="flex items-center gap-4 p-4 transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-xl border border-gray-100 dark:border-gray-700">
                                         <div className="min-w-0 flex-1">
                                             <p className="font-semibold text-gray-900 dark:text-white text-sm">Desktop Push Notifications (Browser)</p>
@@ -1201,11 +1256,11 @@ const Settings = () => {
                                     </div>
 
                                     {/* Category Rules */}
-                                    <div className="bg-gray-50 dark:bg-gray-800 p-5 rounded-xl border border-gray-200 dark:border-gray-700">
+                                    <div className="bg-gray-50 dark:bg-gray-800 p-3 md:p-5 rounded-xl border border-gray-200 dark:border-gray-700">
                                         <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-3 tracking-wide">Category Overrides</h4>
-                                        <div className="flex gap-2 mb-4">
+                                        <div className="mb-4 flex flex-wrap items-center gap-2">
                                             <select 
-                                                className="flex-1 p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm font-medium"
+                                                className="min-w-0 flex-[1_1_100%] p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm font-medium md:flex-1"
                                                 value={newCategoryRule.name}
                                                 onChange={e => setNewCategoryRule({...newCategoryRule, name: e.target.value})}
                                             >
@@ -1217,7 +1272,7 @@ const Settings = () => {
                                                 inputMode="numeric"
                                                 pattern="[0-9]*"
                                                 placeholder="Max Limit"
-                                                className="w-24 p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm font-semibold text-center"
+                                                className="w-24 shrink-0 p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm font-semibold text-center"
                                                 value={newCategoryRule.limit}
                                                 onKeyDown={preventInvalidWholeNumberKeyDown}
                                                 onPaste={preventInvalidWholeNumberPaste}
@@ -1225,7 +1280,7 @@ const Settings = () => {
                                             />
                                             <button 
                                                 onClick={addCategoryRule}
-                                                className="px-4 py-2 bg-gray-900 text-white rounded-lg text-xs font-semibold uppercase disabled:opacity-50"
+                                                className="w-fit shrink-0 whitespace-nowrap px-4 py-2 bg-gray-900 text-white rounded-lg text-xs font-semibold uppercase disabled:opacity-50"
                                                 disabled={!newCategoryRule.name || !newCategoryRule.limit}
                                             >
                                                 Add
@@ -1250,12 +1305,12 @@ const Settings = () => {
                                     </div>
 
                                     {/* Product Rules */}
-                                    <div className="bg-gray-50 dark:bg-gray-800 p-5 rounded-xl border border-gray-200 dark:border-gray-700">
+                                    <div className="bg-gray-50 dark:bg-gray-800 p-3 md:p-5 rounded-xl border border-gray-200 dark:border-gray-700">
                                         <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-3 tracking-wide">Product Specific Overrides</h4>
-                                        <div className="flex gap-2 mb-4">
+                                        <div className="mb-4 flex flex-wrap items-center gap-2">
                                              <input 
                                                 list="product-list"
-                                                className="flex-1 p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm font-medium"
+                                                className="min-w-0 flex-[1_1_100%] p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm font-medium md:flex-1"
                                                 placeholder="Search SKU/Name..."
                                                 value={newProductRule.code}
                                                 onChange={e => setNewProductRule({...newProductRule, code: e.target.value})}
@@ -1270,7 +1325,7 @@ const Settings = () => {
                                                 inputMode="numeric"
                                                 pattern="[0-9]*"
                                                 placeholder="Max Limit"
-                                                className="w-24 p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm font-semibold text-center"
+                                                className="w-24 shrink-0 p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm font-semibold text-center"
                                                 value={newProductRule.limit}
                                                 onKeyDown={preventInvalidWholeNumberKeyDown}
                                                 onPaste={preventInvalidWholeNumberPaste}
@@ -1278,7 +1333,7 @@ const Settings = () => {
                                             />
                                             <button 
                                                 onClick={addProductRule}
-                                                className="px-4 py-2 bg-gray-900 text-white rounded-lg text-xs font-semibold uppercase disabled:opacity-50"
+                                                className="w-fit shrink-0 whitespace-nowrap px-4 py-2 bg-gray-900 text-white rounded-lg text-xs font-semibold uppercase disabled:opacity-50"
                                                 disabled={!newProductRule.code || !newProductRule.limit}
                                             >
                                                 Add
@@ -1398,6 +1453,7 @@ const Settings = () => {
                                                            <div className="flex shrink-0 items-center gap-1.5">
                                                                <TableActionButton
                                                                    label="Edit Category"
+                                                                   dismissTooltipOnClick
                                                                    onClick={() => setEditingCategory({
                                                                        id: category._id,
                                                                        name: category.name,
@@ -1414,10 +1470,11 @@ const Settings = () => {
                                                                    })}
                                                                    aria-label={`Edit ${category.name}`}
                                                                >
-                                                                    <EditIcon />
+                                                                    <EditIcon /><span className="ml-1 md:hidden">Edit</span>
                                                                </TableActionButton>
                                                                <TableActionButton
                                                                    label={category.isActive === false ? 'Restore Category' : 'Archive Category'}
+                                                                   dismissTooltipOnClick
                                                                    variant={category.isActive === false ? 'positive' : 'destructive'}
                                                                    onClick={() => openDeleteCategoryModal(category)}
                                                                    aria-label={category.isActive === false ? `Restore ${category.name}` : `Archive ${category.name}`}
@@ -1426,7 +1483,7 @@ const Settings = () => {
                                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
                                                                    ) : (
                                                                        <ArchiveIcon />
-                                                                   )}
+                                                                   )}<span className="ml-1 md:hidden">{category.isActive === false ? 'Restore' : 'Archive'}</span>
                                                                </TableActionButton>
                                                            </div>
                                                        </div>
@@ -1443,9 +1500,9 @@ const Settings = () => {
 
                    {isCreateCategoryModalOpen && (
                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-                           <div className="app-modal-backdrop absolute inset-0 bg-black/60 backdrop-blur-sm transition-opacity" onClick={() => {setIsCreateCategoryModalOpen(false); resetNewCategoryForm();}}></div>
+                           <div className="app-modal-backdrop absolute inset-0 bg-black/60 backdrop-blur-sm transition-opacity"></div>
                            
-                           <div className="relative w-full max-w-md bg-white dark:bg-gray-800 rounded-2xl shadow-2xl overflow-visible animate-in fade-in zoom-in-95 duration-200 border border-transparent dark:border-gray-700 flex flex-col max-h-[90vh]">
+                           <div onClick={(e) => e.stopPropagation()} className="relative w-full max-w-md bg-white dark:bg-gray-800 rounded-2xl shadow-2xl overflow-visible animate-in fade-in zoom-in-95 duration-200 border border-transparent dark:border-gray-700 flex flex-col max-h-[90vh]">
                                <div className="px-5 py-3.5 border-b border-gray-100 dark:border-gray-700 bg-gradient-to-r from-gray-50 to-white dark:from-gray-800 dark:to-gray-800 flex items-center justify-between shrink-0 rounded-t-2xl">
                                    <div className="flex items-center gap-3">
                                         <div className="w-8 h-8 rounded-lg bg-gray-900 dark:bg-white text-white dark:text-gray-900 flex items-center justify-center shrink-0 shadow-md">
@@ -1563,9 +1620,9 @@ const Settings = () => {
 
                    {editingCategory && (
                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-                           <div className="app-modal-backdrop absolute inset-0 bg-black/60 backdrop-blur-sm transition-opacity" onClick={() => setEditingCategory(null)}></div>
+                           <div className="app-modal-backdrop absolute inset-0 bg-black/60 backdrop-blur-sm transition-opacity"></div>
 
-                           <div className="relative w-full max-w-md bg-white dark:bg-gray-800 rounded-2xl shadow-2xl overflow-visible animate-in fade-in zoom-in-95 duration-200 border border-transparent dark:border-gray-700 flex flex-col max-h-[90vh]">
+                           <div onClick={(e) => e.stopPropagation()} className="relative w-full max-w-md bg-white dark:bg-gray-800 rounded-2xl shadow-2xl overflow-visible animate-in fade-in zoom-in-95 duration-200 border border-transparent dark:border-gray-700 flex flex-col max-h-[90vh]">
                                <div className="px-5 py-3.5 border-b border-gray-100 dark:border-gray-700 bg-gradient-to-r from-gray-50 to-white dark:from-gray-800 dark:to-gray-800 flex items-center justify-between shrink-0 rounded-t-2xl">
                                    <div className="flex items-center gap-3">
                                        <div className="w-8 h-8 rounded-lg bg-gray-900 dark:bg-white text-white dark:text-gray-900 flex items-center justify-center shrink-0 shadow-md">
@@ -1731,7 +1788,7 @@ const Settings = () => {
                                         <button 
                                             onClick={handleDownloadBackup}
                                             disabled={isBackupLoading || isRestoreLoading}
-                                            className="w-full px-4 py-2 rounded-xl text-xs font-semibold text-white focus:outline-none focus:ring-4 focus:ring-gray-200 cursor-pointer shadow-lg transition-all flex items-center justify-center gap-2 transform hover:scale-105 shadow-md"
+                                            className="app-primary-action w-full px-4 py-2 rounded-xl text-xs font-semibold text-white focus:outline-none focus:ring-4 focus:ring-gray-200 cursor-pointer shadow-lg transition-all flex items-center justify-center gap-2 shadow-md"
                                             style={{ backgroundColor: '#111827', border: '2px solid #111827' }}
                                         >
                                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
@@ -1760,7 +1817,7 @@ const Settings = () => {
                                         <button
                                             onClick={openRestorePicker}
                                             disabled={isRestoreLoading || isBackupLoading}
-                                            className="w-full px-4 py-2 rounded-xl text-xs font-semibold text-white focus:outline-none focus:ring-4 focus:ring-gray-200 cursor-pointer shadow-lg transition-all flex items-center justify-center gap-2 transform hover:scale-105 shadow-md"
+                                            className="app-primary-action w-full px-4 py-2 rounded-xl text-xs font-semibold text-white focus:outline-none focus:ring-4 focus:ring-gray-200 cursor-pointer shadow-lg transition-all flex items-center justify-center gap-2 shadow-md"
                                             style={{ backgroundColor: '#111827', border: '2px solid #111827' }}
                                         >
                                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1M4 8l8-5 8 5M12 3v13"></path></svg>
@@ -1769,7 +1826,7 @@ const Settings = () => {
                                     </div>
                                 </div>
 
-                                <div className="mt-5 rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+                                <div data-validation-scope="automatic-backup-settings" className="mt-5 rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
                                     <div className="flex flex-wrap items-start justify-between gap-4">
                                         <div>
                                             <h4 className="text-sm font-semibold text-gray-900 dark:text-white">Automatic Backup</h4>
@@ -1807,6 +1864,8 @@ const Settings = () => {
                                             <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-gray-500">Backup Time</label>
                                             <input
                                                 type="time"
+                                                name="automaticBackupTime"
+                                                data-validation-key="automaticBackupTime"
                                                 value={settings.automaticBackupTime || '23:00'}
                                                 disabled={!settings.automaticBackupEnabled || isAutomaticBackupSaving}
                                                 onChange={(event) => setSettings((prev) => ({ ...prev, automaticBackupTime: event.target.value }))}
@@ -1839,6 +1898,7 @@ const Settings = () => {
                                         <button
                                             type="button"
                                             onClick={handleSaveAutomaticBackup}
+                                            data-validation-submit
                                             disabled={isAutomaticBackupSaving}
                                             className="rounded-lg bg-gray-900 px-3 py-2 text-xs font-semibold text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
                                         >

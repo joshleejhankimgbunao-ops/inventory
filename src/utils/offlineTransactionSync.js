@@ -24,8 +24,11 @@ export const reconcileSyncedSale = (transactions, queued, sale) => {
     total: sale.totalAmount,
     netAmount: sale.netAmount,
     vatAmount: sale.vatAmount,
+    vatCalculationStatus: sale.vatCalculationStatus || 'calculated',
+    taxTreatment: sale.taxTreatment || null,
     grossAmount: sale.grossAmount,
     vatMode: sale.vatMode,
+    collectionSource: sale.collectionSource || 'sale',
     isArchived: Boolean(sale.isArchived),
     transactionReference: sale.transactionReference ? {
       referenceNumber: sale.transactionReference.referenceNumber || '',

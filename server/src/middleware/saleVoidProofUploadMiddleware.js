@@ -10,7 +10,7 @@ const ALLOWED_PROOF_TYPES = Object.freeze({
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+  limits: { fileSize: 5 * 1024 * 1024, files: 3 },
   fileFilter: (_req, file, callback) => {
     const extension = path.extname(String(file?.originalname || '')).toLowerCase();
     const mimeType = String(file?.mimetype || '').toLowerCase();
@@ -21,7 +21,7 @@ const upload = multer({
     }
     return callback(null, true);
   },
-}).single('proof');
+}).fields([{ name: 'proof', maxCount: 1 }, { name: 'proofs', maxCount: 3 }]);
 
 const uploadSaleVoidProof = (req, res, next) => upload(req, res, (error) => {
   if (!error) return next();

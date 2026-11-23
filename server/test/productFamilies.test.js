@@ -1,3 +1,4 @@
+/* global require, __dirname */
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -26,6 +27,7 @@ const product = (overrides = {}) => ({
   size: overrides.size || '',
   supplier: overrides.supplier || 'Local Supplier',
   imageUrl: overrides.imageUrl || '',
+  createdAt: overrides.createdAt || null,
   isArchived: overrides.isArchived || false,
 });
 
@@ -226,6 +228,84 @@ test('Manage Variants renders a filter-aware table empty state', () => {
   assert.match(modalSource, /visibleVariants\.length === 0/);
   assert.match(modalSource, /colSpan=\{tableColumnCount\}/);
   assert.match(modalSource, /stockFilter === 'All' && !hasVariants && canAddVariant/);
+});
+
+test('Manage Variants shows each SKU photo first and reuses the focused image preview', () => {
+  const modalSource = fs.readFileSync(path.join(__dirname, '../../src/components/ProductFamilyModal.jsx'), 'utf8');
+  const productListSource = fs.readFileSync(path.join(__dirname, '../../src/pages/ProductList.jsx'), 'utf8');
+
+  assert.match(modalSource, /aria-label="Select all eligible visible variants"[\s\S]*?<th className="w-16 min-w-16 whitespace-nowrap border border-gray-700 px-3 py-2 text-center text-\[11px\] font-semibold">Photo<\/th>\s*\{family\.attributeDefinitions\.map/);
+  assert.match(modalSource, /imageUrl=\{getProductImageUrl\(variant\)\}/);
+  assert.match(modalSource, /onClick=\{\(event\) => onPreview\(variant, event\.currentTarget\)\}/);
+  assert.match(modalSource, /onError=\{\(\) => setFailedUrl\(imageUrl\)\}/);
+  assert.match(modalSource, /No photo/);
+  assert.match(modalSource, /overflow-x-auto/);
+  assert.match(modalSource, /family\.attributeDefinitions\.length \+ 6 \+ \(canManage \? 2 : 0\)/);
+  assert.match(productListSource, /onPreviewVariantImage=\{\(variant, trigger\) => openProductImagePreview\(variant, true, trigger\)\}/);
+  assert.match(productListSource, /productImagePreviewCloseRef\.current\?\.focus\(\)/);
+  assert.match(productListSource, /productImagePreviewTriggerRef\.current\?\.focus\?\.\(\)/);
+  assert.match(productListSource, /!enlargedProductImage\.singleImage && previewableProducts\.length > 1/);
+});
+
+test('Manage Variants supports selected-only archiving with eligible selection and explicit confirmation', () => {
+  const modalSource = fs.readFileSync(path.join(__dirname, '../../src/components/ProductFamilyModal.jsx'), 'utf8');
+  const productListSource = fs.readFileSync(path.join(__dirname, '../../src/pages/ProductList.jsx'), 'utf8');
+  const apiSource = fs.readFileSync(path.join(__dirname, '../../src/services/inventoryApi.js'), 'utf8');
+  const routeSource = fs.readFileSync(path.join(__dirname, '../src/routes/productRoutes.js'), 'utf8');
+
+  assert.match(modalSource, /Select all eligible visible variants/);
+  assert.match(modalSource, /getVariantArchiveDisabledReason/);
+  assert.match(modalSource, /Both quantities must be zero/);
+  assert.match(modalSource, /Archive Selected \(\{selectedVariants\.length\}\)/);
+  assert.match(modalSource, /Archive Selected Variants\?/);
+  assert.match(modalSource, /const archiveConfirmationMessage = `You are about to archive \$\{selectedVariants\.length\}/);
+  assert.match(modalSource, /Selected SKUs/);
+  assert.doesNotMatch(modalSource, /Archive Product<\/button>/);
+  assert.doesNotMatch(modalSource, /onArchiveFamily/);
+  assert.match(modalSource, /setSelectedVariantIds\(new Set\(\)\)/);
+  assert.match(modalSource, /visibleArchivableVariantIds\.every/);
+  assert.match(productListSource, /archiveSelectedProductVariantsApi\(familyId, selectedIds\)/);
+  assert.match(productListSource, /onArchiveSelected=\{archiveSelectedVariants\}/);
+  assert.match(apiSource, /\/archive-selected/);
+  assert.match(routeSource, /authorizeRoles\('superadmin', 'admin'\), archiveSelectedVariants/);
+  assert.doesNotMatch(routeSource, /\/family\/:id\/archive'/);
+});
+
+test('family grouping retains distinct saved images on individual variants', async () => {
+  const { groupProductsIntoFamilies } = await loadHelpers();
+  const [family] = groupProductsIntoFamilies([
+    product({ code: 'PHOTO-001', imageUrl: 'data:image/png;base64,first' }),
+    product({ code: 'PHOTO-002', imageUrl: 'data:image/png;base64,second' }),
+    product({ code: 'PHOTO-003', imageUrl: '' }),
+  ], [schemaV1Category]);
+
+  assert.deepEqual(family.variants.map((variant) => variant.imageUrl), [
+    'data:image/png;base64,first',
+    'data:image/png;base64,second',
+    '',
+  ]);
+});
+
+test('General image follows creation order and falls back to the earliest imaged variant', async () => {
+  const { getFamilyGeneralImageUrl } = await loadHelpers();
+  const modalSource = fs.readFileSync(path.join(__dirname, '../../src/components/ProductFamilyModal.jsx'), 'utf8');
+  const apiSource = fs.readFileSync(path.join(__dirname, '../../src/services/inventoryApi.js'), 'utf8');
+  const variants = [
+    product({ code: 'A-NEW', imageUrl: 'new.jpg', createdAt: '2025-03-01T00:00:00Z' }),
+    product({ code: 'B-FIRST', imageUrl: 'first.jpg', createdAt: '2025-01-01T00:00:00Z' }),
+    product({ code: 'C-MIDDLE', imageUrl: 'middle.jpg', createdAt: '2025-02-01T00:00:00Z' }),
+  ];
+
+  assert.equal(getFamilyGeneralImageUrl(variants), 'first.jpg');
+  assert.equal(getFamilyGeneralImageUrl(variants.map((variant) => variant.code === 'B-FIRST' ? { ...variant, imageUrl: '' } : variant)), 'middle.jpg');
+  assert.equal(getFamilyGeneralImageUrl(variants.map((variant) => ({ ...variant, imageUrl: '' }))), '');
+  assert.equal(getFamilyGeneralImageUrl([
+    { id: '665000000000000000000002', imageUrl: 'later.jpg' },
+    { id: '665000000000000000000001', imageUrl: 'earlier.jpg' },
+  ]), 'earlier.jpg');
+  assert.match(apiSource, /createdAt: product\.createdAt \|\| null/);
+  assert.match(modalSource, /const generalImageUrl = getFamilyGeneralImageUrl\(family\.variants\)/);
+  assert.match(modalSource, /generalImageUrl && failedGeneralImageUrl !== generalImageUrl/);
 });
 
 test('outer Product Master gives the family variant count its own column', () => {

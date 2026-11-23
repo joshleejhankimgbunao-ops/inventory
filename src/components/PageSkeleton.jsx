@@ -1,11 +1,13 @@
 import React from 'react';
+import { DesktopPageSkeleton } from './DesktopSkeletons';
 
 const Shimmer = ({ className = '', style }) => (
     <div className={`animate-pulse bg-gray-200 rounded-lg ${className}`} style={style}></div>
 );
 
-const PageSkeleton = () => (
-    <div className="w-full h-full p-4 sm:p-5 animate-in fade-in">
+const PageSkeleton = ({ page = 'Dashboard', showProductActions = false }) => (
+    <>
+    <div className="w-full h-full p-4 sm:p-5 animate-in fade-in lg:hidden">
         <div className="max-w-7xl mx-auto flex flex-col gap-4 sm:gap-5">
             <div className="flex items-center justify-between gap-4">
                 <div className="flex flex-col gap-2">
@@ -43,6 +45,8 @@ const PageSkeleton = () => (
             </div>
         </div>
     </div>
+    <DesktopPageSkeleton page={page} showProductActions={showProductActions} />
+    </>
 );
 
 export default PageSkeleton;

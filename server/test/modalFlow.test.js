@@ -34,10 +34,11 @@ test('quotation and Credit child dialogs render without their parent modal', () 
   const pointOfSale = source('src/pages/PointOfSale.jsx');
   const creditTransactions = source('src/pages/CreditTransactions.jsx');
 
-  assert.match(pointOfSale, /setShowQuotationTypeChooser\(false\)[\s\S]*?setShowQuotationCustomerSelector\(true\)/);
-  assert.match(pointOfSale, /setShowQuotationCustomerSelector\(false\)[\s\S]*?setShowQuotationDetails\(true\)/);
-  assert.match(pointOfSale, /const returnToQuotationCustomerSelector = \(\) => \{[\s\S]*?setShowQuotationDetails\(false\)[\s\S]*?setShowQuotationCustomerSelector\(true\)/);
-  assert.match(pointOfSale, /setFormalQuotationData\(null\);\s*setShowQuotationDetails\(true\)/);
+  assert.match(pointOfSale, /const handleGenerateQuotation = \(\) => \{\s*openWalkInQuotation\(\)/);
+  assert.doesNotMatch(pointOfSale, /showQuotationTypeChooser/);
+  const specialOrders = source('src/pages/SpecialOrders.jsx');
+  assert.match(specialOrders, /!quotationEditorOpen && !quotationPreview && !decisionOpen/);
+  assert.match(specialOrders, /quotationPreview && <FormalPriceQuotationModal/);
   assert.match(creditTransactions, /\{isDetailsOpen && selectedRecord && !creditReceiptPreview && !proofLightbox && \(/);
   assert.match(creditTransactions, /\{isMarkPaidModalOpen && markPaidTarget && !isCancelModalOpen && \(/);
   assert.match(creditTransactions, /setIsCancelModalOpen\(false\);\s*setIsCancelConfirmOpen\(false\);/);

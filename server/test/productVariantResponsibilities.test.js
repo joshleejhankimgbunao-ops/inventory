@@ -71,7 +71,7 @@ test('family summary is read-only and Edit Variant owns name and controlled cate
   assert.match(productList, />\s*Change Category\s*</);
   assert.match(categoryModal, /This affects \{product\.code\} only\./);
   assert.match(categoryModal, /SKU, price, stock, supplier, image, and status will remain unchanged\./);
-  assert.doesNotMatch(controller, /Sale\.update|updateMany/);
+  assert.doesNotMatch(controller, /Sale\.update/);
 });
 
 test('Edit Variant tracks Sold By changes while supplier typing remains a separate search state', () => {

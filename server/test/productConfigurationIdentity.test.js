@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const {
   buildProductConfigurationIdentity,
   findDuplicateConfigurationGroups,
+  productConfigurationsConflict,
 } = require('../src/utils/productConfigurationIdentity');
 const { getEffectiveDefinitions } = require('../src/utils/productAttributes');
 
@@ -24,6 +25,7 @@ const product = (overrides = {}) => ({
   brand: overrides.brand || '',
   color: overrides.color || '',
   size: overrides.size || '3.5mm',
+  sellingUnit: overrides.sellingUnit === undefined ? 'pcs' : overrides.sellingUnit,
   attributes: overrides.attributes || {},
 });
 
@@ -64,6 +66,35 @@ test('numeric configured attributes use a stable numeric identity', () => {
   assert.equal(
     buildProductConfigurationIdentity({ ...product(), attributes: { gauge: '12.0' }, definitions }),
     buildProductConfigurationIdentity({ ...product(), attributes: { gauge: 12 }, definitions })
+  );
+});
+
+test('selling unit distinguishes otherwise identical configurations after case and whitespace normalization', () => {
+  const base = product({ category: 'Fasteners', name: 'Concrete Nails', attributes: { size: '4' }, sellingUnit: ' pack ' });
+  const same = product({ ...base, sku: 'OTH-012', sellingUnit: 'PACK', price: 250, stock: 100 });
+  const differentUnit = product({ ...base, sku: 'OTH-013', sellingUnit: 'pcs' });
+  const differentSize = product({ ...base, sku: 'OTH-014', attributes: { size: '5' } });
+
+  assert.equal(productConfigurationsConflict(base, same, schemaV1SizeOnly), true);
+  assert.equal(productConfigurationsConflict(base, differentUnit, schemaV1SizeOnly), false);
+  assert.equal(productConfigurationsConflict(base, differentSize, schemaV1SizeOnly), false);
+  assert.notEqual(
+    buildProductConfigurationIdentity({ ...base, definitions: schemaV1SizeOnly }),
+    buildProductConfigurationIdentity({ ...differentUnit, definitions: schemaV1SizeOnly })
+  );
+});
+
+test('missing legacy selling units still conflict with each otherwise identical configured unit', () => {
+  const legacy = product({ sku: 'LEGACY', sellingUnit: '' });
+  const pieces = product({ sku: 'PIECES', sellingUnit: 'pcs' });
+  const packs = product({ sku: 'PACKS', sellingUnit: 'pack' });
+  assert.equal(productConfigurationsConflict(legacy, pieces, schemaV1SizeOnly), true);
+  assert.equal(productConfigurationsConflict(packs, legacy, schemaV1SizeOnly), true);
+  assert.equal(productConfigurationsConflict(pieces, packs, schemaV1SizeOnly), false);
+  assert.deepEqual(
+    findDuplicateConfigurationGroups([legacy, pieces, packs], new Map([['Electrical', schemaV1SizeOnly]]))
+      .map((group) => group.map((item) => item.sku)),
+    [['LEGACY', 'PIECES', 'PACKS']]
   );
 });
 

@@ -57,6 +57,50 @@
   100% { transform: scale(0.9); opacity: 0; }
 }
 
+.app-toast-icon-mobile { display: none; }
+
+/* Keep the app's original full-width toast positioning on desktop. The
+   container has absolutely-positioned children, so shrinking its left inset
+   can collapse it and clip the toast surface. Mobile may use edge gutters. */
+@media (max-width: 767px) {
+  .app-toaster {
+    top: max(12px, env(safe-area-inset-top)) !important;
+    right: max(12px, env(safe-area-inset-right)) !important;
+    left: max(12px, env(safe-area-inset-left)) !important;
+    width: auto !important;
+  }
+
+  .app-toast-bar { color: #CBD5E1; }
+  .app-toast-icon svg { width: 1.125rem; height: 1.125rem; stroke-width: 2.25; }
+  .app-toast-bar button[aria-label="Dismiss notification"] { color: #CBD5E1; }
+  .app-toast-icon[data-toast-type="success"] > div > div { background-color: #4ade80; }
+  .app-toast-icon[data-toast-type="success"] > div > div::after { border-color: #052e16; }
+  .app-toast-icon[data-toast-type="error"] > div > div { background-color: #f87171; }
+  .app-toast-icon[data-toast-type="error"] > div > div::before,
+  .app-toast-icon[data-toast-type="error"] > div > div::after { background-color: #7f1d1d; }
+  .app-toast-icon[data-toast-type="loading"] > div > div {
+    border-color: #334155;
+    border-right-color: #e2e8f0;
+  }
+
+  .app-toast-glass {
+    max-width: min(24rem, calc(100vw - 24px));
+    background-color: rgb(15 23 42 / 0.9) !important;
+    border-color: rgb(148 163 184 / 0.45);
+    -webkit-backdrop-filter: blur(20px);
+    backdrop-filter: blur(20px);
+  }
+
+  .app-toast-title { color: #E2E8F0; }
+  .app-toast-message { color: #CBD5E1; }
+  .app-toast-close { color: #CBD5E1; }
+  .app-toast-status-icon[data-toast-type="error"] .app-toast-icon-default { display: none; }
+  .app-toast-status-icon[data-toast-type="error"] .app-toast-icon-mobile { display: block; }
+  .app-toast-status-icon svg { width: 1.25rem; height: 1.25rem; }
+  .app-toast-bar { min-width: 0; }
+  .app-toast-bar .text-xs { overflow-wrap: anywhere; }
+}
+
 .animate-enter {
   animation: enter-animation 0.2s cubic-bezier(0.21, 1.02, 0.73, 1) forwards;
 }
@@ -124,7 +168,7 @@ button, a, [role="button"], select, .clickable {
   cursor: pointer;
 }
 
-/* Hide scrollbar visuals but keep content scrollable */
+/* The paired Product Family table uses a separate synchronized visible scrollbar. */
 .no-scrollbar {
   -ms-overflow-style: none;
   scrollbar-width: none;

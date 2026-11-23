@@ -1,5 +1,21 @@
 const mongoose = require('mongoose');
 
+const batchVerificationAllocationSchema = new mongoose.Schema({
+  batch: { type: mongoose.Schema.Types.ObjectId, ref: 'ExpiryBatch', required: true },
+  batchId: { type: String, required: true, trim: true },
+  expiryDate: { type: String, required: true },
+  quantity: { type: Number, required: true, min: 1, validate: Number.isSafeInteger },
+}, { _id: false });
+
+const batchVerificationSchema = new mongoose.Schema({
+  proposedAllocations: { type: [batchVerificationAllocationSchema], default: [] },
+  verifiedAllocations: { type: [batchVerificationAllocationSchema], default: [] },
+  overridden: { type: Boolean, default: false },
+  overrideReason: { type: String, default: '', trim: true, maxlength: 500 },
+  verifiedAt: { type: Date, required: true },
+  verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+}, { _id: false });
+
 const saleItemSchema = new mongoose.Schema(
   {
     product: {
@@ -17,6 +33,8 @@ const saleItemSchema = new mongoose.Schema(
       trim: true,
       uppercase: true,
     },
+    description: { type: String, default: '', trim: true },
+    sellingUnit: { type: String, default: '', trim: true },
     quantity: {
       type: Number,
       required: true,
@@ -32,6 +50,7 @@ const saleItemSchema = new mongoose.Schema(
       required: true,
       min: 0,
     },
+    batchVerification: { type: batchVerificationSchema, default: null },
   },
   { _id: false }
 );
@@ -90,6 +109,7 @@ const saleSchema = new mongoose.Schema(
         authorizationMethod: { type: String, trim: true, required: true },
         requestId: { type: String, trim: true, required: true },
         supportingProof: { type: voidSupportingProofSchema, default: null },
+        supportingProofs: { type: [voidSupportingProofSchema], default: [] },
       }, { _id: false }),
       default: null,
     },
@@ -101,6 +121,7 @@ const saleSchema = new mongoose.Schema(
         requestedByName: { type: String, trim: true, required: true },
         requestedAt: { type: Date, required: true },
         supportingProof: { type: voidSupportingProofSchema, default: null },
+        supportingProofs: { type: [voidSupportingProofSchema], default: [] },
         reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
         reviewedByName: { type: String, trim: true, default: '' },
         reviewedAt: { type: Date, default: null },
@@ -119,15 +140,25 @@ const saleSchema = new mongoose.Schema(
     },
     netAmount: {
       type: Number,
-      required: true,
+      required() { return this.vatCalculationStatus !== 'not_calculated'; },
       min: 0,
       default: 0,
     },
     vatAmount: {
       type: Number,
-      required: true,
+      required() { return this.vatCalculationStatus !== 'not_calculated'; },
       min: 0,
       default: 0,
+    },
+    vatCalculationStatus: {
+      type: String,
+      enum: ['calculated', 'not_calculated'],
+      default: 'calculated',
+    },
+    taxTreatment: {
+      type: String,
+      enum: ['standard', 'vat_zero_rated', 'exempt'],
+      default: null,
     },
     grossAmount: {
       type: Number,
@@ -137,7 +168,7 @@ const saleSchema = new mongoose.Schema(
     },
     pricingMode: {
       type: String,
-      enum: ['inclusive'],
+      enum: ['inclusive', 'agreed'],
       default: 'inclusive',
     },
     vatMode: {
@@ -178,6 +209,16 @@ const saleSchema = new mongoose.Schema(
       enum: ['regular', 'special-order'],
       index: true,
     },
+    specialOrderFulfillmentStatus: {
+      type: String,
+      enum: ['Awaiting Items', 'Partially Ready', 'Prepared', 'Ready for Pickup', 'Ready for Delivery', 'Picked Up', 'Delivered', 'Stock Available', 'Partially Available', 'Insufficient Stock', 'No Inventory Required', 'Completed', 'Administrative Closure'],
+      default: null,
+    },
+    collectionSource: {
+      type: String,
+      enum: ['sale', 'special_order_ledger'],
+      default: 'sale',
+    },
     paymentStatus: {
       type: String,
       default: 'Paid',
@@ -194,6 +235,10 @@ const saleSchema = new mongoose.Schema(
       type: String,
       default: '',
       trim: true,
+    },
+    customerDetails: {
+      type: new mongoose.Schema({ address: { type: String, default: '' }, contact: { type: String, default: '' }, email: { type: String, default: '' } }, { _id: false }),
+      default: null,
     },
     creditTermDays: {
       type: Number,
@@ -221,6 +266,16 @@ const saleSchema = new mongoose.Schema(
       trim: true,
       uppercase: true,
       index: true,
+    },
+    specialOrderQuotationId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'SpecialOrderQuotation',
+      default: null,
+      index: true,
+    },
+    specialOrderQuotationVersion: {
+      type: Number,
+      default: null,
     },
     clientRequestId: {
       type: String,
@@ -267,5 +322,25 @@ const saleSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+
+// Reporting ranges are bounded before line-item aggregation.
+saleSchema.index({ createdAt: 1 });
+
+saleSchema.pre('validate', function validateUncalculatedVat() {
+  if (this.vatCalculationStatus === 'not_calculated' && (
+    this.saleType !== 'special-order'
+    || !this.specialOrderId
+    || !this.specialOrderQuotationId
+    || !this.clientRequestId
+    || !['standard', 'vat_zero_rated'].includes(this.taxTreatment)
+    || this.vatMode !== (this.taxTreatment === 'vat_zero_rated' ? 'zero-rated' : 'vatable')
+    || this.netAmount !== null
+    || this.vatAmount !== null
+    || this.pricingMode !== 'agreed'
+    || this.collectionSource !== 'special_order_ledger'
+  )) {
+    throw new Error('Uncalculated VAT requires an agreed-price Special Order linked to its payment ledger.');
+  }
+});
 
 module.exports = mongoose.model('Sale', saleSchema);

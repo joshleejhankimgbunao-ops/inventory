@@ -7,6 +7,26 @@ const {
   printReceipt,
 } = require('../src/server');
 
+test('Special Order transaction slip does not print unknown VAT as zero', () => {
+  const lines = buildReceiptLines({
+    store: { name: 'Tableria La Confianza' },
+    receipt: {
+      id: 'TRX-SO', specialOrderNumber: 'SO-VAT', paymentMethod: 'other', collectionSource: 'special_order_ledger',
+      total: 100, grossAmount: 100, netAmount: null, vatAmount: null,
+      vatCalculationStatus: 'not_calculated', taxTreatment: 'standard',
+      items: [],
+    },
+  }).join('\n');
+  assert.match(lines, /VAT Class:.*VAT-Rated/);
+  assert.match(lines, /Net:.*Not calculated/);
+  assert.match(lines, /VAT:.*Not calculated/);
+  assert.match(lines, /Payment Source:[\s\S]*Special Order payment history/);
+  assert.match(lines, /TRANSACTION SLIP/);
+  assert.doesNotMatch(lines, /Receipt No/);
+  assert.doesNotMatch(lines, /Please keep this receipt/);
+  assert.doesNotMatch(lines, /VAT:.*₱0\.00/);
+});
+
 test('buildPowerShellPrintScript auto-detects an XP-58H-compatible queue when no printer name is set', () => {
   const script = buildPowerShellPrintScript('');
 
@@ -150,18 +170,32 @@ test('buildPowerShellPrintScript uses a safe 58mm printable area and dynamic rec
   assert.match(script, /Get-Content -LiteralPath \$JsonPath -Raw -Encoding UTF8/);
   assert.match(script, /\$paperWidth = \[int\]\$document\.DefaultPageSettings\.PaperSize\.Width/);
   assert.match(script, /Margins\(4, 4, 5, 5\)/);
-  assert.match(script, /Font\('Consolas', 7\.25\)/);
+  assert.match(script, /Font\('Consolas', 7\.25, \[System\.Drawing\.FontStyle\]::Bold, \[System\.Drawing\.GraphicsUnit\]::Point\)/);
+  assert.match(script, /TextRenderingHint = \[System\.Drawing\.Text\.TextRenderingHint\]::SingleBitPerPixelGridFit/);
   assert.match(script, /\$paperHeight = \[Math\]::Max\(300,/);
   assert.match(script, /PaperSize\('Receipt', \$paperWidth, \$paperHeight\)/);
   assert.match(script, /\$contentBlockWidth = \$e\.Graphics\.MeasureString\(\$contentSample, \$font\)\.Width/);
   assert.match(script, /\$printableArea = \$e\.PageSettings\.PrintableArea/);
+  assert.match(script, /\$centeredHeaderLineCount = \[Math\]::Max\(0, \[Math\]::Min\(\[int\]\$data\.centeredHeaderLineCount, \$lines\.Count\)\)/);
+  assert.match(script, /\$centeredLineIndexes = if \(\$data\.centeredLineIndexes\)/);
+  assert.match(script, /\$fullWidthSeparatorLineIndexes = if \(\$data\.fullWidthSeparatorLineIndexes\)/);
+  assert.match(script, /\$alignedTextLineLookup = @\{\}/);
+  assert.match(script, /\$headerSafeWidth = \$printableArea\.Width \* 0\.94/);
+  assert.match(script, /\$lineIndex -lt \$centeredHeaderLineCount/);
+  assert.match(script, /\$headerX = \[single\]\(\$printableArea\.Left \+ \(\(\$printableArea\.Width - \$headerTextWidth\) \/ 2\)\)/);
+  assert.match(script, /DrawString\(\$text, \$centeredHeaderFont, \$brush, \$headerX, \$y\)/);
+  assert.match(script, /\$usableRight = \[Math\]::Min\(\(\$printableArea\.Left \+ \$printableArea\.Width\), \$e\.MarginBounds\.Right\)/);
+  assert.match(script, /DrawString\(\$leftText, \$pairFont, \$brush, \[single\]\$usableLeft, \$y\)/);
+  assert.match(script, /\$rightX = \[single\]\(\$usableRight - \$rightTextWidth\)/);
+  assert.match(script, /\$dashCount = \[Math\]::Max\(3, \[int\]\[Math\]::Floor\(\(\$usableWidth \* 0\.96\) \/ \$dashWidth\)\)/);
+  assert.match(script, /DrawString\(\$text, \$font, \$brush, \$x, \$y\)/);
   assert.match(script, /\$centerOffset = \(\$printableArea\.Width - \$contentBlockWidth\) \/ 2/);
   assert.match(script, /if \(\$centerOffset -lt 0\)/);
   assert.match(script, /\$x = \[single\]\$printableArea\.Left \+ \[single\]\$centerOffset/);
   assert.match(script, /PRINT_LAYOUT: printableWidth=/);
   assert.match(script, /\$y = \$e\.MarginBounds\.Top/);
   assert.match(script, /if \(\[string\]::IsNullOrEmpty\(\$text\)\)/);
-  assert.match(script, /\$y \+= \$lineHeight\s+continue/);
+  assert.match(script, /\$y \+= \$lineHeight\s+\$lineIndex\+\+\s+continue/);
 });
 
 test('receipt copy payloads preserve one transaction as one customer receipt job', () => {
@@ -512,6 +546,33 @@ test('printReceipt accepts a draft Order List without a finalized receipt id', a
   assert.match(output, /Unit:\s+pack/);
   assert.doesNotMatch(output, /Transaction ID|Receipt No|UNIT PRICE|AMOUNT|Net:|VAT:|TOTAL:|Cash:|Change:|Payment Status|â‚±/);
   assert.equal(result.copyCount, 1);
+});
+
+test('draft Order List prints proposed batch picking details without monetary fields', () => {
+  const output = buildReceiptLines({
+    store: { name: 'Store Name' },
+    receipt: {
+      documentType: 'order-list-draft',
+      date: '2026-10-12T13:45:00.000Z',
+      cashier: 'Cashier',
+      total: 999,
+      items: [{
+        label: 'Expiry-tracked Product', code: 'EXP-001', qty: 3, sellingUnit: 'cans', unitPrice: 333, subtotal: 999,
+        batchPicks: [
+          { batchId: 'EB-OLD', batchReference: 'BT-20261028-001', lotNumber: 'LOT-OLD', expiryDate: '2027-01-31', quantity: 2, status: 'verified' },
+          { batchId: 'EB-LATER', batchReference: 'BT-20261028-002', expiryDate: '2027-06-30', quantity: 1, status: 'provisional' },
+        ],
+      }],
+    },
+  }).join('\n');
+
+  assert.match(output, /Batch Reference:\s+BT-20261028-001 \(PHYSICALLY\s+CHECKED -\s+PROVISIONAL\)/);
+  assert.match(output, /Manufacturer Lot No.:\s+LOT-OLD/);
+  assert.match(output, /Expiry Date:\s+2027-01-31/);
+  assert.match(output, /Pick Qty:\s+2 cans/);
+  assert.match(output, /Batch Reference:\s+BT-20261028-002 \(PROVISIONAL -\s+NOT\s+RESERVED\)/);
+  assert.doesNotMatch(output, /EB-OLD|EB-LATER/);
+  assert.doesNotMatch(output, /UNIT PRICE|AMOUNT|TOTAL:|₱|999\.00/);
 });
 
 test('printReceipt still requires receipt.id for finalized receipt documents', async () => {

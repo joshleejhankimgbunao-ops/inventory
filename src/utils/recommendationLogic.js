@@ -1,3 +1,11 @@
+import { compareEvaluatedRecommendations, evaluateRecommendation } from './recommendationEvaluation.js';
+import { getManualRecommendationLink, getRecommendationReview } from './recommendationBasis.js';
+import { normalizeAttributeKey } from './productAttributes.js';
+
+export { evaluateRecommendation } from './recommendationEvaluation.js';
+
+export const isActiveRecommendationProduct = (item) => Boolean(item) && item.isActive !== false;
+
 const BUDGET_TIERS = ['low', 'moderate', 'high'];
 
 const DEFAULT_BUDGET_RANGES = {
@@ -46,13 +54,6 @@ const resolveTier = (item, settings) => {
     return 'high';
 };
 
-const getTierDistance = (tierA, tierB) => {
-    const idxA = BUDGET_TIERS.indexOf(tierA);
-    const idxB = BUDGET_TIERS.indexOf(tierB);
-    if (idxA < 0 || idxB < 0) return 0;
-    return Math.abs(idxA - idxB);
-};
-
 const RELATIVE_PRICE_THRESHOLD_PERCENT = 10;
 const RELATIVE_PRICE_MIN_ALLOWANCE = 20;
 
@@ -83,61 +84,51 @@ const relativeTierToBucket = (relativeTier) => {
     return 'moderate';
 };
 
-// --- Internal Scoring Helper ---
-const _getSystemSuggestions = (targetItem, inventory, settings) => {
-    const targetTier = resolveTier(targetItem, settings);
-
-    return inventory.filter(item => {
-        // Must be different
-        if (item.code === targetItem.code) return false;
-        if (item.isActive === false || item.isArchived === true) return false;
-        
-        // Exclusions/Manuals are handled by caller if needed
-
-        // Must have stock
-        if (item.stock === 0) return false;
-
-        // Matching Logic
-        const sameCategory = item.category === targetItem.category; 
-        
-        const targetName = targetItem.name || '';
-        const itemName = item.name || '';
-        // Look for similar keyword in name (first or second word)
-        const keyword = targetName.split(' ')[1] || targetName.split(' ')[0] || '';
-        // Skip keyword matching if keyword is too short or common
-        const hasKeyword = keyword && keyword.length > 2;
-        const similarName = hasKeyword && itemName.toLowerCase().includes(keyword.toLowerCase());
-        
-        const sameSize = item.size === targetItem.size;
-        const sameBrand = (item.brand || '').trim().toLowerCase() === (targetItem.brand || '').trim().toLowerCase();
-
-        return sameCategory || similarName || sameSize || sameBrand;
-    }).sort((a, b) => {
-        let scoreA = 0;
-        let scoreB = 0;
-
-        const tierA = resolveTier(a, settings);
-        const tierB = resolveTier(b, settings);
-        const tierDistanceA = getTierDistance(tierA, targetTier);
-        const tierDistanceB = getTierDistance(tierB, targetTier);
-
-        if (a.category === targetItem.category) scoreA += 5;
-        if (a.size === targetItem.size) scoreA += 3;
-        if ((a.brand || '').trim().toLowerCase() === (targetItem.brand || '').trim().toLowerCase()) scoreA += 2;
-        if (tierDistanceA === 0) scoreA += 4;
-        else if (tierDistanceA === 1) scoreA += 2;
-        scoreA -= Math.abs(a.price - targetItem.price) / 100;
-
-        if (b.category === targetItem.category) scoreB += 5;
-        if (b.size === targetItem.size) scoreB += 3;
-        if ((b.brand || '').trim().toLowerCase() === (targetItem.brand || '').trim().toLowerCase()) scoreB += 2;
-        if (tierDistanceB === 0) scoreB += 4;
-        else if (tierDistanceB === 1) scoreB += 2;
-        scoreB -= Math.abs(b.price - targetItem.price) / 100;
-
-        return scoreB - scoreA;
-    });
+const evaluateItem = (target, item, settings, options = {}) => {
+    const recommendation = evaluateRecommendation(target, item, options);
+    const review = getRecommendationReview(target, item);
+    const links = ['alternative', 'budget'].map((type) => getManualRecommendationLink(target, item, type)).filter(Boolean);
+    const excluded = [...(target.excludedAlternatives || []), ...(target.excludedBudgetOptions || [])];
+    recommendation.excluded = excluded.includes(item.code) || links.some((link) => excluded.includes(link.code));
+    recommendation.staffReview = review;
+    // Presentation metadata only: custom indicators never enter the evaluator.
+    const basisLink = recommendation.source === 'admin-managed' ? getManualRecommendationLink(target, item, recommendation.basisRelationshipType) : null;
+    recommendation.staffReasons = (basisLink?.record || review.record)?.staffReasons;
+    recommendation.relationshipIdentityCurrent = links.every((link) => ['current', 'legacy'].includes(link.status));
+    const manualSource = recommendation.source === 'admin-managed';
+    const systemGenerated = recommendation.source === 'automatic'
+        || options.systemGenerated === true
+        || (manualSource && links.some((link) => link.record?.systemGenerated === true));
+    recommendation.sources = {
+        manual: manualSource,
+        automatic: systemGenerated,
+    };
+    // A system review is not an approval gate for a separately stored manual
+    // relationship. Keep the two sources and their decisions independent.
+    const reviewAllowsUse = manualSource || (review.identityCurrent && review.decision !== 'rejected');
+    recommendation.actionable = recommendation.actionable && recommendation.relationshipIdentityCurrent && !recommendation.excluded && reviewAllowsUse;
+    if (review.record && recommendation.source !== 'admin-managed') {
+        recommendation.adminJustification = { text: review.record.justification || null, limitations: review.record.limitations || null, updatedAt: review.record.updatedAt, updatedByName: review.record.updatedByName };
+    }
+    recommendation.availability.stockStatus = getStockStatus(item, settings);
+    return {
+        ...item,
+        recommendation,
+        budgetTier: resolveTier(item, settings),
+        recommendationTier: recommendation.priceComparison.comparable ? getRelativePriceTier(target.price, item.price) : null,
+    };
 };
+
+const _getSystemSuggestions = (target, inventory, settings, options = {}) => {
+    if (!isActiveRecommendationProduct(target)) return [];
+    return inventory
+    .filter(isActiveRecommendationProduct)
+    .map((item) => evaluateItem(target, item, settings, { ...options, source: 'automatic' }))
+    .filter((item) => item.recommendation.actionable)
+    .sort(compareEvaluatedRecommendations);
+};
+
+const currentTarget = (target, inventory) => inventory.find((item) => target.id ? item.id === target.id : item.code === target.code) || target;
 
 export const getBudgetTierByPrice = (price, settings) => {
     const ranges = normalizeBudgetRanges(settings);
@@ -149,54 +140,62 @@ export const getBudgetTierByPrice = (price, settings) => {
 };
 
 export const getAlternatives = (targetItem, inventory, settings, options = {}) => {
-    if (!targetItem || !inventory) return [];
+    if (!targetItem || !Array.isArray(inventory) || !isActiveRecommendationProduct(targetItem)) return [];
+    targetItem = currentTarget(targetItem, inventory);
+    if (!isActiveRecommendationProduct(targetItem)) return [];
 
     const maxSuggestions = Number.isFinite(Number(options.maxSuggestions))
         ? Math.max(1, Number(options.maxSuggestions))
         : 3;
     
-    const manualCodes = targetItem.manualAlternatives || [];
-    const excludedCodes = targetItem.excludedAlternatives || [];
-
-    // 1. Get explicitly manually added alternatives
-    const manualAlternatives = inventory
-        .filter(item => manualCodes.includes(item.code) && item.isActive !== false && item.isArchived !== true)
-        .map(item => ({
-            ...item,
-            budgetTier: resolveTier(item, settings),
-            recommendationTier: getRelativePriceTier(targetItem?.price, item?.price),
-        }));
-
-    // 2. Get AI suggestions (filtered for exclusions/duplicates)
-    const suggestions = _getSystemSuggestions(targetItem, inventory, settings).filter(item => {
-        if (excludedCodes.includes(item.code)) return false;
-        if (manualCodes.includes(item.code)) return false; // Already manually added
-        return true;
-        }).slice(0, maxSuggestions)
-            .map(item => ({
-                    ...item,
-                    budgetTier: resolveTier(item, settings),
-                    recommendationTier: getRelativePriceTier(targetItem?.price, item?.price),
-            })); // Limit suggestions
-
-    return [...manualAlternatives, ...suggestions];
+    const seen = new Set();
+    const managed = [];
+    const automatic = [];
+    for (const item of inventory) {
+        if (!isActiveRecommendationProduct(item)) continue;
+        if (!item.code || seen.has(item.code) || item.code === targetItem.code || (item.id && item.id === targetItem.id)) continue;
+        seen.add(item.code);
+        // Prefer alternative basis; preserve budget-only basis and its edit path.
+        const alternative = getManualRecommendationLink(targetItem, item);
+        const budget = getManualRecommendationLink(targetItem, item, 'budget');
+        const relationshipType = alternative ? 'alternative' : budget ? 'budget' : 'alternative';
+        const linked = Boolean(alternative || budget);
+        const assessed = evaluateItem(targetItem, item, settings, { ...options, relationshipType, source: linked ? 'admin-managed' : 'automatic' });
+        const basis = assessed.recommendation;
+        const blocked = basis.excluded || (!linked && (basis.staffReview.decision === 'rejected' || !basis.staffReview.identityCurrent));
+        if (blocked && options.includeBlocked !== true) continue;
+        const reviewable = options.includeUnavailable === true && (linked || basis.staffReview.record || !basis.staffReview.identityCurrent || blocked);
+        if (!basis.actionable && !reviewable) continue;
+        (linked ? managed : automatic).push(assessed);
+    }
+    return [...managed.sort(compareEvaluatedRecommendations), ...automatic.sort(compareEvaluatedRecommendations).slice(0, maxSuggestions)];
 };
 
-// Returns raw top suggestions without filtering exclusions (for UI flagging)
-export const getRawSystemRecommendations = (targetItem, inventory, settings) => {
-    if (!targetItem || !inventory) return [];
-    // Return top 5 potential recommendations
-    return _getSystemSuggestions(targetItem, inventory, settings)
-        .slice(0, 5)
-        .map(item => ({
-            ...item,
-            budgetTier: resolveTier(item, settings),
-            recommendationTier: getRelativePriceTier(targetItem?.price, item?.price),
-        }));
+// Flags current actionable system suggestions in the management picker.
+export const getRawSystemRecommendations = (targetItem, inventory, settings, options = {}) => {
+    if (!targetItem || !Array.isArray(inventory)) return [];
+    targetItem = currentTarget(targetItem, inventory);
+    return _getSystemSuggestions(targetItem, inventory, settings, options).slice(0, 5);
+};
+
+// Source classification is based on the rule evaluator, independently of
+// approval/rejection, stock blocks, and the capped picker preview.
+export const getSystemRecommendationSourceCodes = (targetItem, inventory, settings, options = {}) => {
+    if (!targetItem || !Array.isArray(inventory) || !isActiveRecommendationProduct(targetItem)) return [];
+    targetItem = currentTarget(targetItem, inventory);
+    if (!isActiveRecommendationProduct(targetItem)) return [];
+    return inventory
+        .filter((item) => isActiveRecommendationProduct(item) && item.code && item.code !== targetItem.code && (!item.id || item.id !== targetItem.id))
+        .map((item) => evaluateItem(targetItem, item, settings, { ...options, source: 'automatic' }))
+        .filter((item) => item.recommendation.compatibility.automaticEligible)
+        .sort(compareEvaluatedRecommendations)
+        .map((item) => item.code);
 };
 
 export const getAlternativesByBudget = (targetItem, inventory, settings, options = {}) => {
-    if (!targetItem || !inventory) return { low: [], moderate: [], high: [] };
+    if (!targetItem || !Array.isArray(inventory) || !isActiveRecommendationProduct(targetItem)) return { low: [], moderate: [], high: [] };
+    targetItem = currentTarget(targetItem, inventory);
+    if (!isActiveRecommendationProduct(targetItem)) return { low: [], moderate: [], high: [] };
 
     const targetStatus = getStockStatus(targetItem, settings);
     const includeNonInStock = options.includeNonInStock === true;
@@ -211,23 +210,20 @@ export const getAlternativesByBudget = (targetItem, inventory, settings, options
     const excludedBudgetCodes = targetItem.excludedBudgetOptions || [];
     const manualBudgetCodes = targetItem.manualBudgetOptions || [];
     const alternatives = getAlternatives(targetItem, inventory, settings, {
+        ...options,
         maxSuggestions: options.maxSuggestions || 9,
     }).filter((item) => !excludedBudgetCodes.includes(item.code));
     const manualBudgetOptions = inventory
-        .filter((item) => (
-            manualBudgetCodes.includes(item.code)
-            && item.code !== targetItem.code
-            && item.isActive !== false
-            && item.isArchived !== true
-            && !excludedBudgetCodes.includes(item.code)
-        ))
-        .map((item) => ({
-            ...item,
-            recommendationTier: getRelativePriceTier(targetItem?.price, item?.price),
-        }));
+        .filter((item) => {
+            if (!isActiveRecommendationProduct(item)) return false;
+            const link = getManualRecommendationLink(targetItem, item, 'budget');
+            return link && item.code !== targetItem.code && !excludedBudgetCodes.includes(link.code) && !excludedBudgetCodes.includes(item.code);
+        })
+        .map((item) => evaluateItem(targetItem, item, settings, { ...options, source: 'admin-managed', relationshipType: 'budget' }))
+        .filter((item) => options.includeUnavailable === true || item.recommendation.actionable);
     const budgetCandidates = [
         ...manualBudgetOptions,
-        ...alternatives.filter((item) => !manualBudgetCodes.includes(item.code)),
+        ...alternatives.filter((item) => !manualBudgetCodes.includes(item.code) && !getManualRecommendationLink(targetItem, item, 'budget')),
     ];
 
     const grouped = {
@@ -237,23 +233,18 @@ export const getAlternativesByBudget = (targetItem, inventory, settings, options
     };
 
     budgetCandidates.forEach((alt) => {
-        const relativeTier = getRelativePriceTier(targetItem?.price, alt?.price);
+        const comparable = alt.recommendation.priceComparison.comparable;
+        if (!comparable && !(options.includeUnavailable === true && alt.recommendation.source === 'admin-managed')) return;
+        const relativeTier = comparable ? getRelativePriceTier(targetItem?.price, alt?.price) : null;
         const tier = relativeTierToBucket(relativeTier);
         if (grouped[tier]) {
-            grouped[tier].push({ ...alt, budgetTier: tier, recommendationTier: relativeTier });
+            grouped[tier].push({ ...alt, budgetTier: tier, recommendationTier: relativeTier, recommendation: { ...alt.recommendation, relationshipType: 'budget' } });
         }
     });
 
-    const targetPrice = toFiniteNumber(targetItem?.price, 0);
-
     BUDGET_TIERS.forEach((tier) => {
         grouped[tier] = grouped[tier]
-            .sort((a, b) => {
-                const priceDeltaA = Math.abs(toFiniteNumber(a.price, 0) - targetPrice);
-                const priceDeltaB = Math.abs(toFiniteNumber(b.price, 0) - targetPrice);
-                if (priceDeltaA !== priceDeltaB) return priceDeltaA - priceDeltaB;
-                return (b.stock || 0) - (a.stock || 0);
-            })
+            .sort(compareEvaluatedRecommendations)
             .slice(0, limitPerTier);
     });
 
@@ -271,22 +262,21 @@ export const getRecommendationAvailability = (targetItem, inventory, settings, o
             hasAny: false,
         };
     }
+    targetItem = currentTarget(targetItem, inventory);
+    if (!isActiveRecommendationProduct(targetItem)) {
+        return {
+            stockStatus: getStockStatus(targetItem, settings),
+            alternatives: [], budgetOptions: [], hasAlternatives: false, hasBudgetOptions: false, hasAny: false,
+        };
+    }
 
     const stockStatus = getStockStatus(targetItem, settings);
     const alternatives = getAlternatives(targetItem, inventory, settings, {
+        ...options,
         maxSuggestions: options.alternativeLimit || 8,
     });
-    const budgetBuckets = stockStatus === 'In Stock'
-        ? getAlternativesByBudget(targetItem, inventory, settings, {
-            limitPerTier: options.limitPerTier || 4,
-            maxSuggestions: options.budgetLimit || 18,
-        })
-        : { low: [], moderate: [], high: [] };
-    const budgetOptions = [
-        ...(budgetBuckets.low || []),
-        ...(budgetBuckets.moderate || []),
-        ...(budgetBuckets.high || []),
-    ];
+    // Retain the legacy response shape for old callers, without a second list.
+    const budgetOptions = [];
     const hasAlternatives = alternatives.length > 0;
     const hasBudgetOptions = budgetOptions.length > 0;
 
@@ -301,31 +291,151 @@ export const getRecommendationAvailability = (targetItem, inventory, settings, o
 };
 
 export const getRecommendationModeForStockState = (availability) => {
-    if (availability?.stockStatus === 'In Stock') {
-        return availability.hasBudgetOptions ? 'budget' : null;
-    }
+    return availability?.hasAlternatives ? 'alternative' : null;
+};
 
-    if (availability?.stockStatus === 'Low Stock' || availability?.stockStatus === 'Out of Stock') {
-        return availability.hasAlternatives ? 'alternative' : null;
+// POS discovery is separate from substitute eligibility. Only the strict list
+// above can be used by prepareRecommendationCartAddition.
+export const getPosRecommendationAvailability = (targetItem, inventory, settings, options = {}) => {
+    const empty = { ...getRecommendationAvailability(null, [], settings), otherOptions: [], hasOtherOptions: false };
+    if (!targetItem || !Array.isArray(inventory)) return empty;
+    const target = inventory.find((item) => item.code === targetItem.code && (!targetItem.id || item.id === targetItem.id));
+    if (!target || target.isActive === false || target.isArchived === true) return empty;
+    const baseAvailability = getRecommendationAvailability(target, inventory, settings, { ...options, includeUnavailable: false, includeBlocked: false });
+    const alternatives = baseAvailability.alternatives.filter((item) => {
+        const manual = getManualRecommendationLink(target, item, 'alternative') || getManualRecommendationLink(target, item, 'budget');
+        if (manual) return true;
+        const review = getRecommendationReview(target, item);
+        return review.identityCurrent && review.decision === 'approved';
+    });
+    const availability = {
+        ...baseAvailability,
+        alternatives,
+        hasAlternatives: alternatives.length > 0,
+        hasAny: alternatives.length > 0,
+    };
+    const seen = new Set([target.code, ...availability.alternatives.map((item) => item.code)]);
+    const otherOptions = [];
+    for (const item of inventory) {
+        if (!isActiveRecommendationProduct(item)) continue;
+        if (!item.code || seen.has(item.code) || (item.id && item.id === target.id)) continue;
+        seen.add(item.code);
+        const alternativeLink = getManualRecommendationLink(target, item);
+        const link = alternativeLink || getManualRecommendationLink(target, item, 'budget');
+        if (!link) continue;
+        const assessed = evaluateItem(target, item, settings, { ...options, source: 'admin-managed', relationshipType: alternativeLink ? 'alternative' : 'budget' });
+        const basis = assessed.recommendation;
+        if (basis.actionable || !basis.availability.canFulfill || basis.excluded || !basis.relationshipIdentityCurrent
+            || !basis.staffReview.identityCurrent || basis.staffReview.decision === 'rejected' || !basis.compatibility.identified) continue;
+        // A saved link cannot make conflicting product types related options.
+        if (basis.differences.some((row) => ['product_type', 'specific_product_type'].includes(normalizeAttributeKey(row.key)))) continue;
+        const difference = basis.differences.find((row) => normalizeAttributeKey(row.key) !== 'brand');
+        if (!difference) continue;
+        otherOptions.push({ ...assessed, posReason: `Different ${difference.label.toLowerCase()}: ${difference.candidateValue}${difference.candidateUnit ? ` ${difference.candidateUnit}` : ''}` });
     }
+    return { ...availability, otherOptions, hasOtherOptions: otherOptions.length > 0, hasAny: availability.hasAlternatives || otherOptions.length > 0 };
+};
 
-    return null;
+export const getPosRecommendationReason = (item) => {
+    const match = item.recommendation?.matchedAttributes?.find((row) => normalizeAttributeKey(row.key) !== 'brand');
+    return match ? `Matching ${match.label.toLowerCase()}: ${match.candidateValue}${match.candidateUnit ? ` ${match.candidateUnit}` : ''}` : '';
 };
 
 export const getPosRecommendationAction = (availability) => {
-    if (!availability) return null;
-    const isInStock = availability.stockStatus === 'In Stock';
-    const alternativesAvailable = availability.hasAlternatives === true;
-    const budgetAvailable = isInStock && availability.hasBudgetOptions === true;
+    return availability?.hasAlternatives || availability?.hasOtherOptions ? 'alternative' : null;
+};
 
-    if (alternativesAvailable && budgetAvailable) return 'chooser';
-    if (alternativesAvailable) return 'alternative';
-    if (budgetAvailable) return 'budget';
-    return null;
+// Re-resolve the selected SKU against the live POS catalog and recommendation
+// rules immediately before the shared cart-add handler is called.
+export const getPosRecommendationForCartAddition = ({
+    targetCode,
+    targetId,
+    candidateCode,
+    candidateId,
+    inventory = [],
+    cart = [],
+    settings,
+    categories = [],
+    requestedQuantity = 1,
+}) => {
+    const quantity = Number(requestedQuantity);
+    if (!Number.isSafeInteger(quantity) || quantity < 1) {
+        return { ok: false, error: 'Enter a quantity of at least 1.' };
+    }
+
+    const getIdentity = (item) => String(item?.id ?? item?._id ?? '');
+    const target = inventory.find((item) => item?.code === targetCode
+        && (!targetId || getIdentity(item) === String(targetId)));
+    const candidate = inventory.find((item) => item?.code === candidateCode
+        && (!candidateId || getIdentity(item) === String(candidateId)));
+    if (!target || target.isActive === false || target.isArchived === true
+        || !candidate || candidate.isActive === false || candidate.isArchived === true) {
+        return { ok: false, error: 'This product or alternative is no longer available. Recheck stock and try again.' };
+    }
+
+    const cartQuantity = cart
+        .filter((item) => item.code === candidate.code)
+        .reduce((total, item) => total + Math.max(0, Number(item.qty) || 0), 0);
+    const remainingQuantity = Math.max(0, (Number(candidate.stock) || 0) - cartQuantity);
+    if (remainingQuantity < quantity) {
+        return {
+            ok: false,
+            error: `Only ${remainingQuantity} ${candidate.sellingUnit || 'units'} available. Recheck stock or adjust the quantity.`,
+        };
+    }
+
+    const availability = getPosRecommendationAvailability(target, inventory, settings, {
+        categories,
+        cart,
+        requestedQuantity: quantity,
+        maxSuggestions: inventory.length,
+    });
+    const current = [...availability.alternatives, ...availability.otherOptions]
+        .find((item) => item.code === candidateCode && getIdentity(item) === getIdentity(candidate));
+    if (!current) {
+        return { ok: false, error: 'This alternative is no longer eligible. Recheck recommendations and try again.' };
+    }
+
+    if (!current.recommendation?.availability?.canFulfill) {
+        const availableQuantity = Math.max(0, Number(current.recommendation?.availability?.availableQuantity) || 0);
+        return {
+            ok: false,
+            error: `Only ${availableQuantity} ${current.sellingUnit || 'units'} available. Recheck stock or adjust the quantity.`,
+        };
+    }
+    return { ok: true, product: current };
+};
+
+// Re-evaluate a modal selection against current SKU data and cart quantities.
+// The caller commits this result and announces success only when ok is true.
+export const prepareRecommendationCartAddition = ({ targetCode, targetId, candidateCode, candidateId, inventory, cart = [], settings, categories = [], requestedQuantity = 1 }) => {
+    const target = inventory.find((item) => item.code === targetCode && (!targetId || item.id === targetId));
+    const candidate = inventory.find((item) => item.code === candidateCode && (!candidateId || item.id === candidateId));
+    if (!isActiveRecommendationProduct(target) || !isActiveRecommendationProduct(candidate)) return { ok: false, error: 'This product is no longer available. Refresh and try again.' };
+    const options = { categories, cart, requestedQuantity, maxSuggestions: inventory.length, limitPerTier: inventory.length };
+    const assessment = evaluateItem(target, candidate, settings, { ...options, source: 'admin-managed' }).recommendation;
+    if (!assessment.availability.canFulfill) {
+        return { ok: false, error: `Only ${assessment.availability.availableQuantity} additional ${candidate.sellingUnit || 'units'} available.` };
+    }
+    const manualLink = getManualRecommendationLink(target, candidate, 'alternative') || getManualRecommendationLink(target, candidate, 'budget');
+    const review = getRecommendationReview(target, candidate);
+    if (!manualLink && (!review.identityCurrent || review.decision !== 'approved')) {
+        return { ok: false, error: 'This system-generated recommendation must be approved before use.' };
+    }
+    const candidates = getAlternatives(target, inventory, settings, options);
+    const selected = candidates.find((item) => item.code === candidateCode);
+    if (!selected) return { ok: false, error: 'This recommendation requires review or is no longer eligible.' };
+    const existing = cart.find((item) => item.code === candidateCode);
+    const nextCart = existing
+        ? cart.map((item) => item.code === candidateCode ? { ...item, ...selected, qty: Number(item.qty) + Number(requestedQuantity) } : item)
+        : [...cart, { ...selected, qty: Number(requestedQuantity) }];
+    return { ok: true, product: selected, cart: nextCart };
 };
 
 export const getManualRecommendationCandidates = (targetItem, inventory, options = {}) => {
-    if (!targetItem || !Array.isArray(inventory)) return [];
+    if (!targetItem || !Array.isArray(inventory) || !isActiveRecommendationProduct(targetItem)) return [];
+    targetItem = currentTarget(targetItem, inventory);
+    if (!isActiveRecommendationProduct(targetItem)) return [];
 
     const existingCodes = new Set(options.existingCodes || []);
     const systemCodes = new Set(options.systemCodes || []);
@@ -351,11 +461,14 @@ export const getManualRecommendationCandidates = (targetItem, inventory, options
             seenCodes.add(code);
             return true;
         })
-        .map((item) => ({
-            ...item,
-            recommendationTier: getRelativePriceTier(targetItem?.price, item?.price),
-            isSystemRecommended: options.recommendationType === 'alternative' && systemCodes.has(item.code),
-        }))
+        .map((item) => {
+            const isSystemRecommended = options.recommendationType === 'alternative' && systemCodes.has(item.code);
+            return {
+                ...item,
+                ...evaluateItem(targetItem, item, options.settings, { ...options, source: 'candidate', relationshipType: options.recommendationType, systemGenerated: isSystemRecommended }),
+                isSystemRecommended,
+            };
+        })
         .sort((a, b) => {
             if (a.isSystemRecommended !== b.isSystemRecommended) return a.isSystemRecommended ? -1 : 1;
             return String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' });

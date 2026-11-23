@@ -55,6 +55,28 @@ test('paid Credit receipt uses the latest persisted payment and linked Sale snap
   });
 });
 
+test('a down payment remains distinct from a later Cheque settlement', async () => {
+  const { buildCreditReceiptTransaction } = await loadCreditReceipt();
+  const transaction = buildCreditReceiptTransaction({
+    creditTransactionId: 'CR-DOWN-CHEQUE',
+    status: 'Paid',
+    totalAmount: 10000,
+    downPaymentAmount: 3000,
+    amountPaid: 10000,
+    remainingBalance: 0,
+    paymentHistory: [
+      { type: 'down_payment', amount: 3000, method: 'cash', paymentDate: '2026-10-01T02:00:00.000Z' },
+      { type: 'payment', amount: 7000, method: 'cheque', paymentDate: '2026-10-10T02:00:00.000Z' },
+    ],
+  });
+
+  assert.equal(transaction.total, 10000);
+  assert.equal(transaction.downPaymentAmount, 3000);
+  assert.equal(transaction.amountPaid, 10000);
+  assert.equal(transaction.remainingBalance, 0);
+  assert.equal(transaction.creditPaymentMode, 'Cheque');
+});
+
 test('unpaid and partially paid Credit transactions are not receipt eligible', async () => {
   const { isFullyPaidCreditTransaction } = await loadCreditReceipt();
 

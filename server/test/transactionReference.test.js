@@ -9,7 +9,7 @@ require.cache[realtimeServicePath] = {
   id: realtimeServicePath, filename: realtimeServicePath, loaded: true,
   exports: { publishSaleCreated: () => {}, publishInventoryUpdated: () => {}, publishCreditTransactionsUpdated: () => {} },
 };
-const { createSale, updateSaleTransactionReference, correctSaleTransactionReference, getSaleSupportingDocument, mapSaleToTransactionContract } = require('../src/controllers/saleController');
+const { createSale, finalizeSale, updateSaleTransactionReference, correctSaleTransactionReference, getSaleSupportingDocument, mapSaleToTransactionContract, __test: { validateDownPaymentProofs } } = require('../src/controllers/saleController');
 const { markCreditTransactionFullyPaid } = require('../src/controllers/creditTransactionController');
 
 const saleId = '68a01234567890abcdef1234';
@@ -67,6 +67,48 @@ test('offline Cash Sale creation rejects non-numeric references before inventory
   } finally {
     mongoose.startSession = originalStartSession;
   }
+});
+
+test('final POS save requires a reference before any Sale creation work', async () => {
+  const originalStartSession = mongoose.startSession;
+  const originalFindOne = Sale.findOne;
+  let sessionsStarted = 0;
+  mongoose.startSession = async () => {
+    sessionsStarted += 1;
+    return { withTransaction: async (operation) => operation(), endSession: async () => {} };
+  };
+  Sale.findOne = async () => null;
+
+  try {
+    const missingReference = makeResponse();
+    await finalizeSale({ body: { payload: JSON.stringify({ items: [], paymentMethod: 'cash', clientRequestId: 'final-save-missing-reference' }) }, user: { _id: userId } }, missingReference, assert.fail);
+    assert.equal(missingReference.code, 400);
+    assert.equal(missingReference.body.message, 'Provide a Reference No. or Supporting Document.');
+
+    const numberedReference = makeResponse();
+    await finalizeSale({ body: { payload: JSON.stringify({ items: [], paymentMethod: 'cash', referenceNumber: '00123456', clientRequestId: 'final-save-reference' }) }, user: { _id: userId } }, numberedReference, assert.fail);
+    assert.equal(numberedReference.code, 400);
+    assert.equal(numberedReference.body.message, 'items are required.');
+    assert.equal(sessionsStarted, 2);
+  } finally {
+    mongoose.startSession = originalStartSession;
+    Sale.findOne = originalFindOne;
+  }
+});
+
+test('credit finalization requires 1–3 down-payment proofs while Cash remains proof-free', async () => {
+  for (const count of [0, 1, 2, 3, 4]) {
+    const proofs = Array.from({ length: count }, () => ({}));
+    if (count === 0 || count === 4) assert.throws(() => validateDownPaymentProofs('credit', proofs), /1 to 3/);
+    else assert.doesNotThrow(() => validateDownPaymentProofs('credit', proofs));
+  }
+  assert.doesNotThrow(() => validateDownPaymentProofs('cash', []));
+  assert.throws(() => validateDownPaymentProofs('cash', [{}]), /only accepted for credit/);
+
+  const credit = makeResponse();
+  await finalizeSale({ body: { payload: JSON.stringify({ items: [], paymentMethod: 'credit', referenceNumber: '123456' }) }, user: { _id: userId } }, credit, assert.fail);
+  assert.equal(credit.code, 400);
+  assert.match(credit.body.message, /Down Payment Proof/);
 });
 
 test('reference only updates existing Sale metadata without touching transaction fields', async () => {
@@ -173,6 +215,7 @@ test('frontend reference validation requires one method and trims reference numb
     hasUsableTransactionReference,
     normalizeTransactionReferenceInput,
     normalizeTransactionReferenceNumber,
+    toInvoiceNumberTerminology,
   } = await import('../../src/utils/transactionReference.js');
   assert.equal(normalizeTransactionReferenceNumber('  00123456  '), '00123456');
   assert.equal(hasUsableTransactionReference({ referenceNumber: '   ' }), false);
@@ -180,7 +223,7 @@ test('frontend reference validation requires one method and trims reference numb
   for (const invalid of ['ABC123', '123ABC', '123-456', '123/456', '123 456', '123.456', '@123', '123#']) {
     assert.equal(hasUsableTransactionReference({ referenceNumber: invalid }), false);
     assert.equal(hasUsableTransactionReference({ referenceNumber: invalid, documentFile: jpeg }), false);
-    assert.equal(getTransactionReferenceNumberError(invalid), 'Reference No. must contain numbers only.');
+    assert.equal(getTransactionReferenceNumberError(invalid), 'Invoice No. must contain numbers only.');
   }
   assert.equal(hasUsableTransactionReference({ documentFile: jpeg }), true);
   assert.equal(hasUsableTransactionReference({ existingReference: { supportingDocument: { originalName: 'existing.jpg' } } }), true);
@@ -189,6 +232,7 @@ test('frontend reference validation requires one method and trims reference numb
   assert.equal(normalizeTransactionReferenceInput('001 234'), '001234');
   assert.equal(normalizeTransactionReferenceInput('12@#😀34'), '1234');
   assert.equal(normalizeTransactionReferenceInput(`001${'2'.repeat(100)}`).length, 80);
+  assert.equal(toInvoiceNumberTerminology('Provide a Reference No. or reference number.'), 'Provide an Invoice No. or invoice number.');
 });
 
 test('Credit payment references remain governed by the Credit payment domain', async () => {

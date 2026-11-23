@@ -1,5 +1,9 @@
 export const ANALYTICS_PIE_COLORS = ['#0EA5E9', '#F97316', '#10B981', '#A855F7', '#F43F5E', '#EAB308', '#14B8A6', '#6366F1'];
 
+// Shared bar colors keep the Dashboard and Reports product charts consistent.
+export const DASHBOARD_BAR_COLOR = '#334155';
+export const DASHBOARD_BAR_ACTIVE_COLOR = '#475569';
+
 // Shared presentation values for the primary Sales Analytics series.
 // These are intentionally visual-only; data, scales, and tooltip behavior stay page-owned.
 export const SALES_ANALYTICS_LINE_STYLE = {

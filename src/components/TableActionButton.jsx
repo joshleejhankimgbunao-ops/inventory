@@ -14,6 +14,9 @@ const TableActionButton = ({
   className = '',
   type = 'button',
   disabled = false,
+  tooltipDisabled = false,
+  dismissTooltipOnClick = false,
+  onClick,
   ...props
 }) => {
   const buttonRef = useRef(null);
@@ -34,14 +37,14 @@ const TableActionButton = ({
   }, [label]);
 
   useEffect(() => {
-    if (!isOpen) return undefined;
+    if (!isOpen || tooltipDisabled) return undefined;
     window.addEventListener('resize', updatePosition);
     window.addEventListener('scroll', updatePosition, true);
     return () => {
       window.removeEventListener('resize', updatePosition);
       window.removeEventListener('scroll', updatePosition, true);
     };
-  }, [isOpen, updatePosition]);
+  }, [isOpen, tooltipDisabled, updatePosition]);
 
   useEffect(() => {
     if (!isOpen) return undefined;
@@ -53,15 +56,22 @@ const TableActionButton = ({
   }, [isOpen]);
 
   const openTooltip = () => {
+    if (tooltipDisabled) return;
     updatePosition();
     setIsOpen(true);
   };
+
+  const isTooltipVisible = isOpen && !tooltipDisabled;
 
   const triggerProps = {
     onMouseEnter: openTooltip,
     onMouseLeave: () => setIsOpen(false),
     onFocus: openTooltip,
     onBlur: () => setIsOpen(false),
+  };
+  const handleClick = (event) => {
+    if (dismissTooltipOnClick) setIsOpen(false);
+    onClick?.(event);
   };
 
   return (
@@ -71,13 +81,14 @@ const TableActionButton = ({
         ref={buttonRef}
         type={type}
         disabled={disabled}
+        onClick={handleClick}
         aria-label={props['aria-label'] || label}
-        aria-describedby={isOpen ? tooltipId : undefined}
+        aria-describedby={isTooltipVisible ? tooltipId : undefined}
         className={`table-action-button ${VARIANT_CLASS[variant] || ''} ${className}`.trim()}
       >
         {children}
       </button>
-      {isOpen && typeof document !== 'undefined' && createPortal(
+      {isTooltipVisible && typeof document !== 'undefined' && createPortal(
         <span
           id={tooltipId}
           role="tooltip"

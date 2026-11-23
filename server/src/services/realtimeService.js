@@ -2,6 +2,9 @@ const { randomBytes, randomUUID } = require('crypto');
 
 const KEEPALIVE_INTERVAL_MS = 25000;
 const REALTIME_TICKET_TTL_MS = 60000;
+// Connections and tickets are intentionally process-local. Multi-instance
+// deployments need shared pub/sub (and ticket/session coordination) before
+// every instance can deliver every event.
 const clients = new Map();
 const streamTickets = new Map();
 
@@ -109,6 +112,25 @@ const revokeRealtimeSession = (sessionId) => {
   });
 };
 
+const revokeRealtimeUser = (userId) => {
+  const normalizedUserId = String(userId || '').trim();
+  if (!normalizedUserId) return;
+
+  clients.forEach((client, clientId) => {
+    if (client.userId === normalizedUserId) {
+      removeClient(clientId, { close: true });
+    }
+  });
+  streamTickets.forEach((ticket, value) => {
+    if (ticket.userId === normalizedUserId) streamTickets.delete(value);
+  });
+};
+
+const revokeAllRealtimeConnections = () => {
+  streamTickets.clear();
+  clients.forEach((client, clientId) => removeClient(clientId, { close: true }));
+};
+
 const publishEvent = (event, payload = {}, options = {}) => {
   const targetRoles = Array.isArray(options.roles) ? options.roles : null;
   const targetUserIds = Array.isArray(options.userIds)
@@ -129,12 +151,16 @@ const publishEvent = (event, payload = {}, options = {}) => {
 };
 
 const publishSaleCreated = ({ saleId, cashierId, cashierName }) => {
-  publishEvent('sale.created', {
+  const payload = {
     saleId: String(saleId || ''),
     cashierId: String(cashierId || ''),
     cashierName: cashierName || '',
     occurredAt: new Date().toISOString(),
-  });
+  };
+  publishEvent('sale.created', payload, { roles: ['superadmin', 'admin'] });
+  if (cashierId) {
+    publishEvent('sale.created', payload, { roles: ['cashier'], userIds: [cashierId] });
+  }
 };
 
 const publishSpecialOrderUpdated = ({ orderId = '', orderNumber = '', status = '' } = {}) => {
@@ -173,6 +199,31 @@ const publishSettingsUpdated = ({ keys = [], changedBy = '' } = {}) => {
   });
 };
 
+const publishCategoriesUpdated = ({ reason = 'category.updated', categoryId = '', name = '', previousName = '', isActive } = {}) => {
+  publishEvent('categories.updated', {
+    reason: String(reason || 'category.updated'),
+    categoryId: String(categoryId || ''),
+    name: String(name || ''),
+    previousName: String(previousName || ''),
+    ...(typeof isActive === 'boolean' ? { isActive } : {}),
+    occurredAt: new Date().toISOString(),
+  });
+};
+
+const publishUsersUpdated = ({ reason = 'user.updated' } = {}) => {
+  publishEvent('users.updated', {
+    reason: String(reason || 'user.updated'),
+    occurredAt: new Date().toISOString(),
+  }, { roles: ['superadmin'] });
+};
+
+const publishRealtimeResync = ({ reason = 'data.updated' } = {}) => {
+  publishEvent('realtime.resync', {
+    reason: String(reason || 'data.updated'),
+    occurredAt: new Date().toISOString(),
+  });
+};
+
 const publishPartnersUpdated = ({ reason = 'unknown', partnerId = '', partnerType = '' } = {}) => {
   publishEvent('partners.updated', {
     reason,
@@ -206,6 +257,17 @@ const publishActivityLogged = ({
   });
 };
 
+const publishActivityRead = ({ userId = '' } = {}) => {
+  const targetUserId = String(userId || '').trim();
+  if (!targetUserId) return;
+  publishEvent('activity.read', {
+    occurredAt: new Date().toISOString(),
+  }, {
+    roles: ['superadmin', 'admin'],
+    userIds: [targetUserId],
+  });
+};
+
 const publishInventoryLogged = ({
   id = '',
   action = '',
@@ -224,13 +286,14 @@ const publishInventoryLogged = ({
   });
 };
 
-setInterval(() => {
+const keepaliveTimer = setInterval(() => {
   clients.forEach((client) => {
     writeEvent(client.res, 'ping', { ts: Date.now() });
   });
 }, KEEPALIVE_INTERVAL_MS);
+keepaliveTimer.unref?.();
 
-setInterval(() => {
+const ticketCleanupTimer = setInterval(() => {
   const now = Date.now();
   streamTickets.forEach((ticket, value) => {
     if (value.expiresAtMs <= now) {
@@ -238,20 +301,27 @@ setInterval(() => {
     }
   });
 }, REALTIME_TICKET_TTL_MS);
+ticketCleanupTimer.unref?.();
 
 module.exports = {
   subscribeClient,
   createStreamTicket,
   consumeStreamTicket,
   revokeRealtimeSession,
+  revokeRealtimeUser,
+  revokeAllRealtimeConnections,
   publishEvent,
   publishSaleCreated,
   publishSaleUpdated,
   publishSpecialOrderUpdated,
   publishInventoryUpdated,
   publishSettingsUpdated,
+  publishCategoriesUpdated,
+  publishUsersUpdated,
+  publishRealtimeResync,
   publishPartnersUpdated,
   publishCreditTransactionsUpdated,
   publishActivityLogged,
+  publishActivityRead,
   publishInventoryLogged,
 };

@@ -15,6 +15,11 @@ export const toggleAllCartItemSelections = (selectedCodes, cartItems) => {
     return selectedCartCodes.length === cartCodes.length ? [] : cartCodes;
 };
 
+export const getSelectedCartItems = (cartItems, selectedCodes) => {
+    const selectedCodeSet = new Set(normalizeCodes(selectedCodes));
+    return (cartItems || []).filter((item) => selectedCodeSet.has(item?.code));
+};
+
 export const removeSelectedCartItems = (cartItems, selectedCodes) => {
     const selectedCodeSet = new Set(normalizeCodes(selectedCodes));
     return (cartItems || []).filter((item) => !selectedCodeSet.has(item?.code));

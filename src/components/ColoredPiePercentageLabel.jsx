@@ -10,6 +10,7 @@ const ColoredPiePercentageLabel = ({
   payload,
   percent,
   compact = false,
+  hideBelowPercentage = 0,
 }) => {
   const percentage = Number.isFinite(Number(payload?.percentage))
     ? Number(payload.percentage)
@@ -21,6 +22,8 @@ const ColoredPiePercentageLabel = ({
   const displayPercentage = percentage > 0 && percentage < 1
     ? '<1%'
     : `${percentage.toFixed(0)}%`;
+
+  if (percentage < hideBelowPercentage) return null;
 
   return (
     <text

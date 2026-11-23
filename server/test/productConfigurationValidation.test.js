@@ -34,7 +34,7 @@ const makeResponse = () => ({
 });
 
 const makeRequest = (body = {}, id = '') => ({
-  body: { sellingUnit: 'pcs', ...body },
+  body: { sellingUnit: 'pcs', purchaseCost: 0, ...body },
   params: id ? { id } : {},
   user: { _id: 'admin-1', name: 'Admin' },
   ip: '127.0.0.1',
@@ -206,11 +206,15 @@ test('schema v1 rejects a duplicate despite stale legacy Brand, Color, and Size 
 
 test('unchanged, price-only, stock-only, and supplier-only edits remain allowed', async () => {
   const category = { showSize: true, showBrand: false, showColor: false, attributeSchemaVersion: 0 };
-  const existing = makeProduct();
+  // The edit request helper submits the selected unit (`pcs`). Keep the saved
+  // record aligned with that unit so these cases exercise maintenance-only
+  // edits, rather than assigning a unit to an ambiguous legacy SKU.
+  const existing = makeProduct({ sellingUnit: 'pcs' });
   const grandfatheredDuplicate = makeProduct({
     _id: 'existing-2',
     sku: 'TST-ELC-002',
     price: 120,
+    sellingUnit: 'pcs',
   });
   const changes = [{}, { price: 120 }, { stock: 7 }, { supplierName: 'New Supplier' }];
 
@@ -221,6 +225,19 @@ test('unchanged, price-only, stock-only, and supplier-only edits remain allowed'
       assert.equal(response.statusCode, 200);
     }});
   }
+});
+
+test('assigning a unit to an ambiguous legacy SKU is rejected when it would collide with a duplicate', async () => {
+  const category = { showSize: true, showBrand: false, showColor: false, attributeSchemaVersion: 0 };
+  const existing = makeProduct({ _id: 'legacy-1', sellingUnit: '' });
+  const duplicate = makeProduct({ _id: 'legacy-2', sku: 'TST-ELC-002', sellingUnit: '' });
+
+  await withProductStubs({ category, existing, products: [duplicate], action: async () => {
+    const response = makeResponse();
+    await updateProduct(makeRequest({}, existing._id), response, assert.fail);
+    assert.equal(response.statusCode, 409);
+    assert.equal(response.body.message, DUPLICATE_CONFIGURATION_MESSAGE);
+  }});
 });
 
 test('selling unit changes cannot reinterpret a product with stock or sales history', async () => {
@@ -393,5 +410,63 @@ test('category change rejects inactive targets, missing required attributes, and
     await updateProduct(makeRequest({ category: target.name, attributes: { grit: 80 } }, existing._id), response, assert.fail);
     assert.equal(response.statusCode, 409);
     assert.equal(response.body.message, DUPLICATE_CONFIGURATION_MESSAGE);
+  }});
+});
+
+test('product creation accepts a blank Product Name and keeps the stored name blank', async () => {
+  const category = {
+    name: 'Electrical',
+    isActive: true,
+    attributeSchemaVersion: 1,
+    productAttributes: [
+      { name: 'Type', key: 'type', type: 'text', required: false, order: 0 },
+      { name: 'Size', key: 'size_variant', type: 'text', required: false, order: 1 },
+    ],
+  };
+
+  await withProductStubs({ category, action: async () => {
+    const response = makeResponse();
+    await createProduct(makeRequest({
+      name: '   ',
+      sku: 'ELC-099',
+      category: 'Electrical',
+      attributes: { type: 'Electrical Wire', size_variant: '2.0mm' },
+      sellingUnit: 'pcs',
+      price: 10,
+    }), response, assert.fail);
+
+    assert.equal(response.statusCode, 201);
+    assert.equal(response.body.name, '');
+    assert.deepEqual(response.body.attributes, { type: 'Electrical Wire', size_variant: '2.0mm' });
+    assert.notEqual(Product.schema.path('name').options.required, true);
+  }});
+});
+
+test('product creation preserves a supplied Product Name', async () => {
+  const category = { name: 'Electrical', isActive: true, attributeSchemaVersion: 1, productAttributes: [] };
+  await withProductStubs({ category, action: async () => {
+    const response = makeResponse();
+    await createProduct(makeRequest({ name: '  Electrical Wire  ', sku: 'ELC-098', category: 'Electrical', price: 10 }), response, assert.fail);
+    assert.equal(response.statusCode, 201);
+    assert.equal(response.body.name, 'Electrical Wire');
+  }});
+});
+
+test('product editing accepts and persists a blank Product Name', async () => {
+  const category = {
+    name: 'Electrical',
+    isActive: true,
+    attributeSchemaVersion: 1,
+    productAttributes: [{ name: 'Type', key: 'type', type: 'text', required: false, order: 0 }],
+  };
+  const existing = makeProduct({ _id: 'blank-name-edit', name: 'Named Wire', attributes: { type: 'Electrical Wire' } });
+
+  await withProductStubs({ category, existing, action: async () => {
+    const response = makeResponse();
+    await updateProduct(makeRequest({ name: '   ' }, existing._id), response, assert.fail);
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body.name, '');
+    assert.equal(response.body.sku, existing.sku);
   }});
 });

@@ -6,11 +6,13 @@ import App from './App.jsx'
 import { AuthProvider } from './context/AuthContext'
 import { InventoryProvider } from './context/InventoryContext'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
+import FormValidationNavigation from './components/FormValidationNavigation.jsx'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <ErrorBoundary>
       <BrowserRouter>
+        <FormValidationNavigation />
         <AuthProvider>
           <InventoryProvider>
             <App />

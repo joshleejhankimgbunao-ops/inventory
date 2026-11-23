@@ -1,5 +1,16 @@
 const mongoose = require('mongoose');
 
+const proofOfPaymentSchema = new mongoose.Schema(
+  {
+    storageKey: { type: String, required: true, trim: true },
+    fileName: { type: String, required: true, trim: true },
+    mimeType: { type: String, required: true, enum: ['image/jpeg', 'image/png'] },
+    uploadedAt: { type: Date, required: true, default: Date.now },
+    uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  },
+  { _id: false }
+);
+
 const paymentHistorySchema = new mongoose.Schema(
   {
     paymentDate: {
@@ -7,10 +18,20 @@ const paymentHistorySchema = new mongoose.Schema(
       required: true,
       default: Date.now,
     },
+    // paymentDate is the user-facing payment calendar date; recordedAt is the
+    // server timestamp for ledger posting and must never be supplied by clients.
+    recordedAt: {
+      type: Date,
+    },
     amount: {
       type: Number,
       required: true,
       min: 0,
+    },
+    type: {
+      type: String,
+      enum: ['down_payment', 'payment'],
+      default: 'payment',
     },
     method: {
       type: String,
@@ -43,37 +64,33 @@ const paymentHistorySchema = new mongoose.Schema(
       default: '',
       trim: true,
     },
-  },
-  { _id: false }
-);
-
-const proofOfPaymentSchema = new mongoose.Schema(
-  {
-    storageKey: {
-      type: String,
-      required: true,
-      trim: true,
+    proof: {
+      storageKey: {
+        type: String,
+        default: '',
+        trim: true,
+      },
+      fileName: {
+        type: String,
+        default: '',
+        trim: true,
+      },
+      mimeType: {
+        type: String,
+        enum: ['', 'image/jpeg', 'image/png'],
+        default: '',
+      },
+      uploadedAt: {
+        type: Date,
+        default: null,
+      },
+      uploadedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        default: null,
+      },
     },
-    fileName: {
-      type: String,
-      required: true,
-      trim: true,
-    },
-    mimeType: {
-      type: String,
-      required: true,
-      enum: ['image/jpeg', 'image/png'],
-    },
-    uploadedAt: {
-      type: Date,
-      required: true,
-      default: Date.now,
-    },
-    uploadedBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-      default: null,
-    },
+    proofs: { type: [proofOfPaymentSchema], default: [] },
   },
   { _id: false }
 );
@@ -165,6 +182,11 @@ const creditTransactionSchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
+    downPaymentAmount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
     remainingBalance: {
       type: Number,
       required: true,
@@ -238,6 +260,7 @@ const creditTransactionSchema = new mongoose.Schema(
       ref: 'User',
       default: null,
     },
+    cancelProofs: { type: [proofOfPaymentSchema], default: [] },
   },
   {
     timestamps: true,

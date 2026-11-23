@@ -34,6 +34,7 @@ const buildProductConfigurationIdentity = ({
   brand,
   color,
   size,
+  sellingUnit,
 }) => {
   const normalizedDefinitions = [...definitions]
     .map((definition) => ({ ...definition, key: normalizeIdentityText(definition?.key) }))
@@ -43,6 +44,7 @@ const buildProductConfigurationIdentity = ({
   return JSON.stringify({
     category: normalizeIdentityText(category),
     name: normalizeIdentityText(name),
+    sellingUnit: normalizeIdentityText(sellingUnit),
     attributes: normalizedDefinitions.map((definition) => ({
       key: definition.key,
       value: normalizedAttributeValue(definition, configuredAttributeValue({
@@ -61,6 +63,7 @@ const buildProductConfigurationIdentity = ({
 const productConfigurationInput = (product) => ({
   category: product?.category,
   name: product?.name,
+  sellingUnit: product?.sellingUnit,
   attributes: product?.attributes,
   legacy: {
     brand: product?.brand,
@@ -69,21 +72,46 @@ const productConfigurationInput = (product) => ({
   },
 });
 
+const productConfigurationsConflict = (left, right, definitions = []) => {
+  const leftInput = productConfigurationInput(left);
+  const rightInput = productConfigurationInput(right);
+  const leftUnit = normalizeIdentityText(leftInput.sellingUnit);
+  const rightUnit = normalizeIdentityText(rightInput.sellingUnit);
+  // A legacy missing unit cannot establish a distinct configuration.
+  if (leftUnit && rightUnit) {
+    return buildProductConfigurationIdentity({ ...leftInput, definitions })
+      === buildProductConfigurationIdentity({ ...rightInput, definitions });
+  }
+  return buildProductConfigurationIdentity({ ...leftInput, sellingUnit: '', definitions })
+    === buildProductConfigurationIdentity({ ...rightInput, sellingUnit: '', definitions });
+};
+
 const findDuplicateConfigurationGroups = (products, definitionsByCategory = new Map()) => {
   const groups = new Map();
   (Array.isArray(products) ? products : []).forEach((product) => {
     const definitions = definitionsByCategory.get(product?.category) || [];
-    const identity = buildProductConfigurationIdentity({ ...productConfigurationInput(product), definitions });
+    const identity = buildProductConfigurationIdentity({ ...productConfigurationInput(product), sellingUnit: '', definitions });
     if (!groups.has(identity)) groups.set(identity, []);
     groups.get(identity).push(product);
   });
 
-  return [...groups.values()].filter((group) => group.length > 1);
+  return [...groups.values()].flatMap((group) => {
+    if (group.length < 2) return [];
+    if (group.some((product) => !normalizeIdentityText(product?.sellingUnit))) return [group];
+    const byUnit = new Map();
+    group.forEach((product) => {
+      const unit = normalizeIdentityText(product.sellingUnit);
+      if (!byUnit.has(unit)) byUnit.set(unit, []);
+      byUnit.get(unit).push(product);
+    });
+    return [...byUnit.values()].filter((sameUnit) => sameUnit.length > 1);
+  });
 };
 
 module.exports = {
   buildProductConfigurationIdentity,
   findDuplicateConfigurationGroups,
   normalizeIdentityText,
+  productConfigurationsConflict,
   productConfigurationInput,
 };

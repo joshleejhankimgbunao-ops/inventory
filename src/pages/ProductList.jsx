@@ -1,11 +1,15 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import Pagination from '../components/Pagination';
 import TableSkeletonRows from '../components/TableSkeletonRows';
+import ContextualEmptyState from '../components/ContextualEmptyState';
 import IdentifierChip from '../components/IdentifierChip';
 import ArchiveIcon from '../components/ArchiveIcon';
 import EditIcon from '../components/EditIcon';
 import TableActionButton from '../components/TableActionButton';
+import ToolbarDropdown from '../components/ToolbarDropdown';
 import ProductAttributeFields from '../components/ProductAttributeFields';
+import ProductExpiryFields from '../components/ProductExpiryFields';
+import { getTomorrowManilaDate, isFutureExpiryDate } from '../utils/productExpiryDate';
 import ProductFamilyModal from '../components/ProductFamilyModal';
 import VariantCategoryChangeModal from '../components/VariantCategoryChangeModal';
 import SupplierSelector from '../components/SupplierSelector';
@@ -15,10 +19,12 @@ import { useInventory } from '../context/InventoryContext';
 import { getAuthToken, isApiConnectionFailure } from '../services/apiClient';
 import { createClientRequestId } from '../utils/clientRequestId';
 import { subscribeRealtimeEvent } from '../services/realtimeClient';
-import { createProductApi, updateProductApi, listPartnersApi, listProductsApi } from '../services/inventoryApi';
+import { archiveSelectedProductVariantsApi, createProductApi, updateProductApi, listPartnersApi, listProductsApi } from '../services/inventoryApi';
 import { getStockStatus } from '../utils/recommendationLogic';
 import { formatMoney } from '../utils/numberFormat';
-import { normalizeHumanReadable } from '../utils/textNormalization';
+import { normalizeProductAttributeValues, normalizeProductText } from '../utils/productTextNormalization';
+import { getProductDisplayName } from '../utils/productDisplayName';
+import { setFirstInvalidFieldError, setFormValidationErrors } from '../utils/formValidationNavigation';
 import { getEffectiveProductAttributes, legacyValuesFromAttributes, productAttributeValues, validateAttributeValues } from '../utils/productAttributes';
 import {
     formatMoneyInput,
@@ -35,14 +41,31 @@ import {
 import { getActiveConfiguredCategories, getConfiguredCategoryCount } from '../utils/categorySummary';
 import {
     getProductFamilyKey,
+    getProductFamilyAttributeSummary,
     groupProductsIntoFamilies,
     matchesProductFamilySearch,
 } from '../utils/productFamilies';
+
+const hasRecordedPurchaseCost = (value) => (
+    value !== undefined
+    && value !== null
+    && String(value).trim() !== ''
+    && Number.isFinite(Number(value))
+);
+
+const purchaseCostMatches = (inputValue, recordedValue) => {
+    const input = String(inputValue ?? '').trim();
+    if (!input) return !hasRecordedPurchaseCost(recordedValue);
+    const normalized = formatMoneyInput(input);
+    return isMoneyInput(normalized) && hasRecordedPurchaseCost(recordedValue) && Number(normalized) === Number(recordedValue);
+};
 
 const ProductList = () => {
     const listContainerRef = useRef(null);
     const searchContainerRef = useRef(null);
     const productImageInputRef = useRef(null);
+    const productImagePreviewTriggerRef = useRef(null);
+    const productImagePreviewCloseRef = useRef(null);
     const productSubmitInFlightRef = useRef(false);
     const productCreateRequestIdRef = useRef('');
     const productArchiveInFlightRef = useRef(false);
@@ -55,6 +78,8 @@ const ProductList = () => {
         categories: customCategories = [],
         fetchCategories,
         isInventoryLoading,
+        inventoryLoadError,
+        retryInventory,
         isCategoriesLoading,
         categoriesError,
     } = useInventory();
@@ -77,6 +102,7 @@ const ProductList = () => {
     const [isSupplierDropdownOpen, setIsSupplierDropdownOpen] = useState(false); // Custom dropdown state
     const [supplierSearchQuery, setSupplierSearchQuery] = useState('');
     const [supplierPartners, setSupplierPartners] = useState([]);
+    const supplierPartnersRequestRef = useRef(0);
     const [enlargedProductImage, setEnlargedProductImage] = useState(null);
     const [managedFamilyKey, setManagedFamilyKey] = useState('');
     const [isFamilyModalOpen, setIsFamilyModalOpen] = useState(false);
@@ -89,12 +115,12 @@ const ProductList = () => {
     const [itemsPerPage, setItemsPerPage] = useState(10);
     
     const loadSupplierPartners = useCallback(async () => {
+        const requestId = ++supplierPartnersRequestRef.current;
         try {
             const rows = await listPartnersApi({ type: 'supplier', includeArchived: true });
-
-            setSupplierPartners(Array.isArray(rows) ? rows : []);
+            if (requestId === supplierPartnersRequestRef.current) setSupplierPartners(Array.isArray(rows) ? rows : []);
         } catch {
-            setSupplierPartners([]);
+            // Keep the last supplier choices during transient network failures.
         }
     }, []);
 
@@ -119,12 +145,22 @@ const ProductList = () => {
             return undefined;
         }
 
-        const unsubscribe = subscribeRealtimeEvent('partners.updated', () => {
-            void loadSupplierPartners();
-        });
+        let refreshTimer = null;
+        const scheduleRefresh = () => {
+            if (refreshTimer) window.clearTimeout(refreshTimer);
+            refreshTimer = window.setTimeout(() => {
+                refreshTimer = null;
+                void loadSupplierPartners();
+            }, 80);
+        };
+        const unsubscribePartners = subscribeRealtimeEvent('partners.updated', scheduleRefresh);
+        const unsubscribeResync = subscribeRealtimeEvent('realtime.resync', scheduleRefresh);
 
         return () => {
-            unsubscribe();
+            if (refreshTimer) window.clearTimeout(refreshTimer);
+            unsubscribePartners();
+            unsubscribeResync();
+            supplierPartnersRequestRef.current += 1;
         };
     }, [loadSupplierPartners]);
 
@@ -376,12 +412,37 @@ const ProductList = () => {
         size: '',
         sizeUnit: getDefaultSizeUnit(defaultCategory),
         price: '',
+        purchaseCost: '',
         stock: '',
         sellingUnit: '',
+        expiryTrackingEnabled: false,
+        expiryTrackingDisableReason: '',
+        initialExpiryDate: '',
+        initialBatchLotNumber: '',
         supplier: '',
         attributes: {},
     };
     const [formData, setFormData] = useState(initialFormState);
+    const [minimumInitialExpiryDate, setMinimumInitialExpiryDate] = useState(() => getTomorrowManilaDate());
+    useEffect(() => {
+        if (!isModalOpen || modalMode !== 'add') return undefined;
+        let midnightTimer;
+        const refreshMinimumDate = () => {
+            const now = new Date();
+            const tomorrow = getTomorrowManilaDate(now);
+            setMinimumInitialExpiryDate(tomorrow);
+            // Asia/Manila uses UTC+08:00; refresh the native picker's min at business midnight.
+            const nextMidnight = Date.parse(`${tomorrow}T00:00:00+08:00`);
+            clearTimeout(midnightTimer);
+            midnightTimer = setTimeout(refreshMinimumDate, Math.max(1000, nextMidnight - now.getTime() + 50));
+        };
+        refreshMinimumDate();
+        window.addEventListener('focus', refreshMinimumDate);
+        return () => {
+            clearTimeout(midnightTimer);
+            window.removeEventListener('focus', refreshMinimumDate);
+        };
+    }, [isModalOpen, modalMode]);
     const categoryFieldRules = getCategoryFieldRules(formData.category);
     const normalizeCategoryLookup = (value) => String(value || '')
         .trim()
@@ -439,14 +500,14 @@ const ProductList = () => {
         );
 
         return <div>
-            <label className="mb-1 block text-[10px] font-semibold text-gray-500 dark:text-gray-400">Sold By {soldByIsRequired && <span className="text-red-400">*</span>}</label>
+            <label className="mb-1 block text-[10px] font-semibold text-gray-500 dark:text-gray-400">Selling Unit {soldByIsRequired && <span className="text-red-400">*</span>}</label>
             <select
                 value={formData.sellingUnit}
                 disabled={sellingUnitState !== 'available'}
                 onChange={(event) => {
                     const nextUnit = event.target.value;
                     if (preventUnsafeSellingUnitChange(nextUnit)) {
-                        setSellingUnitError('Sold By cannot be changed while this product has stock. Adjust inventory before changing its unit.');
+                        setSellingUnitError('Selling Unit cannot be changed while this product has stock. Adjust inventory before changing its unit.');
                         return;
                     }
                     setSellingUnitError('');
@@ -561,13 +622,15 @@ const ProductList = () => {
         }
     };
 
-    const openProductImagePreview = (product) => {
+    const openProductImagePreview = (product, singleImage = false, trigger = document.activeElement) => {
         const imageUrl = getProductImageUrl(product);
         if (!imageUrl) return;
+        productImagePreviewTriggerRef.current = trigger;
         setEnlargedProductImage({
             src: imageUrl,
-            alt: product.name || product.code || 'Product image',
+            alt: getProductDisplayName(product, customCategories),
             code: product?.code || imageUrl,
+            singleImage,
         });
     };
 
@@ -586,14 +649,20 @@ const ProductList = () => {
 
         setEnlargedProductImage({
             src: getProductImageUrl(nextProduct),
-            alt: nextProduct.name || nextProduct.code || 'Product image',
+            alt: getProductDisplayName(nextProduct, customCategories),
             code: nextProduct?.code || getProductImageUrl(nextProduct),
         });
     };
 
     const closeProductImagePreview = () => {
         setEnlargedProductImage(null);
+        productImagePreviewTriggerRef.current?.focus?.();
+        productImagePreviewTriggerRef.current = null;
     };
+
+    useEffect(() => {
+        if (enlargedProductImage) productImagePreviewCloseRef.current?.focus();
+    }, [enlargedProductImage]);
 
     // Cleanup legacy items whenever inventory changes (e.g. after remote refresh).
     useEffect(() => {
@@ -665,6 +734,21 @@ const ProductList = () => {
         });
     }, [scopedProductFamilies, debouncedSearchTerm, sortBy]);
 
+    const resetProductFilters = () => {
+        setSearchTerm('');
+        setCategoryFilter('All');
+        setStatusFilter('All');
+        setSortBy('off');
+        setIsFilterPanelOpen(false);
+    };
+    const hasProductFilters = Boolean(searchTerm.trim()) || categoryFilter !== 'All' || statusFilter !== 'All';
+    const productEmptyState = inventoryLoadError && inventory.length === 0
+        ? { title: 'Products unavailable', description: 'Products could not be loaded. Please try again.', actionLabel: 'Retry', onAction: retryInventory }
+        : hasProductFilters
+            ? { title: 'No matching results', description: 'Try a different search or filter.', actionLabel: 'Clear Filters', onAction: resetProductFilters }
+            : { title: 'No products yet', description: 'Add your first product to get started.', actionLabel: isAdminOrAbove() ? 'Add Product' : '', onAction: isAdminOrAbove() ? () => handleOpenAdd() : null,
+                actionIcon: isAdminOrAbove() ? <svg className="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4" /></svg> : null };
+
     const managedFamily = useMemo(
         () => allProductFamilies.find((family) => family.key === managedFamilyKey) || null,
         [allProductFamilies, managedFamilyKey]
@@ -684,13 +768,13 @@ const ProductList = () => {
                 return;
             }
 
-            if (event.key === 'ArrowLeft') {
+            if (!enlargedProductImage.singleImage && event.key === 'ArrowLeft') {
                 event.preventDefault();
                 navigateProductImagePreview(-1);
                 return;
             }
 
-            if (event.key === 'ArrowRight') {
+            if (!enlargedProductImage.singleImage && event.key === 'ArrowRight') {
                 event.preventDefault();
                 navigateProductImagePreview(1);
             }
@@ -708,7 +792,7 @@ const ProductList = () => {
 
         const results = inventory
             .filter((item) => {
-                const name = String(item?.name || '').toLowerCase();
+                const name = getProductDisplayName(item, customCategories).toLowerCase();
                 const code = String(item?.code || '').toLowerCase();
                 const brand = String(item?.brand || '').toLowerCase();
                 const category = String(item?.category || '').toLowerCase();
@@ -723,7 +807,7 @@ const ProductList = () => {
                 );
             })
             .map((item) => {
-                const name = String(item?.name || '');
+                const name = getProductDisplayName(item, customCategories);
                 const code = String(item?.code || '');
                 const brand = String(item?.brand || '');
                 const category = String(item?.category || '');
@@ -768,7 +852,7 @@ const ProductList = () => {
             .slice(0, 8);
 
         return results;
-    }, [inventory, searchTerm]);
+    }, [customCategories, inventory, searchTerm]);
 
     const handleSearchSuggestionSelect = (suggestion) => {
         setSearchTerm(suggestion.queryValue);
@@ -847,6 +931,8 @@ const ProductList = () => {
                 combinedSize !== (editingProduct.size || '') ||
                 String(formData.sellingUnit || '').trim().toLowerCase() !== String(editingProduct.sellingUnit || '').trim().toLowerCase() ||
                 parseFloat(formData.price) !== editingProduct.price ||
+                !purchaseCostMatches(formData.purchaseCost, editingProduct.purchaseCost) ||
+                Boolean(formData.expiryTrackingEnabled) !== (editingProduct.expiryTrackingEnabled === true) ||
                 stockVal !== editingProduct.stock ||
                 (formData.supplier || '') !== (editingProduct.supplier || '') ||
                 JSON.stringify(formData.attributes || {}) !== JSON.stringify(productAttributeValues(editingProduct, attributeDefinitions))
@@ -902,7 +988,7 @@ const ProductList = () => {
         setEditingProduct(null);
         setFormData({
             ...initialFormState,
-            name: family.name,
+            name: family.storedName,
             category: family.categoryName,
             imageUrl: family.sharedImageUrl,
             supplier: family.sharedSupplier,
@@ -933,8 +1019,14 @@ const ProductList = () => {
             size: parsed.value,
             sizeUnit: parsed.unit,
             price: product.price,
+            purchaseCost: hasRecordedPurchaseCost(product.purchaseCost) ? String(product.purchaseCost) : '',
             stock: product.stock,
             sellingUnit: product.sellingUnit || '',
+            expiryTrackingEnabled: product.expiryTrackingEnabled === true,
+            originalExpiryTrackingEnabled: product.expiryTrackingEnabled === true,
+            expiryTrackingDisableReason: '',
+            expiryBatchReconciled: product.expiryBatchReconciled === true,
+            reservedStock: Number(product.reservedStock || 0),
             supplier: product.supplier || '',
             attributes: productAttributeValues(product, definitions),
         });
@@ -982,15 +1074,25 @@ const ProductList = () => {
         }
 
         const rules = getCategoryFieldRules(formData.category);
-        const attributeError = validateAttributeValues(attributeDefinitions, formData.attributes);
+        const normalizedAttributeValues = normalizeProductAttributeValues(attributeDefinitions, formData.attributes);
+        const attributeError = validateAttributeValues(attributeDefinitions, normalizedAttributeValues);
         if (attributeError) {
+            setFirstInvalidFieldError(e.currentTarget, attributeError);
             showToast('Missing Fields', attributeError, 'error', 'product-validation');
             return;
         }
-        const legacyAttributes = legacyValuesFromAttributes(attributeDefinitions, formData.attributes);
-        const normalizedBrand = normalizeHumanReadable(legacyAttributes.brand);
-        const normalizedColor = normalizeHumanReadable(legacyAttributes.color);
+        const legacyAttributes = legacyValuesFromAttributes(attributeDefinitions, normalizedAttributeValues);
+        const normalizedBrand = normalizeProductText(legacyAttributes.brand);
+        const normalizedColor = normalizeProductText(legacyAttributes.color);
         const normalizedSupplier = (rules.showSupplier || modalMode === 'edit') ? String(formData.supplier || '').trim() : '';
+        const expiryTrackingIsBeingDisabled = modalMode === 'edit'
+            && editingProduct?.expiryTrackingEnabled === true
+            && formData.expiryTrackingEnabled === false;
+        if (expiryTrackingIsBeingDisabled && !String(formData.expiryTrackingDisableReason || '').trim()) {
+            setFormValidationErrors(e.currentTarget, { expiryTrackingDisableReason: 'Enter a reason before turning off Expiry Tracking.' });
+            showToast('Reason Required', 'Add a reason before turning off Expiry Tracking.', 'warning', 'product-expiry-tracking-reason');
+            return;
+        }
         const supplierExists = supplierPartnerNames.some(
             (name) => name.toLowerCase() === normalizedSupplier.toLowerCase()
         );
@@ -1000,21 +1102,49 @@ const ProductList = () => {
             && normalizedSupplier.toLowerCase() === existingSupplier.toLowerCase();
         const combinedSize = legacyAttributes.size;
         const normalizedPrice = formatMoneyInput(formData.price);
+        const normalizedPurchaseCost = String(formData.purchaseCost ?? '').trim() === '' ? '' : formatMoneyInput(formData.purchaseCost);
         
         // Basic Validation
         const normalizedSku = String(formData.code || '').trim().toUpperCase();
-        if ((!normalizedSku && modalMode === 'edit') || !formData.name || String(formData.price ?? '').trim() === '') {
+        if ((!normalizedSku && modalMode === 'edit') || String(formData.price ?? '').trim() === '') {
+            setFormValidationErrors(e.currentTarget, normalizedSku ? { price: 'Enter a selling price.' } : { code: 'Enter the SKU.' });
             showToast("Missing Fields", "Please fill in all required fields.", "error", "product-validation");
             return;
         }
 
         if (!isMoneyInput(normalizedPrice)) {
+            setFormValidationErrors(e.currentTarget, { price: isMoneyInputTooLarge(normalizedPrice) ? 'Amount is too large. Please enter a smaller value.' : 'Enter a valid non-negative price with up to 2 decimal places.' });
             showToast('Invalid Price', isMoneyInputTooLarge(normalizedPrice) ? 'Amount is too large. Please enter a smaller value.' : 'Price must be a non-negative number with up to 2 decimal places.', 'error', 'product-validation');
             return;
         }
 
+        if (modalMode === 'add' && !normalizedPurchaseCost) {
+            setFormValidationErrors(e.currentTarget, { purchaseCost: 'Enter a non-negative purchase cost.' });
+            showToast('Purchase Cost Required', 'Enter a non-negative purchase cost for this product.', 'error', 'product-validation');
+            return;
+        }
+
+        if (normalizedPurchaseCost && !isMoneyInput(normalizedPurchaseCost)) {
+            setFormValidationErrors(e.currentTarget, { purchaseCost: isMoneyInputTooLarge(normalizedPurchaseCost) ? 'Amount is too large. Please enter a smaller value.' : 'Enter a valid non-negative purchase cost.' });
+            showToast('Invalid Purchase Cost', isMoneyInputTooLarge(normalizedPurchaseCost) ? 'Amount is too large. Please enter a smaller value.' : 'Purchase cost must be a non-negative number with up to 2 decimal places.', 'error', 'product-validation');
+            return;
+        }
+
         if (modalMode === 'add' && !isWholeNumberInput(formData.stock)) {
+            setFormValidationErrors(e.currentTarget, { stock: 'Enter a non-negative whole number for initial stock.' });
             showToast('Invalid Stock', 'Initial stock must be a non-negative whole number.', 'error', 'product-validation');
+            return;
+        }
+
+        const hasPositiveInitialStock = Number(formData.stock) > 0;
+        if (modalMode === 'add' && formData.expiryTrackingEnabled && hasPositiveInitialStock && !formData.initialExpiryDate) {
+            setFormValidationErrors(e.currentTarget, { initialExpiryDate: 'Enter an expiry date for the initial stock batch.' });
+            showToast('Expiry Date Required', 'Enter an expiry date for the initial stock batch.', 'error', 'product-validation');
+            return;
+        }
+        if (modalMode === 'add' && formData.expiryTrackingEnabled && hasPositiveInitialStock && !isFutureExpiryDate(formData.initialExpiryDate)) {
+            setFormValidationErrors(e.currentTarget, { initialExpiryDate: 'Expiry date must be later than today.' });
+            showToast('Invalid Expiry Date', 'Expiry date must be later than today.', 'error', 'product-validation');
             return;
         }
 
@@ -1027,13 +1157,16 @@ const ProductList = () => {
                 available: 'Please select a selling unit.',
             };
             if (sellingUnitState !== 'available' || !hasConfiguredSellingUnit) {
-                setSellingUnitError(sellingUnitMessages[sellingUnitState] || sellingUnitMessages.available);
-                showToast('Selling Unit Required', sellingUnitMessages[sellingUnitState] || sellingUnitMessages.available, 'error', 'product-validation');
+                const message = sellingUnitMessages[sellingUnitState] || sellingUnitMessages.available;
+                setSellingUnitError(message);
+                setFormValidationErrors(e.currentTarget, { sellingUnit: message });
+                showToast('Selling Unit Required', message, 'error', 'product-validation');
                 return;
             }
         }
 
         if (rules.showSupplier && normalizedSupplier && !supplierExists && !isUnchangedLegacySupplier) {
+                setFormValidationErrors(e.currentTarget, { supplier: 'Select a registered supplier from Supplier Partners.' });
                 showToast('Invalid Supplier', 'Supplier must be selected from Supplier Partners.', 'error', 'product-validation');
                 return;
         }
@@ -1046,6 +1179,10 @@ const ProductList = () => {
             if (modalMode === 'add') {
             let stockVal = Number(formData.stock);
             if (stockVal > maxStockLimit) {
+                if (formData.expiryTrackingEnabled) {
+                    showToast('Stock Limit', `Initial stock exceeds the configured maximum (${maxStockLimit}). Update the quantity or stock limit before saving.`, 'error', 'stock-cap');
+                    return;
+                }
                 showToast('Stock Limit', `Initial stock capped to max (${maxStockLimit}).`, 'warning', 'stock-cap');
                 stockVal = maxStockLimit;
             }
@@ -1059,7 +1196,7 @@ const ProductList = () => {
             // Or I can update `calculateStatus` to look at settings.stockRules if available.
             
             const normalized = normalizeProductNameAndSize(formData.name, formData.category, combinedSize);
-            const cleanedName = normalizeHumanReadable(normalized.name);
+            const cleanedName = normalizeProductText(normalized.name);
             const finalSize = combinedSize || normalized.size || '';
             const newProduct = {
                 ...formData,
@@ -1070,9 +1207,16 @@ const ProductList = () => {
                 imageUrl: String(formData.imageUrl || '').trim(),
                 size: finalSize,
                 price: Number(normalizedPrice),
+                purchaseCost: Number(normalizedPurchaseCost),
                 stock: stockVal,
+                ...(formData.expiryTrackingEnabled && stockVal > 0 ? {
+                    initialStockBatch: {
+                        expiryDate: formData.initialExpiryDate,
+                        lotNumber: formData.initialBatchLotNumber.trim(),
+                    },
+                } : {}),
                 supplier: normalizedSupplier,
-                attributes: formData.attributes,
+                attributes: normalizedAttributeValues,
                 clientRequestId: productCreateRequestIdRef.current || (productCreateRequestIdRef.current = createClientRequestId('product')),
             };
             newProduct.status = deriveStatus(newProduct);
@@ -1095,13 +1239,14 @@ const ProductList = () => {
             }
 
             setInventory(prev => [...prev, productToInsert]);
-            log('CREATE', productToInsert.code, `Created new product: ${newProduct.name}`);
-            logActivity(currentUserName, 'Created Product', `${productToInsert.code} - ${newProduct.name}`);
-            showToast("Product Created", `${newProduct.name} has been added.`, "success", "product-action");
+            const productLabel = getProductDisplayName(productToInsert, customCategories);
+            log('CREATE', productToInsert.code, `Created new product: ${productLabel}`);
+            logActivity(currentUserName, 'Created Product', `${productToInsert.code} - ${productLabel}`);
+            showToast("Product Created", `${productLabel} has been added.`, "success", "product-action");
         } else {
             // Update Logic
             const normalized = normalizeProductNameAndSize(formData.name, formData.category, combinedSize);
-            const cleanedName = normalizeHumanReadable(normalized.name);
+            const cleanedName = normalizeProductText(normalized.name);
             const finalSize = combinedSize || normalized.size || '';
             // Check for changes
             const hasChanges = 
@@ -1114,15 +1259,18 @@ const ProductList = () => {
                 (finalSize || '') !== (editingProduct.size || '') ||
                 String(formData.sellingUnit || '').trim().toLowerCase() !== String(editingProduct.sellingUnit || '').trim().toLowerCase() ||
                 parseFloat(formData.price) !== editingProduct.price ||
+                !purchaseCostMatches(formData.purchaseCost, editingProduct.purchaseCost) ||
+                Boolean(formData.expiryTrackingEnabled) !== (editingProduct.expiryTrackingEnabled === true) ||
                 normalizedSupplier !== (editingProduct.supplier || '');
-            const attributesChanged = JSON.stringify(formData.attributes || {}) !== JSON.stringify(productAttributeValues(editingProduct, attributeDefinitions));
+            const attributesChanged = JSON.stringify(normalizedAttributeValues) !== JSON.stringify(productAttributeValues(editingProduct, attributeDefinitions));
 
             if (!hasChanges && !attributesChanged) {
                handleCloseProductForm();
                return; 
             }
 
-            const { sizeUnit: _su, ...saveData } = formData;
+            const purchaseCostChanged = !purchaseCostMatches(formData.purchaseCost, editingProduct.purchaseCost);
+            const { sizeUnit: _su, purchaseCost: _purchaseCost, ...saveData } = formData;
             const localUpdatedProduct = {
                 ...editingProduct,
                 ...saveData,
@@ -1133,9 +1281,10 @@ const ProductList = () => {
                 imageUrl: String(formData.imageUrl || '').trim(),
                 size: finalSize,
                 price: Number(normalizedPrice),
+                ...(purchaseCostChanged ? { purchaseCost: normalizedPurchaseCost === '' ? null : Number(normalizedPurchaseCost) } : {}),
                 stock: editingProduct.stock,
                 supplier: normalizedSupplier,
-                attributes: formData.attributes,
+                attributes: normalizedAttributeValues,
             };
             localUpdatedProduct.status = deriveStatus(localUpdatedProduct);
 
@@ -1148,12 +1297,15 @@ const ProductList = () => {
             try {
                 mergedUpdatedProduct = await updateProductApi(editingProduct.id, localUpdatedProduct, {
                     expectedUpdatedAt: editingProduct.updatedAt,
+                    ...(expiryTrackingIsBeingDisabled
+                        ? { expiryTrackingDisableReason: formData.expiryTrackingDisableReason }
+                        : {}),
                 });
             } catch (error) {
                 if (Number(error?.status || 0) === 409) {
                     if (/Sold By cannot be changed/i.test(error.message || '')) {
-                        setSellingUnitError(error.message);
-                        showToast('Sold By Cannot Change', error.message, 'error', 'product-selling-unit');
+                        setSellingUnitError(error.message.replace(/Sold By/g, 'Selling Unit'));
+                        showToast('Selling Unit Cannot Change', error.message.replace(/Sold By/g, 'Selling Unit'), 'error', 'product-selling-unit');
                         return;
                     }
                     if (/SKU already exists/i.test(error.message || '')) {
@@ -1164,7 +1316,16 @@ const ProductList = () => {
                         showToast('Duplicate Product Configuration', error.message, 'error', 'product-duplicate');
                         return;
                     }
-                    showToast('Conflict Detected', 'This product was edited in another session. Data was refreshed.', 'warning', 'product-conflict');
+                    if (/expiry tracking|expiry batch|batch reconciliation|reserved stock/i.test(error.message || '')) {
+                        showToast('Expiry Tracking Not Changed', error.message, 'warning', 'product-expiry-tracking');
+                        return;
+                    }
+                    const serverMessage = String(error?.message || '').trim();
+                    const message = [
+                        serverMessage || 'The product could not be saved because its current data changed.',
+                        'Your unsaved values remain in this form. Close and reopen the variant to review the latest data before retrying.',
+                    ].join(' ');
+                    showToast('Product Not Saved', message, 'warning', 'product-conflict');
                     try {
                         const remoteProducts = await listProductsApi();
                         if (Array.isArray(remoteProducts)) {
@@ -1173,7 +1334,6 @@ const ProductList = () => {
                     } catch {
                         // Keep current UI state if refresh fails.
                     }
-                    handleCloseProductForm();
                     return;
                 }
                 showToast(
@@ -1191,14 +1351,18 @@ const ProductList = () => {
                     : item
             ));
             if (variantFamilyKey) {
-                familyKeyAfterSave = getProductFamilyKey({
-                    category: mergedUpdatedProduct.category,
-                    name: mergedUpdatedProduct.name,
-                });
+                familyKeyAfterSave = getProductFamilyKey(mergedUpdatedProduct, customCategories);
             }
             log('UPDATE', editingProduct.code, `Updated product details`);
-            logActivity(currentUserName, 'Updated Product', `${editingProduct.code} - ${editingProduct.name}`);
-            showToast("Product Updated", "Product details have been saved.", "success", "product-action");
+            logActivity(currentUserName, 'Updated Product', `${editingProduct.code} - ${getProductDisplayName(mergedUpdatedProduct, customCategories)}`);
+            const newlyEnabledWithExistingStock = !editingProduct.expiryTrackingEnabled
+                && formData.expiryTrackingEnabled
+                && (Number(editingProduct.stock || 0) > 0 || Number(editingProduct.reservedStock || 0) > 0);
+            if (newlyEnabledWithExistingStock) {
+                showToast('Batch Verification Needed', 'Existing stock was not assigned to batches. Verify batches in Inventory before using expiry-based stock selection.', 'warning', 'product-expiry-reconciliation');
+            } else {
+                showToast("Product Updated", "Product details have been saved.", "success", "product-action");
+            }
         }
         handleCloseProductForm(familyKeyAfterSave);
         productCreateRequestIdRef.current = '';
@@ -1209,7 +1373,27 @@ const ProductList = () => {
     };
 
     // Soft Delete / Archive Logic (Modified to use Modal)
-    const toggleArchive = (item) => {
+    const archiveInventoryMessage = (item) => {
+        const stock = Number(item?.stock);
+        const reservedStock = Number(item?.reservedStock || 0);
+        const unit = String(item?.sellingUnit || 'unit');
+        const quantity = Number.isFinite(stock) ? stock : 'unknown';
+        const reservationNote = reservedStock > 0
+            ? ` ${reservedStock} ${unit} remain reserved or allocated.`
+            : '';
+        return `This item still has ${quantity} ${unit} in stock.${reservationNote} Stock must be zero before archiving.`;
+    };
+
+    const toggleArchive = (item, { isVariant = false } = {}) => {
+        if (!item?.isArchived && (Number(item?.stock) !== 0 || Number(item?.reservedStock || 0) !== 0)) {
+            showToast(
+                isVariant ? 'Cannot Archive Variant' : 'Cannot Archive Product',
+                archiveInventoryMessage(item),
+                'warning',
+                'product-archive-stock'
+            );
+            return;
+        }
         setProductToArchive(item);
         setIsArchiveModalOpen(true);
     };
@@ -1241,12 +1425,14 @@ const ProductList = () => {
             setInventory((previous) => previous.map((product) => (
                 product.id === item.id ? updatedProduct : product
             )));
-            showToast(item.isArchived ? 'Product Restored' : 'Product Archived', `${item.name} has been ${item.isArchived ? 'restored' : 'archived'}.`, 'success', 'product-archive');
+            showToast(item.isArchived ? 'Product Restored' : 'Product Archived', `${getProductDisplayName(item, customCategories)} has been ${item.isArchived ? 'restored' : 'archived'}.`, 'success', 'product-archive');
 
             setIsArchiveModalOpen(false);
             setProductToArchive(null);
         } catch (error) {
-            if (Number(error?.status || 0) === 409) {
+            if (Number(error?.status || 0) === 409 && /stock|reserv|sku/i.test(String(error?.message || ''))) {
+                showToast('Cannot Archive Variant', error.message, 'warning', 'product-archive-stock');
+            } else if (Number(error?.status || 0) === 409) {
                 showToast('Conflict Detected', 'This product was updated in another session. Please refresh and try again.', 'warning', 'product-conflict');
             } else {
                 showToast(
@@ -1256,6 +1442,61 @@ const ProductList = () => {
                     'product-archive'
                 );
             }
+        } finally {
+            productArchiveInFlightRef.current = false;
+            setIsArchiveSubmitting(false);
+        }
+    };
+
+    const archiveSelectedVariants = async (family, variants) => {
+        if (productArchiveInFlightRef.current) return false;
+        if (!navigator.onLine) {
+            showToast("You're Offline", 'This action requires an internet connection.', 'warning', 'product-offline');
+            return false;
+        }
+        const familyId = family?.representative?.id;
+        const selectedVariants = Array.isArray(variants) ? variants : [];
+        const selectedIds = selectedVariants.map((variant) => String(variant?.id || '')).filter(Boolean);
+        const selectedSkus = selectedVariants.map((variant) => String(variant?.code || variant?.id || 'Unknown SKU'));
+        if (!familyId || selectedIds.length === 0 || selectedIds.length !== selectedVariants.length) {
+            showToast('Unable to Archive Variants', 'One or more selected variants could not be identified. Refresh the product family and try again.', 'error', 'product-archive');
+            return false;
+        }
+
+        productArchiveInFlightRef.current = true;
+        setIsArchiveSubmitting(true);
+        try {
+            const result = await archiveSelectedProductVariantsApi(familyId, selectedIds);
+            const updatedById = new Map(result.products.map((product) => [product.id, product]));
+            setInventory((previous) => previous.map((product) => updatedById.get(product.id) || product));
+
+            if (result.archivedSkus.length > 0) {
+                showToast(
+                    'Variants Archived',
+                    `${result.archivedSkus.length} selected variant${result.archivedSkus.length === 1 ? ' was' : 's were'} archived: ${result.archivedSkus.join(', ')}.`,
+                    'success',
+                    'product-archive'
+                );
+            } else {
+                showToast('Already Archived', 'The selected variants were already archived. Product status has been refreshed.', 'info', 'product-archive');
+            }
+            return true;
+        } catch (error) {
+            const notArchivedMessage = `Selected variants not archived: ${selectedSkus.join(', ')}.`;
+            const message = `${error.message || 'The selected variants could not be archived.'} ${notArchivedMessage}`;
+            if (Number(error?.status || 0) === 409) {
+                showToast('Unable to Archive Selected Variants', message, 'warning', 'product-archive-stock');
+            } else {
+                showToast(
+                    isApiConnectionFailure(error) ? 'Cannot reach API server.' : 'Unable to Archive Selected Variants',
+                    isApiConnectionFailure(error)
+                        ? `The archive result could not be confirmed for ${selectedSkus.join(', ')}. Refresh the product family before retrying.`
+                        : message,
+                    'error',
+                    'product-archive'
+                );
+            }
+            return false;
         } finally {
             productArchiveInFlightRef.current = false;
             setIsArchiveSubmitting(false);
@@ -1276,14 +1517,14 @@ const ProductList = () => {
         <div className="h-auto md:h-[calc(100vh-80px)] flex flex-col gap-2 md:overflow-hidden">
 
              {/* Unified Product List Container */}
-             <div className="flex flex-col bg-slate-200/50 rounded-2xl shadow-inner border border-slate-300 md:overflow-hidden p-4 gap-4 md:flex-1 h-auto">
+             <div className="flex flex-col bg-slate-200/50 rounded-2xl shadow-inner border border-slate-300 md:overflow-hidden p-2 md:p-4 gap-4 md:flex-1 h-auto">
                  
                  {/* Header Section */}
                  <div className="flex items-center justify-between md:shrink-0">
                     <div>
                         <div>
                             <p className="text-3xl md:text-4xl font-semibold tracking-tight text-gray-900 leading-tight">Product Master List</p>
-                            <p className="text-gray-500 dark:text-gray-400 text-[11px] md:text-xs font-medium mt-0.5">Manage catalog, prices, and stock levels</p>
+                            <p className="text-gray-500 dark:text-gray-400 text-[11px] md:text-xs font-medium mt-0.5">Manage catalog, prices, categories, and variants</p>
                         </div>
                     </div>
                  </div>
@@ -1334,9 +1575,9 @@ const ProductList = () => {
             {/* Main Content Area */}
             <div className="flex-1 flex flex-col md:overflow-hidden transition-colors bg-transparent pt-1">
                 {/* Utilities Bar */}
-                <div className="px-3 pb-3 flex flex-col sm:flex-row justify-between items-center gap-3 bg-transparent">
-                    <div className="flex items-center gap-2 w-full sm:w-auto">
-                        <div ref={searchContainerRef} className="main-toolbar-search group">
+                <div className="px-0 pb-3 flex flex-col items-start gap-3 bg-transparent md:flex-row md:items-center md:justify-between md:px-3">
+                    <div className="flex w-full flex-col items-start gap-2 md:w-auto md:flex-row md:items-center">
+                        <div ref={searchContainerRef} className="main-toolbar-search group w-full max-w-none md:w-auto md:max-w-[27.5rem]">
                              <input 
                                 type="text" 
                                 placeholder="Search products..." 
@@ -1389,32 +1630,39 @@ const ProductList = () => {
                         </div>
                         
                         {/* Filter & Sort Panel */}
-                        <div className="relative z-20 ml-2 sm:ml-2 inline-flex items-center gap-3">
+                        <div className="relative z-20 ml-0 inline-flex self-start items-center gap-3 md:ml-2">
                             <button 
                                 onClick={() => setIsFilterPanelOpen(!isFilterPanelOpen)}
-                                className="shrink-0 whitespace-nowrap px-2.5 py-1.5 rounded-xl font-medium text-xs shadow-sm flex items-center gap-1.5 transition-all border-2 bg-gray-900 dark:bg-gray-600 text-white border-gray-900 dark:border-gray-500 hover:opacity-90"
+                                className="inline-flex h-[37px] shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border border-gray-800 bg-gray-900 px-2 py-1.5 text-left text-xs font-medium text-white shadow-sm transition-all hover:bg-gray-800 dark:border-gray-500 dark:bg-gray-600"
                             >
                                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"></path></svg>
                                 <span>Filter & Sort</span>
-                                <svg className={`w-3 h-3 transition-transform ${isFilterPanelOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
+                                <svg className={`h-3.5 w-3.5 shrink-0 transition-transform ${isFilterPanelOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
                             </button>
 
                             {/* Category select (adjacent to Filter & Sort) */}
                             <div className="hidden sm:inline-flex items-center">
-                                <select
+                                <ToolbarDropdown
                                     value={categoryFilter}
-                                    onChange={(e) => setCategoryFilter(e.target.value)}
-                                    className="appearance-none px-2.5 py-1.5 rounded-xl text-xs font-medium inline-flex items-center transition-all border-2 bg-gray-900 dark:bg-gray-600 text-white border-gray-900 dark:border-gray-500 hover:opacity-90"
-                                >
-                                    {categoryFilterOptions.map(c => (
-                                        <option key={c} value={c}>{c}</option>
-                                    ))}
-                                </select>
+                                    onChange={setCategoryFilter}
+                                    options={categoryFilterOptions.map((category) => ({
+                                        value: category,
+                                        label: category === 'All' ? 'All Categories' : category,
+                                    }))}
+                                    ariaLabel="Filter products by category"
+                                    className="w-fit max-w-full"
+                                    menuClassName="w-max min-w-[min(16rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] max-h-[min(50vh,20rem)] overflow-y-auto pr-3 [scrollbar-gutter:stable]"
+                                    compact
+                                    portalMenu
+                                    fitSelectedValue
+                                    softForeground
+                                    focusVisibleRing
+                                />
                             </div>
 
                             {/* Combined Filter & Sort Panel */}
                             {isFilterPanelOpen && (
-                                <div className="absolute top-full mt-2 w-72 bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-100 dark:border-gray-700 py-2 z-50 left-0 animate-in fade-in slide-in-from-top-2 duration-200 max-h-[70vh] overflow-y-auto">
+                                <div className="absolute top-full left-0 mt-2 w-72 max-w-[calc(100vw-1rem)] bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-100 dark:border-gray-700 py-2 z-50 animate-in fade-in slide-in-from-top-2 duration-200 max-h-[min(70vh,28rem)] overflow-y-auto">
                                     
                                     {/* Archive view */}
                                     <div className="px-3 pt-2 pb-1">
@@ -1487,7 +1735,7 @@ const ProductList = () => {
                     {isAdminOrAbove() && (
                     <button 
                         onClick={handleOpenAdd}
-                        className="w-full sm:w-auto px-3 py-1.5 rounded-lg text-white font-semibold text-xs shadow-md flex items-center justify-center gap-1.5 transition-all hover:opacity-90 transform hover:-translate-y-0.5"
+                        className="product-list-add-action w-fit self-end px-3 py-1.5 rounded-lg text-white font-semibold text-xs shadow-md flex items-center justify-center gap-1.5 transition-all hover:opacity-90 transform hover:-translate-y-0.5 md:self-auto"
                         style={{ backgroundColor: '#111827', border: '2px solid #111827' }}
                     >
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"></path></svg>
@@ -1502,7 +1750,42 @@ const ProductList = () => {
                 )}
 
                  {/* Data Table */}
-                <div ref={listContainerRef} className="w-full md:flex-1 md:overflow-y-auto px-1 md:px-3 pb-3 overflow-x-auto">
+                <div ref={listContainerRef} className="w-full md:flex-1 md:overflow-y-auto px-0 md:px-3 pb-3 overflow-x-hidden md:overflow-x-auto">
+                    <div className="flex flex-col gap-3 md:hidden" aria-label="Product Master List mobile records">
+                        {isInventoryLoading ? (
+                            Array.from({ length: 4 }).map((_, index) => <div key={`products-mobile-skeleton-${index}`} className="h-36 animate-pulse rounded-xl border border-slate-200 bg-white" />)
+                        ) : filteredProductFamilies.length === 0 ? (
+                            <div className="rounded-xl border border-slate-200 bg-white text-sm text-slate-500"><ContextualEmptyState {...productEmptyState} /></div>
+                        ) : paginatedProductFamilies.map((family) => {
+                            const isArchivedFamily = family.activeCount === 0;
+                            const skuList = family.variants.map((variant) => String(variant.code || '').trim()).filter(Boolean).join(', ');
+                            const brands = [...new Set(family.variants.map((variant) => String(variant.brand || '').trim()).filter(Boolean))].join(', ');
+                            const units = [...new Set(family.variants.map((variant) => String(variant.sellingUnit || '').trim()).filter(Boolean))].join(', ');
+                            const attributeSummary = getProductFamilyAttributeSummary(family, 3)
+                                .filter((attribute) => !/^brand\s*:/i.test(attribute))
+                                .join(' · ');
+                            return (
+                                <article key={`mobile-${family.key}`} className={`app-dashboard-card-hover rounded-xl border border-slate-200 bg-white p-3 shadow-sm ${isArchivedFamily ? 'opacity-70' : ''}`}>
+                                    <div className="flex min-w-0 items-start justify-between gap-3">
+                                        <div className="min-w-0">
+                                            <h3 className={`break-words text-sm font-semibold leading-5 ${isArchivedFamily ? 'text-slate-500 line-through' : 'text-slate-900'}`}>{family.name}</h3>
+                                            {skuList && <p className="mt-0.5 break-all text-xs text-slate-500">SKU{family.variants.length === 1 ? '' : 's'}: {skuList}</p>}
+                                        </div>
+                                        {isArchivedFamily && <span className="shrink-0 rounded-full border border-slate-200 bg-slate-100 px-2 py-1 text-[10px] font-semibold text-slate-600">Archived</span>}
+                                    </div>
+                                    <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 border-t border-slate-100 pt-3">
+                                        {family.categoryName && <div className="min-w-0"><dt className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Category</dt><dd className="mt-0.5 break-words text-xs text-slate-800">{family.categoryName}</dd></div>}
+                                        {brands && <div className="min-w-0"><dt className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Brand</dt><dd className="mt-0.5 break-words text-xs text-slate-800">{brands}</dd></div>}
+                                        {attributeSummary && <div className="col-span-2 min-w-0"><dt className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Variant</dt><dd className="mt-0.5 break-words text-xs text-slate-700">{attributeSummary}</dd></div>}
+                                        <div className="min-w-0"><dt className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Selling Price</dt><dd className="mt-0.5 break-words text-xs font-semibold tabular-nums text-slate-900">{formatMoney(family.minPrice)}{family.minPrice !== family.maxPrice ? ` – ${formatMoney(family.maxPrice)}` : ''}</dd></div>
+                                        {units && <div className="min-w-0"><dt className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Selling Unit</dt><dd className="mt-0.5 break-words text-xs text-slate-800">{units}</dd></div>}
+                                    </dl>
+                                    {isAdminOrAbove() && <div className="mt-3 flex flex-wrap gap-2 border-t border-slate-100 pt-3"><TableActionButton onClick={() => handleOpenFamily(family)} tooltipDisabled={isFamilyModalOpen} dismissTooltipOnClick className="inline-flex min-h-9 w-fit items-center justify-center gap-1.5 rounded-lg border border-slate-900 bg-slate-900 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:border-slate-700 hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 motion-reduce:transition-none" label="Manage Variants" aria-label={`Manage variants for ${family.name}`}><EditIcon /><span className="whitespace-nowrap">Manage Variants</span></TableActionButton></div>}
+                                </article>
+                            );
+                        })}
+                    </div>
+                    <div className="hidden md:block">
                     <table className="main-data-table w-full text-center border-separate border-spacing-0 table-fixed min-w-225 lg:min-w-250">
                         <colgroup>
                             <col className={isAdminOrAbove() ? 'w-[9%]' : 'w-[10%]'} />
@@ -1511,8 +1794,7 @@ const ProductList = () => {
                             <col className={isAdminOrAbove() ? 'w-[11%]' : 'w-[12%]'} />
                             <col className={isAdminOrAbove() ? 'w-[17%]' : 'w-[18%]'} />
                             <col className={isAdminOrAbove() ? 'w-[17%]' : 'w-[19%]'} />
-                            <col className="w-[10%]" />
-                            {isAdminOrAbove() && <col className="w-[7%]" />}
+                            {isAdminOrAbove() && <col className="w-[13%]" />}
                         </colgroup>
                         <thead className="sticky top-0 z-10 shadow-sm">
                             <tr className="bg-gray-900 dark:bg-gray-700 text-white uppercase tracking-wider">
@@ -1521,8 +1803,7 @@ const ProductList = () => {
                                 <th className="px-3 py-2 text-[11px] font-semibold text-center border border-gray-700">Product</th>
                                 <th className="px-3 py-2 text-[11px] font-semibold text-center border border-gray-700">Variants</th>
                                 <th className="px-3 py-2 text-[11px] font-semibold text-center border border-gray-700">Category</th>
-                                <th className="px-3 py-2 text-[11px] font-semibold text-center border border-gray-700">Price</th>
-                                <th className="px-3 py-2 text-[11px] font-semibold text-center border border-gray-700">Stock</th>
+                                <th className="px-3 py-2 text-[11px] font-semibold text-right border border-gray-700">Price</th>
                                 {isAdminOrAbove() && <th className="px-3 py-2 text-[11px] font-semibold text-center border border-gray-700">Actions</th>}
                             </tr>
                         </thead>
@@ -1530,16 +1811,11 @@ const ProductList = () => {
                             {isInventoryLoading ? (
                                 <TableSkeletonRows
                                     rowKeyPrefix="products-skeleton"
-                                    columnTypes={[...Array(7).fill('text'), ...(isAdminOrAbove() ? ['actions'] : [])]}
+                                    columnTypes={[...Array(6).fill('text'), ...(isAdminOrAbove() ? ['actions'] : [])]}
                                 />
                             ) : filteredProductFamilies.length === 0 ? (
                                 <tr>
-                                    <td colSpan={isAdminOrAbove() ? "8" : "7"} className="px-6 py-12 text-center text-gray-400 dark:text-gray-500">
-                                        <div className="flex flex-col items-center justify-center">
-                                            <svg className="w-12 h-12 mb-3 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293H9.414a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 005.586 13H4"></path></svg>
-                                            <p className="text-sm font-medium">No products found.</p>
-                                        </div>
-                                    </td>
+                                    <td colSpan={isAdminOrAbove() ? "7" : "6"} className="px-2 py-2 text-center"><ContextualEmptyState {...productEmptyState} /></td>
                                 </tr>
                             ) : (
                                 paginatedProductFamilies.map((family) => {
@@ -1563,16 +1839,16 @@ const ProductList = () => {
                                                 <button
                                                     type="button"
                                                     onClick={() => openProductImagePreview(family.imageProduct)}
-                                                    className={`group/photo mx-auto relative h-12 w-12 rounded-xl overflow-hidden border flex items-center justify-center transition-transform duration-150 hover:scale-105 focus:outline-none focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-300 ${
+                                                    className={`group/photo mx-auto relative h-12 w-12 rounded-xl overflow-hidden border flex items-center justify-center transition-all hover:opacity-90 hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-300 ${
                                                         isArchivedFamily
                                                             ? 'bg-gray-50 border-gray-100 dark:bg-gray-800 dark:border-gray-700'
                                                             : 'bg-gray-100 border-gray-200 dark:bg-gray-700 dark:border-gray-600'
                                                     }`}
-                                                    aria-label={`Enlarge image for ${product.name}`}
+                                                    aria-label={`Enlarge image for ${getProductDisplayName(product, customCategories)}`}
                                                 >
                                                     <img
                                                         src={family.representativeImageUrl}
-                                                        alt={product.name}
+                                                        alt={getProductDisplayName(product, customCategories)}
                                                         className={`h-full w-full object-cover transition-all duration-200 group-hover/photo:scale-110 group-hover/photo:opacity-35 group-hover/photo:blur-[1.5px] ${isArchivedFamily ? 'opacity-40 grayscale' : ''}`}
                                                     />
                                                     <div className="absolute inset-0 flex items-center justify-center pointer-events-none bg-black/0 opacity-0 transition-all duration-150 group-hover/photo:bg-black/45 group-hover/photo:opacity-100">
@@ -1602,33 +1878,27 @@ const ProductList = () => {
                                                 {family.variants.length} {family.variants.length === 1 ? 'variant' : 'variants'}
                                             </span>
                                         </td>
-                                        
                                         {/* Category */}
                                         <td className={`px-3 py-1.5 align-middle whitespace-nowrap text-center border border-gray-200 dark:border-gray-700`}>
                                             <span className={`px-2.5 py-1.5 rounded-md text-xs font-semibold ${isArchivedFamily ? 'bg-gray-50 text-gray-300 dark:bg-gray-800 dark:text-gray-600' : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'}`}>{family.categoryName}</span>
                                         </td>
                                         {/* Price */}
-                                        <td className={`px-3 py-1.5 align-middle whitespace-nowrap text-sm font-semibold text-center border border-gray-200 dark:border-gray-700 tabular-nums ${isArchivedFamily ? 'text-gray-300 dark:text-gray-600' : 'text-gray-900 dark:text-white'}`}>
+                                        <td className={`px-3 py-1.5 align-middle whitespace-nowrap text-sm font-semibold text-right border border-gray-200 dark:border-gray-700 tabular-nums ${isArchivedFamily ? 'text-gray-300 dark:text-gray-600' : 'text-gray-900 dark:text-white'}`}>
                                             ₱{formatMoney(family.minPrice)}{family.minPrice !== family.maxPrice ? ` – ₱${formatMoney(family.maxPrice)}` : ''}
-                                        </td>
-                                        {/* Stock */}
-                                        <td className="px-3 py-1.5 align-middle whitespace-nowrap text-center border border-gray-200 dark:border-gray-700">
-                                            <div className={`flex flex-col items-center ${isArchivedFamily ? 'opacity-30' : ''}`}>
-                                                <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs font-semibold leading-5 text-slate-600 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">
-                                                    {family.totalStock} total
-                                                </span>
-                                            </div>
                                         </td>
                                         {/* Actions */}
                                         {isAdminOrAbove() && (
-                                        <td className="px-3 py-1.5 align-middle whitespace-nowrap text-center text-sm font-medium border border-gray-200 dark:border-gray-700 overflow-hidden">
+                                        <td className="px-3 py-1.5 align-middle whitespace-nowrap text-center text-sm font-medium border border-gray-200 dark:border-gray-700 overflow-visible">
                                             <div className="flex items-center justify-center gap-2">
                                                 <TableActionButton
                                                     onClick={() => handleOpenFamily(family)}
-                                                    label="Manage variants"
+                                                    tooltipDisabled={isFamilyModalOpen}
+                                                    dismissTooltipOnClick
+                                                    className="product-list-manage-variants-action reference-table-action"
+                                                    label="Manage Variants"
                                                     aria-label={`Manage variants for ${family.name}`}
                                                 >
-                                                    <EditIcon />
+                                                    <EditIcon /><span className="whitespace-nowrap">Manage Variants</span>
                                                 </TableActionButton>
                                             </div>
                                         </td>
@@ -1639,6 +1909,7 @@ const ProductList = () => {
                             )}
                         </tbody>
                     </table>
+                    </div>
                 </div>
 
                 {/* Pagination Controls */}
@@ -1660,14 +1931,17 @@ const ProductList = () => {
                     onClose={() => setIsFamilyModalOpen(false)}
                     onAddVariant={handleOpenAddVariant}
                     onEditVariant={handleOpenVariantEdit}
-                    onToggleArchive={toggleArchive}
+                    onToggleArchive={(variant) => toggleArchive(variant, { isVariant: true })}
+                    onArchiveSelected={archiveSelectedVariants}
+                    getProductImageUrl={getProductImageUrl}
+                    onPreviewVariantImage={(variant, trigger) => openProductImagePreview(variant, true, trigger)}
                 />
             )}
 
             {/* Modal */}
             {isModalOpen && !isCategoryChangeOpen && (
-                <div className="app-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-                    <div onClick={e => e.stopPropagation()} className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md overflow-visible animate-in fade-in zoom-in-95 duration-200">
+                <div className="app-modal-backdrop fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 backdrop-blur-sm p-4">
+                    <div onClick={e => e.stopPropagation()} className="my-auto shrink-0 bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md overflow-visible animate-in fade-in zoom-in-95 duration-200">
                         {/* Header */}
                         <div className="px-5 py-3.5 border-b border-gray-100 dark:border-gray-700 bg-linear-to-r from-gray-50 to-white dark:from-gray-800 dark:to-gray-800 flex justify-between items-center rounded-t-2xl">
                             <div className="flex items-center gap-2.5">
@@ -1684,7 +1958,7 @@ const ProductList = () => {
                                     </h3>
                                     <p className="text-gray-400 dark:text-gray-500 text-[10px] mt-0.5">
                                         {variantFamilyKey
-                                            ? (modalMode === 'add' ? `Adding a variant to ${formData.name}` : `Editing ${formData.code}`)
+                                                ? (modalMode === 'add' ? `Adding a variant to ${formData.name || managedFamily?.name || getProductDisplayName(editingProduct, customCategories)}` : `Editing ${formData.code}`)
                                             : (modalMode === 'add' ? 'Add a new item to inventory' : `Editing ${formData.code}`)}
                                     </p>
                                 </div>
@@ -1753,6 +2027,8 @@ const ProductList = () => {
                                         <label className="block text-[10px] font-semibold text-gray-500 dark:text-gray-400 mb-1">SKU</label>
                                             <input 
                                             type="text" 
+                                            name="code"
+                                            data-validation-key="code"
                                             value={formData.code}
                                             onChange={e => setFormData(prev => ({ ...prev, code: e.target.value }))}
                                             maxLength={100}
@@ -1829,9 +2105,11 @@ const ProductList = () => {
                                             <label className="block text-[10px] font-semibold text-gray-500 dark:text-gray-400 mb-1">Brand {categoryFieldRules.requireBrand && <span className="text-red-400">*</span>}</label>
                                             <input 
                                                 type="text" 
+                                                name="brand"
+                                                data-validation-key="brand"
                                                 value={formData.brand}
                                                 onChange={e => setFormData({...formData, brand: e.target.value})}
-                                                onBlur={e => setFormData((prev) => ({ ...prev, brand: normalizeHumanReadable(e.target.value) }))}
+                                                onBlur={e => setFormData((prev) => ({ ...prev, brand: normalizeProductText(e.target.value) }))}
                                                 required={categoryFieldRules.requireBrand}
                                                 className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
                                                 placeholder={
@@ -1847,28 +2125,20 @@ const ProductList = () => {
                                         </div>
                                         )}
                                         <div className={!categoryFieldRules.showBrand ? 'col-span-2' : ''}>
-                                            <label className="block text-[10px] font-semibold text-gray-500 dark:text-gray-400 mb-1">Product Name <span className="text-red-400">*</span></label>
+                                            <label className="block text-[10px] font-semibold text-gray-500 dark:text-gray-400 mb-1">Product Name</label>
                                             <input 
                                                 type="text" 
+                                                name="name"
+                                                data-validation-key="name"
                                                 value={formData.name}
                                                 disabled={Boolean(variantFamilyKey) && modalMode === 'add'}
                                                 onChange={e => setFormData({...formData, name: e.target.value})}
-                                                onBlur={e => setFormData((prev) => ({ ...prev, name: normalizeHumanReadable(e.target.value) }))}
-                                                required
+                                                onBlur={e => setFormData((prev) => ({ ...prev, name: normalizeProductText(e.target.value) }))}
                                                 className={`w-full p-2 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium outline-none text-gray-900 dark:text-white ${variantFamilyKey && modalMode === 'add' ? 'cursor-not-allowed bg-gray-50 dark:bg-gray-800' : 'bg-white dark:bg-gray-700 focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500'}`}
-                                                placeholder={
-                                                    ['Paints'].includes(formData.category) ? 'e.g. Flat Latex, Enamel' :
-                                                    ['Lumbers'].includes(formData.category) ? 'e.g. Coco Lumber, Good Lumber' :
-                                                    ['Steel Bars'].includes(formData.category) ? 'e.g. Deformed Bar' :
-                                                    ['Plywoods'].includes(formData.category) ? 'e.g. Marine Plywood' :
-                                                    ['Pipes'].includes(formData.category) ? 'e.g. GI Pipe, PVC Pipe' :
-                                                    ['Cement, Sand & Gravel'].includes(formData.category) ? 'e.g. Portland Cement' :
-                                                    ['Bolts, Nuts, Screws & Nails'].includes(formData.category) ? 'e.g. Common Nail, Hex Bolt' :
-                                                    ['Electrical & Lighting'].includes(formData.category) ? 'e.g. THHN Wire, LED Bulb' :
-                                                    'e.g. Product name'
-                                                }
+                                                placeholder="Enter product name (optional)"
+                                                aria-label="Product Name (optional)"
                                             />
-                                            {modalMode === 'edit' && variantFamilyKey && normalizeHumanReadable(formData.name) !== normalizeHumanReadable(editingProduct?.name) && (
+                                            {modalMode === 'edit' && variantFamilyKey && normalizeProductText(formData.name) !== normalizeProductText(editingProduct?.name) && (
                                                 <p className="mt-1 text-[10px] leading-relaxed text-amber-600 dark:text-amber-300">Changing the product name may move this variant to a different product family.</p>
                                             )}
                                         </div>
@@ -1893,9 +2163,11 @@ const ProductList = () => {
                                             <label className="block text-[10px] font-semibold text-gray-500 dark:text-gray-400 mb-1">Color / Variant {categoryFieldRules.requireColor && <span className="text-red-400">*</span>}</label>
                                             <input 
                                                 type="text" 
+                                                name="color"
+                                                data-validation-key="color"
                                                 value={formData.color}
                                                 onChange={e => setFormData({...formData, color: e.target.value})}
-                                                onBlur={e => setFormData((prev) => ({ ...prev, color: normalizeHumanReadable(e.target.value) }))}
+                                                onBlur={e => setFormData((prev) => ({ ...prev, color: normalizeProductText(e.target.value) }))}
                                                 required={categoryFieldRules.requireColor}
                                                 className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
                                                 placeholder={
@@ -1922,14 +2194,19 @@ const ProductList = () => {
                                             <div className="flex gap-1.5 items-start">
                                                 <input 
                                                     type="text" 
+                                                    name="size"
+                                                    data-validation-key="size"
                                                     value={formData.size}
                                                     onChange={e => setFormData({...formData, size: e.target.value})}
+                                                    onBlur={e => setFormData((prev) => ({ ...prev, size: normalizeProductText(e.target.value) }))}
                                                     required={categoryFieldRules.requireSize}
                                                     className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
                                                     placeholder={getCategoryConfig(formData.category).sizePlaceholder}
                                                 />
                                                 <div className="w-24">
                                                     <select
+                                                        name="sizeUnit"
+                                                        data-validation-key="sizeUnit"
                                                         value={formData.sizeUnit}
                                                         onChange={e => setFormData({...formData, sizeUnit: e.target.value})}
                                                         required={categoryFieldRules.requireSize}
@@ -1952,15 +2229,43 @@ const ProductList = () => {
                             {/* ── Section 4: Pricing & Stock ── */}
                             <div>
                                 <p className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-2">Pricing & Stock</p>
-                                <div className="grid grid-cols-2 gap-2.5">
+                                <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                                     <div>
-                                        <label className="block text-[10px] font-semibold text-gray-500 dark:text-gray-400 mb-1">{selectedSellingUnit ? `Price per ${selectedSellingUnit} (₱)` : 'Price per Unit (₱)'} <span className="text-red-400">*</span></label>
+                                        <label className="block text-[10px] font-semibold text-gray-500 dark:text-gray-400 mb-1">Purchase Cost (₱) {modalMode === 'add' && <span className="text-red-400">*</span>}</label>
                                         <div className="relative">
                                             <div className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none">
                                                 <span className="text-gray-400 font-semibold text-xs">₱</span>
                                             </div>
                                             <input 
                                                 type="text"
+                                                name="purchaseCost"
+                                                data-validation-key="purchaseCost"
+                                                inputMode="decimal"
+                                                pattern="^[0-9]*\.?[0-9]*$"
+                                                value={formData.purchaseCost}
+                                                onKeyDown={preventInvalidMoneyKeyDown}
+                                                onPaste={preventInvalidMoneyPaste}
+                                                onChange={e => setFormData({ ...formData, purchaseCost: sanitizeMoneyInput(e.target.value) })}
+                                                onBlur={() => {
+                                                    setFormData(prev => ({ ...prev, purchaseCost: prev.purchaseCost === '' ? '' : formatMoneyInput(prev.purchaseCost) }));
+                                                }}
+                                                className="w-full pl-7 pr-2 py-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
+                                                placeholder={modalMode === 'edit' ? 'Not recorded' : '0.00'}
+                                                required={modalMode === 'add'}
+                                            />
+                                        </div>
+                                        <p className="mt-1 text-[10px] leading-4 text-gray-500 dark:text-gray-400">Cost per selling unit, even when purchased in bulk.</p>
+                                    </div>
+                                    <div>
+                                        <label className="block text-[10px] font-semibold text-gray-500 dark:text-gray-400 mb-1">{selectedSellingUnit ? `Selling Price per ${selectedSellingUnit} (₱)` : 'Selling Price per Unit (₱)'} <span className="text-red-400">*</span></label>
+                                        <div className="relative">
+                                            <div className="absolute inset-y-0 left-0 flex items-center pl-2.5 pointer-events-none">
+                                                <span className="text-xs font-semibold text-gray-400">₱</span>
+                                            </div>
+                                            <input
+                                                type="text"
+                                                name="price"
+                                                data-validation-key="price"
                                                 inputMode="decimal"
                                                 pattern="^[0-9]*\.?[0-9]*$"
                                                 value={formData.price}
@@ -1970,12 +2275,12 @@ const ProductList = () => {
                                                 onBlur={() => {
                                                     setFormData(prev => ({ ...prev, price: formatMoneyInput(prev.price) }));
                                                 }}
-                                                className="w-full pl-7 pr-2 py-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
+                                                className="w-full rounded-lg border border-gray-200 bg-white py-2 pl-7 pr-2 text-xs font-medium text-gray-900 outline-none focus:ring-2 focus:ring-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:focus:ring-gray-500"
                                                 placeholder="0.00"
                                             />
                                         </div>
                                     </div>
-                                    <div>
+                                    <div className="sm:col-span-2">
                                         <label className="block text-[10px] font-semibold text-gray-500 dark:text-gray-400 mb-1">
                                             {modalMode === 'add'
                                                 ? (selectedSellingUnit ? `Initial Stock (${selectedSellingUnit})` : 'Initial Stock')
@@ -1983,6 +2288,8 @@ const ProductList = () => {
                                         </label>
                                         <input
                                             type="text"
+                                            name="stock"
+                                            data-validation-key="stock"
                                             inputMode="numeric"
                                             pattern="[0-9]*"
                                             min="0"
@@ -1998,6 +2305,14 @@ const ProductList = () => {
                                         {modalMode === 'edit' && <p className="text-[10px] text-gray-400 mt-0.5">Stock changes in Inventory only.</p>}
                                     </div>
                                 </div>
+                                <ProductExpiryFields
+                                    value={formData}
+                                    onChange={setFormData}
+                                    disabled={isSavingProduct}
+                                    minimumExpiryDate={minimumInitialExpiryDate}
+                                    mode={modalMode}
+                                    canManage={isAdminOrAbove()}
+                                />
                             </div>
 
                             {/* ── Section 5: Supplier ── */}
@@ -2011,6 +2326,8 @@ const ProductList = () => {
                                     query={supplierSearchQuery}
                                     onQueryChange={setSupplierSearchQuery}
                                     selectedValue={formData.supplier}
+                        name="supplier"
+                        validationKey="supplier"
                                     onSelect={(supplier) => {
                                         setFormData((previous) => ({ ...previous, supplier }));
                                         setSupplierSearchQuery(supplier);
@@ -2084,7 +2401,7 @@ const ProductList = () => {
                                 {productToArchive.isArchived ? 'Restore Product?' : 'Archive Product?'}
                             </h3>
                             <p className="text-gray-500 dark:text-gray-400 text-sm mb-6">
-                                Are you sure you want to {productToArchive.isArchived ? 'restore' : 'archive'} <span className="font-semibold text-gray-900 dark:text-white">{productToArchive.name}</span>?
+                                Are you sure you want to {productToArchive.isArchived ? 'restore' : 'archive'} <span className="font-semibold text-gray-900 dark:text-white">{getProductDisplayName(productToArchive, customCategories)}</span>?
                             </p>
                             <div className="flex gap-3">
                                 <button
@@ -2112,6 +2429,9 @@ const ProductList = () => {
                 <div
                     className="fixed inset-0 z-60 flex items-center justify-center bg-black/90 backdrop-blur-lg p-4 animate-in fade-in duration-200"
                     onClick={closeProductImagePreview}
+                    role="dialog"
+                    aria-modal="true"
+                    aria-label="Product image preview"
                 >
                     <div
                         className="relative w-full max-w-5xl h-[78vh] md:h-[80vh] flex items-center justify-center animate-in zoom-in-90 fade-in duration-250 overflow-visible px-12 md:px-16 py-12"
@@ -2119,6 +2439,7 @@ const ProductList = () => {
                     >
                         <button
                             type="button"
+                            ref={productImagePreviewCloseRef}
                             onClick={closeProductImagePreview}
                             className="absolute top-3 right-3 z-10 h-10 w-10 rounded-full bg-white text-gray-900 shadow-lg flex items-center justify-center hover:bg-gray-100 transition-colors"
                             aria-label="Close image preview"
@@ -2127,7 +2448,7 @@ const ProductList = () => {
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path>
                             </svg>
                         </button>
-                        {previewableProducts.length > 1 && (
+                        {!enlargedProductImage.singleImage && previewableProducts.length > 1 && (
                             <>
                                 <button
                                     type="button"

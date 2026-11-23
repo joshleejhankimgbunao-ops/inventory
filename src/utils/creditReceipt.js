@@ -46,6 +46,7 @@ export const buildCreditReceiptTransaction = (record = {}) => {
     paymentReference: String(finalizedPayment.reference || '').trim(),
     orderReference: String(record.orderReference || '').trim(),
     total: Number(record.totalAmount || 0),
+    downPaymentAmount: Number(record.downPaymentAmount || 0),
     amountPaid: Number(record.amountPaid || 0),
     remainingBalance: Number(record.remainingBalance || 0),
     balance: Number(record.remainingBalance || 0),

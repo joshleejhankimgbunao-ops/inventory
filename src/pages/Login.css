@@ -1,0 +1,182 @@
+/* Auth-only layout: normal flow keeps the clock, form and footer reachable
+   when Safari chrome or the keyboard reduces the available viewport. */
+.login-page {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  min-height: 100svh;
+  min-height: 100dvh;
+  padding: 1.5rem 1rem;
+  padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+  gap: clamp(1rem, 3vh, 2rem);
+  background: linear-gradient(to bottom right, #111827 0%, #0f172a 50%, #0f1419 100%);
+}
+
+.login-page .login-page-decor { display: none; }
+.login-page .login-card { flex-shrink: 0; }
+.login-page .login-panel { border-radius: 1rem; }
+.login-page .login-image-panel { border-top-right-radius: 1rem; border-bottom-right-radius: 1rem; }
+.login-page .login-pin-instruction { gap: 0.125rem; }
+.login-page .login-auth-step { min-height: 6.75rem; }
+.login-page .login-pin-status-slot { min-height: 2.5rem; }
+.login-page .login-pin-back-tooltip { z-index: 50; white-space: nowrap; }
+.login-page .login-pin-back:hover .login-pin-back-tooltip,
+.login-page .login-pin-back:focus .login-pin-back-tooltip { opacity: 1; }
+.login-page .login-footer .text-gray-100 { color: #f3f4f6; }
+.login-page .login-footer .text-gray-300 { color: #d1d5db; }
+
+/* Plain sibling selectors and a single transform also work in older Safari,
+   without relying on nested peer variants or individual scale/translate. */
+.login-page .login-input-label {
+  top: 50%;
+  transform: translateY(-50%);
+  transform-origin: left center;
+  transition: top 150ms ease, transform 150ms ease, color 150ms ease;
+  color: #64748b;
+  max-width: calc(100% - 3rem);
+}
+.login-page .login-input:focus + .login-input-label,
+.login-page .login-input:not(:placeholder-shown) + .login-input-label {
+  top: 0;
+  transform: translateY(-50%) scale(0.85);
+  color: #111827;
+}
+/* Separate rule: unsupported autofill selectors must not invalidate focus. */
+.login-page .login-input:-webkit-autofill + .login-input-label {
+  top: 0;
+  transform: translateY(-50%) scale(0.85);
+}
+.login-page .login-password-toggle:focus-visible {
+  outline: 2px solid #64748b;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.login-pin-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 2.5rem));
+  justify-content: center;
+  gap: clamp(0.25rem, 1.5vw, 0.5rem);
+}
+.login-pin-cell { position: relative; min-width: 0; }
+.login-page .login-pin-input {
+  width: 100%;
+  min-width: 0;
+  /* Native password semantics stay intact. Hide native glyph painting to
+     prevent the mobile last-character reveal; render only an inert bullet. */
+  color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+  text-shadow: none !important;
+  caret-color: #64748b;
+}
+.login-pin-mask {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  color: #111827;
+  font-size: 1.25rem;
+}
+html.dark .login-pin-mask { color: var(--dark-text); }
+
+@media (max-width: 767px) {
+  .login-page .login-card { max-width: 28rem; }
+  .login-page .login-panel { padding: 1.25rem; }
+  .login-page .login-heading { margin-top: 0; }
+  .login-page .login-input,
+  .login-page .login-reset-input { min-height: 44px; font-size: 16px; }
+  .login-page .login-pin-input,
+  .login-page .login-primary-action { height: 44px; }
+  .login-page .login-pin-status-slot { min-height: 44px; }
+  .login-page .login-password-toggle { right: 0; width: 40px; height: 44px; display: grid; place-items: center; }
+  .login-page .login-contact-action { width: 44px; height: 44px; }
+  .login-page .login-contact-area { margin-top: 1.25rem; padding-top: 1rem; }
+  .login-page .login-footer p { letter-spacing: 0.06em; font-size: 11px; }
+}
+
+@media (min-width: 768px) {
+  .login-page .login-card { max-width: 60rem; }
+  .login-page .login-panel { border-radius: 1rem 0 0 1rem; }
+  .login-page .login-auth-transition-screen {
+    width: 100%;
+    max-width: 19.375rem;
+    align-self: center;
+  }
+}
+
+@media (min-width: 1024px) and (min-height: 720px) {
+  .login-page .login-card { min-height: 35rem; }
+}
+
+@media (min-width: 1024px) {
+  .login-page .login-clock {
+    position: absolute;
+    top: 1.5rem;
+    right: 0;
+    left: 0;
+  }
+  .login-page .login-date-pill { padding-right: 1.5rem; padding-left: 1.5rem; }
+  .login-page .login-footer {
+    position: absolute;
+    bottom: 1rem;
+    left: 0;
+    z-index: 0;
+    pointer-events: none;
+  }
+}
+
+@media (max-width: 767px) and (max-height: 700px) {
+  .login-page { gap: 0.75rem; padding-top: max(0.75rem, env(safe-area-inset-top)); padding-bottom: max(0.75rem, env(safe-area-inset-bottom)); }
+  .login-page .login-heading { margin-top: 0; margin-bottom: 1rem; }
+  .login-page .login-contact-area { margin-top: 1rem; padding-top: 0.75rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-page .login-input-label { transition: none; }
+}
+
+/* Keep Login and PIN on the original navy canvas in either application theme. */
+html.dark .login-page {
+  background: linear-gradient(to bottom right, #111827 0%, #0f172a 50%, #0f1419 100%) !important;
+}
+html.dark .login-page .login-card,
+html.dark .login-page .login-panel {
+  background-color: #ffffff !important;
+  border-color: #e2e8f0 !important;
+  color: #111827 !important;
+}
+html.dark .login-page .login-title { color: #111827 !important; }
+html.dark .login-page .login-subtitle { color: #64748b !important; }
+html.dark .login-page .login-input,
+html.dark .login-page .login-pin-input,
+html.dark .login-page .login-reset-input {
+  background-color: #ffffff !important;
+  border-color: #9ca3af !important;
+  color: #111827 !important;
+  -webkit-text-fill-color: #111827;
+  caret-color: #111827;
+}
+html.dark .login-page .login-input:focus,
+html.dark .login-page .login-pin-input:focus,
+html.dark .login-page .login-reset-input:focus {
+  border-color: #111827 !important;
+  box-shadow: none !important;
+}
+html.dark .login-page .login-input-label {
+  background-color: #ffffff !important;
+  color: #64748b !important;
+}
+html.dark .login-page .login-input:focus + .login-input-label,
+html.dark .login-page .login-input:not(:placeholder-shown) + .login-input-label { color: #111827 !important; }
+html.dark .login-page .login-input-icon,
+html.dark .login-page .login-password-toggle,
+html.dark .login-page .login-forgot-link { color: #64748b !important; }
+html.dark .login-page .login-pin-instruction p { color: #475569 !important; }
+html.dark .login-page .login-pin-mask { color: #111827; }
+html.dark .login-page .login-footer .text-gray-100 { color: #f3f4f6 !important; }
+html.dark .login-page .login-footer .text-gray-300 { color: #d1d5db !important; }

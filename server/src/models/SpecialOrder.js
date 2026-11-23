@@ -12,6 +12,22 @@ const specialOrderItemSchema = new mongoose.Schema(
       default: '',
       trim: true,
     },
+    sellingUnit: { type: String, default: '', trim: true },
+    expiryDate: { type: String, default: '', trim: true },
+    quotationExpirySelections: { type: [{
+      batch: { type: mongoose.Schema.Types.ObjectId, ref: 'ExpiryBatch', required: true },
+      batchId: { type: String, required: true, trim: true },
+      batchReference: { type: String, default: '', trim: true },
+      lotNumber: { type: String, default: '', trim: true },
+      expiryDate: { type: String, required: true, trim: true },
+      quantity: { type: Number, required: true, min: 1, validate: Number.isSafeInteger },
+    }], default: [] },
+    itemType: { type: String, enum: ['custom', 'inventory'], default: 'custom' },
+    inventoryProduct: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', default: null },
+    inventorySnapshot: { type: mongoose.Schema.Types.Mixed, default: null },
+    originalUnitPrice: { type: Number, default: null, min: 0 },
+    priceOverrideReason: { type: String, default: '', trim: true },
+    priceOverrideBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     quantity: {
       type: Number,
       required: true,
@@ -76,6 +92,22 @@ const specialOrderStatusHistorySchema = new mongoose.Schema(
   { _id: false }
 );
 
+const customSourcingSchema = new mongoose.Schema({
+  itemId: { type: String, required: true },
+  sourcedQuantity: { type: Number, required: true, min: 0, validate: Number.isSafeInteger },
+  updatedAt: { type: Date, required: true },
+  updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+}, { _id: false });
+
+const fulfillmentOperationSchema = new mongoose.Schema({
+  requestId: { type: String, required: true },
+  action: { type: String, enum: ['Source Custom', 'Confirm Ready', 'Confirm Handover', 'Complete Order'], required: true },
+  itemId: { type: String, default: '' },
+  quantity: { type: Number, default: 0, min: 0 },
+  actor: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  at: { type: Date, required: true, default: Date.now },
+}, { _id: false });
+
 const specialOrderSchema = new mongoose.Schema(
   {
     orderNumber: {
@@ -107,6 +139,24 @@ const specialOrderSchema = new mongoose.Schema(
     items: {
       type: [specialOrderItemSchema],
       default: [],
+    },
+    workflowVersion: { type: Number, default: 1 },
+    taxTreatment: { type: String, enum: ['standard', 'vat_zero_rated', 'exempt'], default: null },
+    fulfillment: { type: mongoose.Schema.Types.Mixed, default: null },
+    customSourcing: { type: [customSourcingSchema], default: [] },
+    fulfillmentOperations: { type: [fulfillmentOperationSchema], default: [] },
+    readyConfirmation: {
+      method: { type: String, enum: ['Store Pickup', 'Free Delivery'], default: null },
+      confirmedAt: { type: Date, default: null },
+      confirmedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      requestId: { type: String, default: '' },
+    },
+    fulfillmentHandover: {
+      method: { type: String, enum: ['Store Pickup', 'Free Delivery'], default: null },
+      status: { type: String, enum: ['Picked Up', 'Delivered'], default: null },
+      confirmedAt: { type: Date, default: null },
+      confirmedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      requestId: { type: String, default: '' },
     },
     itemName: {
       type: String,
@@ -166,6 +216,17 @@ const specialOrderSchema = new mongoose.Schema(
       default: null,
       index: true,
     },
+    financialRecordedAt: { type: Date, default: null },
+    financialRecordedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    currentQuotation: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'SpecialOrderQuotation',
+      default: null,
+      index: true,
+    },
+    transactionQuotation: { type: mongoose.Schema.Types.ObjectId, ref: 'SpecialOrderQuotation', default: null },
+    transactionStartedAt: { type: Date, default: null },
+    transactionStartedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     completedAt: {
       type: Date,
       default: null,

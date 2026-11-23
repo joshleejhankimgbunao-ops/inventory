@@ -92,6 +92,52 @@ test('Supporting Proof uploads to the private Sale Void prefix and returns metad
   assert.equal(metadata.key.includes(PREFIX), false);
 });
 
+test('up to three optional void files stay attached to the completed void without replacing request evidence', async () => {
+  const request = [storedProof()];
+  const uploaded = [
+    { ...storedProof(), key: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.jpg' },
+    { ...storedProof(), key: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb.png', mimeType: 'image/png' },
+    { ...storedProof(), key: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc.pdf', mimeType: 'application/pdf' },
+  ];
+  const existing = saleFixture({ voidRequest: { status: 'pending', supportingProof: request[0], supportingProofs: request } });
+  let saved;
+  await executeSaleVoid({ saleId: SALE_ID, reason: 'Duplicate', requestId: 'void-multiple', supportingProofs: uploaded, user: { _id: USER_ID, name: 'Admin' } }, {
+    runTransaction: async (work) => work({ session: {}, writeActivityLog: async () => {}, writeInventoryLog: async () => {}, afterCommit: () => {} }),
+    findSale: async () => existing,
+    checkEligibility: async () => ({ eligible: true }),
+    claimSale: async (_id, voidInfo) => { saved = { ...existing, status: 'voided', voidInfo }; return saved; },
+    restoreProduct: async () => ({ sku: 'SKU-1', stock: 5 }),
+    publishSale: () => {}, publishInventory: () => {},
+  });
+  assert.deepEqual(saved.voidInfo.supportingProofs, uploaded);
+  assert.equal(saved.voidInfo.supportingProof.key, uploaded[0].key);
+  assert.equal(saved.voidRequest.supportingProof.key, request[0].key);
+  const publicRecord = mapSaleToTransactionContract(saved);
+  assert.equal(publicRecord.voidInfo.supportingProofs.length, 3);
+  assert.equal(Object.hasOwn(publicRecord.voidInfo.supportingProofs[0], 'key'), false);
+});
+
+test('void endpoint rejects more than three files before upload and cleans partial file sets on failure', async () => {
+  const base = { user: { _id: USER_ID, role: 'admin' }, params: { id: SALE_ID }, body: { reason: 'Duplicate', requestId: 'void-many' }, get: () => '', ip: '' };
+  const tooMany = responseCapture();
+  await voidSale({ ...base, files: { proofs: Array.from({ length: 4 }, () => proofFile()) } }, tooMany, assert.fail, {
+    findSale: async () => saleFixture(), uploadProof: async () => assert.fail('must not upload'),
+  });
+  assert.equal(tooMany.statusCode, 400);
+
+  const saved = [];
+  const removed = [];
+  const partial = responseCapture();
+  await voidSale({ ...base, files: { proofs: [proofFile(), proofFile(png, 'second.png', 'image/png')] } }, partial, assert.fail, {
+    findSale: async () => saleFixture(),
+    uploadProof: async () => { if (saved.length) throw Object.assign(new Error('upload failed'), { status: 503 }); const item = storedProof(); saved.push(item); return item; },
+    removeProof: async (key) => removed.push(key),
+    executeSaleVoid: async () => assert.fail('void must not execute'),
+  });
+  assert.equal(partial.statusCode, 503);
+  assert.deepEqual(removed, [saved[0].key]);
+});
+
 test('atomic Sale Void persists one proof with lifecycle, stock, and audit state', async () => {
   const proof = storedProof();
   const state = { sale: saleFixture(), stock: 4, activity: [], inventory: [] };
@@ -226,4 +272,24 @@ test('authenticated proof retrieval enforces Sale access and streams safe conten
   assert.equal(allowed.headers['Content-Type'], 'image/jpeg');
   assert.match(allowed.headers['Content-Disposition'], /^inline; filename="void-proof\.jpg"$/);
   assert.deepEqual(allowed.body, jpeg);
+});
+
+test('void evidence viewer keeps request and completed-void proof sets separately addressable', async () => {
+  const requestProof = { ...storedProof(), key: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.jpg', originalName: 'request.jpg' };
+  const voidProofs = [
+    { ...storedProof(), key: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb.jpg', originalName: 'void-1.jpg' },
+    { ...storedProof(), key: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc.pdf', originalName: 'void-2.pdf', mimeType: 'application/pdf' },
+  ];
+  const row = saleFixture({ status: 'voided', voidRequest: { supportingProof: requestProof }, voidInfo: { supportingProof: voidProofs[0], supportingProofs: voidProofs } });
+  const seen = [];
+  for (const [stage, index, expected] of [['request', 0, requestProof], ['void', 1, voidProofs[1]]]) {
+    const res = responseCapture();
+    await getSaleVoidProof({ params: { id: SALE_ID }, query: { stage, index: String(index) }, user: { _id: USER_ID, role: 'cashier' } }, res, assert.fail, {
+      findSale: async () => row,
+      read: async (key) => { seen.push(key); return { type: 'r2', object: { Body: { transformToByteArray: async () => pdf } } }; },
+    });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.headers['Content-Type'], expected.mimeType);
+  }
+  assert.deepEqual(seen, [requestProof.key, voidProofs[1].key]);
 });

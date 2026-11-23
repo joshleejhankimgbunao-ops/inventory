@@ -30,7 +30,7 @@ export const pageAccess = {
     POS:            [_roleOrder[2], _roleOrder[1], _roleOrder[0]],
     // history/logs should also be visible to cashiers (they may need to review their own sales)
     History:        [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.CASHIER],
-    Inventory:      [ROLES.SUPER_ADMIN, ROLES.ADMIN],
+    Inventory:      [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.CASHIER],
     ProductList:    [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.CASHIER],
     Reports:        [ROLES.SUPER_ADMIN, ROLES.ADMIN],
     Settings:       [ROLES.SUPER_ADMIN, ROLES.ADMIN],

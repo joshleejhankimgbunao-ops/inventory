@@ -1,6 +1,21 @@
 const ActivityLog = require('../models/ActivityLog');
 const InventoryLog = require('../models/InventoryLog');
 const { publishActivityLogged, publishInventoryLogged } = require('./realtimeService');
+const { deferPostCommitNotification } = require('./postCommitNotifications');
+
+const publishLogNotification = (session, notify) => {
+  if (!session) {
+    notify();
+    return;
+  }
+
+  if (deferPostCommitNotification(session, notify)) return;
+
+  // Never announce a session-bound log while its transaction is still open.
+  // Transactional callers use withPostCommitNotifications to flush after commit.
+  if (typeof session.inTransaction === 'function' && session.inTransaction()) return;
+  notify();
+};
 
 const normalizeUserName = (user, fallback = 'System') => {
   if (!user) return fallback;
@@ -30,12 +45,12 @@ const writeActivityLog = async ({
     }], session ? { session } : undefined);
 
     if (created) {
-      publishActivityLogged({
+      publishLogNotification(session, () => publishActivityLogged({
         id: created._id,
         action: created.action,
         user: created.user,
         occurredAt: created.createdAt,
-      });
+      }));
     }
 
     return created || null;
@@ -49,11 +64,14 @@ const writeInventoryLog = async ({
   action,
   code,
   productRef = null,
+  saleRef = null,
+  specialOrderRef = null,
   user = null,
   details = '',
   quantity = null,
   stockBefore = null,
   stockAfter = null,
+  batchMovementRefs = [],
   session = null,
 }) => {
   if (!action || !code) {
@@ -65,22 +83,25 @@ const writeInventoryLog = async ({
       action,
       code,
       productRef,
+      saleRef,
+      specialOrderRef,
       userRef: user?._id || null,
       user: normalizeUserName(user),
       details,
       quantity,
       stockBefore,
       stockAfter,
+      batchMovementRefs: Array.isArray(batchMovementRefs) ? batchMovementRefs : [],
     }], session ? { session } : undefined);
 
     if (created) {
-      publishInventoryLogged({
+      publishLogNotification(session, () => publishInventoryLogged({
         id: created._id,
         action: created.action,
         code: created.code,
         user: created.user,
         occurredAt: created.createdAt,
-      });
+      }));
     }
 
     return created || null;

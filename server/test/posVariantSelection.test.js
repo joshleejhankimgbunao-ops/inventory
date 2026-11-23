@@ -21,6 +21,83 @@ const makeVariant = (overrides = {}) => ({
 
 const loadHelpers = () => import('../../src/utils/posVariantSelection.js');
 
+test('variant labels show configured facts, actual selling units and SKU without invented defaults', async () => {
+  const { getPosVariantOptionLabel, getPosVariantOptionSellingUnit } = await loadHelpers();
+  const definitions = [{ key: 'size_variant', name: 'Size / Variant', type: 'text' }];
+  const pieces = makeVariant({ code: 'NAIL-PCS', attributes: { size_variant: '4' }, sellingUnit: 'pcs' });
+  const pack = makeVariant({ code: 'NAIL-PACK', attributes: { size_variant: '4' }, sellingUnit: 'pack' });
+  const missing = makeVariant({ code: 'LEGACY' });
+  assert.equal(getPosVariantOptionLabel(pieces, definitions), 'Size / Variant: 4 · pcs · NAIL-PCS');
+  assert.equal(getPosVariantOptionLabel(pack, definitions), 'Size / Variant: 4 · pack · NAIL-PACK');
+  assert.equal(getPosVariantOptionLabel(missing, definitions), 'LEGACY');
+  assert.equal(getPosVariantOptionLabel(pieces), 'NAIL-PCS · pcs');
+  assert.equal(getPosVariantOptionLabel(makeVariant({ code: 'ZERO', attributes: { volume: 0 }, sellingUnit: 'can' }), [
+    { key: 'volume', name: 'Volume', type: 'number_unit', unit: 'L' },
+  ]), 'Volume: 0 L · can · ZERO');
+  assert.equal(getPosVariantOptionSellingUnit([pieces, pack], ['NAIL-PCS', 'NAIL-PACK']), '');
+  assert.equal(getPosVariantOptionSellingUnit([pieces, missing], ['NAIL-PCS', 'LEGACY']), '');
+  assert.equal(getPosVariantOptionSellingUnit([pieces, pack], ['NAIL-PCS']), 'pcs');
+});
+
+test('cashier variant choices use configured headings, concise values and only necessary item codes', async () => {
+  const { getPosVariantChoicePresentation } = await loadHelpers();
+  const thickness = [{ key: 'size_thickness', name: 'Size / Thickness', type: 'text' }];
+  const blocks = [
+    makeVariant({ code: 'OTH-010', attributes: { size_thickness: '4"' }, sellingUnit: 'pcs' }),
+    makeVariant({ code: 'OTH-011', attributes: { size_thickness: '5"' }, sellingUnit: 'pcs' }),
+  ];
+  assert.deepEqual(getPosVariantChoicePresentation(blocks, thickness), {
+    heading: 'Select Size / Thickness', labels: { 'OTH-010': '4" · pcs', 'OTH-011': '5" · pcs' },
+  });
+  const nailDefinitions = [{ key: 'size_variant', name: 'Size / Variant', type: 'text' }];
+  const nails = [
+    makeVariant({ code: 'NAIL-PCS', attributes: { size_variant: '4' }, sellingUnit: 'pcs' }),
+    makeVariant({ code: 'NAIL-PACK', attributes: { size_variant: '4' }, sellingUnit: 'pack' }),
+  ];
+  assert.deepEqual(getPosVariantChoicePresentation(nails, nailDefinitions), {
+    heading: 'Select Size / Variant', labels: { 'NAIL-PCS': '4 · pcs', 'NAIL-PACK': '4 · pack' },
+  });
+  const repeated = getPosVariantChoicePresentation([
+    ...nails.slice(0, 1), makeVariant({ code: 'NAIL-PCS-2', attributes: { size_variant: '4' }, sellingUnit: 'pcs' }),
+  ], nailDefinitions);
+  assert.deepEqual(repeated.labels, { 'NAIL-PCS': '4 · pcs · NAIL-PCS', 'NAIL-PCS-2': '4 · pcs · NAIL-PCS-2' });
+  const equivalentSpacing = getPosVariantChoicePresentation([
+    makeVariant({ code: 'A', attributes: { size_variant: '4' }, sellingUnit: 'PCS' }),
+    makeVariant({ code: 'B', attributes: { size_variant: ' 4 ' }, sellingUnit: 'pcs' }),
+  ], nailDefinitions);
+  assert.equal(equivalentSpacing.labels.A, '4 · PCS · A');
+  assert.equal(equivalentSpacing.labels.B, '4 · pcs · B');
+  assert.deepEqual(getPosVariantChoicePresentation([makeVariant({ code: 'LEGACY' })], nailDefinitions), {
+    heading: 'Select Variant', labels: { LEGACY: 'LEGACY' },
+  });
+  assert.equal(getPosVariantChoicePresentation([makeVariant({ code: 'LEGACY-UNIT', sellingUnit: 'pack' })], nailDefinitions).labels['LEGACY-UNIT'], 'LEGACY-UNIT · pack');
+  const painted = getPosVariantChoicePresentation([
+    makeVariant({ code: 'P1', attributes: { volume: 1, finish: 'Matte' }, sellingUnit: 'can' }),
+    makeVariant({ code: 'P2', attributes: { volume: 4, finish: 'Gloss' }, sellingUnit: 'can' }),
+  ], [{ key: 'volume', name: 'Volume', type: 'number_unit', unit: 'L' }, { key: 'finish', name: 'Finish', type: 'text' }]);
+  assert.deepEqual(painted, { heading: 'Select Variant', labels: { P1: '1 L · Matte · can', P2: '4 L · Gloss · can' } });
+});
+
+test('same configured size with different selling units requires an exact SKU selection', async () => {
+  const { groupProductsForPos, getPosVariantSelectionModel } = await loadHelpers();
+  const category = { name: 'Fasteners', attributeSchemaVersion: 1,
+    productAttributes: [{ name: 'Size / Variant', key: 'size_variant', type: 'text' }] };
+  const variants = [
+    makeVariant({ code: 'NAIL-PCS', name: 'Concrete Nails', category: 'Fasteners',
+      attributes: { size_variant: '4' }, sellingUnit: 'pcs', price: 2, stock: 100 }),
+    makeVariant({ code: 'NAIL-PACK', name: 'Concrete Nails', category: 'Fasteners',
+      attributes: { size_variant: '4' }, sellingUnit: 'pack', price: 25, stock: 10 }),
+  ];
+  const group = groupProductsForPos(variants, [category])[0];
+  const dimensions = group.variantDimensions.filter((dimension) => dimension !== 'brand');
+  const unselected = getPosVariantSelectionModel(group.variants, {}, null, dimensions);
+  assert.equal(unselected.needsSkuSelection, true);
+  assert.equal(unselected.matchedVariant, null);
+  assert.deepEqual(unselected.matchingVariants.map((variant) => variant.code).sort(), ['NAIL-PACK', 'NAIL-PCS']);
+  assert.equal(getPosVariantSelectionModel(group.variants, {}, 'NAIL-PCS', dimensions).matchedVariant.sellingUnit, 'pcs');
+  assert.equal(getPosVariantSelectionModel(group.variants, {}, 'NAIL-PACK', dimensions).matchedVariant.sellingUnit, 'pack');
+});
+
 test('two stocked sizes are both enabled from actual SKU rows', async () => {
   const { getPosVariantSelectionModel } = await loadHelpers();
   const variants = [
@@ -227,9 +304,14 @@ test('PointOfSale consumes live grouped data and the shared selection model', ()
   const source = fs.readFileSync(path.resolve(__dirname, '../../src/pages/PointOfSale.jsx'), 'utf8');
 
   assert.match(source, /groupProductsForPos\(filtered, categoryDefinitions\)/);
-  assert.match(source, /getPosVariantSelectionModel\(filteredVariants/);
-  assert.match(source, /setVariantModal\(\(previous\) => \(\{ \.\.\.previous, group: refreshedGroup \}\)\)/);
-  assert.match(source, /disabled=\{!hasMatchingCombination\}/);
+  assert.match(source, /getPosAttributeSelectionModel\(\s*filteredVariants/);
+  assert.match(source, /groupProductsForPos\(\s*inventory.filter/);
+  assert.match(source, /group: refreshedGroup/);
+  assert.match(source, /item.code === previousIdentity.code && String\(item.id\) === String\(previousIdentity.id\)/);
+  assert.match(source, /selectedVariantCode: retainedSelection\?\.code/);
+  assert.match(source, /selectedAttributes: nextModel.selections/);
+  assert.match(source, /previous.selectedAttributes, selectedSku/);
+  assert.match(source, /disabled=\{!option.exists\}/);
 });
 
 test('out-of-stock options stay actionable only for exact-SKU recommendations', async () => {
@@ -244,9 +326,10 @@ test('out-of-stock options stay actionable only for exact-SKU recommendations', 
 
   assert.equal(resolved.matchedVariant.code, 'WIRE-35');
   assert.equal(resolved.matchedVariant.stock, 0);
-  assert.match(source, /Sold out — click to view alternatives/);
-  assert.match(source, /Out of stock\. View recommendations\./);
-  assert.match(source, /openRecommendationResults\(exactUnavailableVariant, 'alternative', \{ type: 'out-of-stock' \}\)/);
+  assert.match(source, /option.label \+ '\. Sold out\.'/);
+  assert.match(source, /!option.hasStock \? 'border-rose-200/);
+  assert.match(source, /canOpenAlternatives \? "View Recommendations"/);
+  assert.match(source, /openRecommendationResults\(matchedVariant, 'alternative', \{ type: forcedType \}\)/);
 });
 
 test('grouped-product tooltips render through a viewport-aware portal', () => {

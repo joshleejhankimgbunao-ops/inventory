@@ -1,4 +1,5 @@
 import React from 'react';
+import { getTransactionProductDisplayName, hasStoredProductName } from '../utils/productDisplayName';
 import { formatCurrency } from '../utils/numberFormat';
 import { isVoidedOrderConfirmation } from '../utils/saleVoid';
 import { ORDER_CONFIRMATION_PREVIEW_SIZE } from '../constants/orderConfirmationPreview';
@@ -25,6 +26,8 @@ const hasSavedNumber = (value) => value !== null
 const ReceiptPreviewModal = ({
   transaction,
   settings = {},
+  inventory = [],
+  categories = [],
   isOrderConfirmation = false,
   isCreditPaymentConfirmation = false,
   subtitle = 'Official record copy',
@@ -47,7 +50,10 @@ const ReceiptPreviewModal = ({
   const isVoidedConfirmation = isVoidedOrderConfirmation(transaction, isOrderConfirmation);
   const usesConfirmationLayout = isOrderConfirmation || isCreditPaymentConfirmation;
   const usesUnitPriceColumn = isOrderConfirmation;
-  const documentTitle = isOrderConfirmation
+  const vatNotCalculated = transaction.vatCalculationStatus === 'not_calculated';
+  const documentTitle = vatNotCalculated && isSpecialOrder
+    ? 'Special Order Transaction Slip'
+    : isOrderConfirmation
     ? 'Order Confirmation'
     : isCreditPaymentConfirmation
       ? 'Credit Payment Confirmation'
@@ -112,7 +118,7 @@ const ReceiptPreviewModal = ({
               )}
               {transaction.transactionReference?.referenceNumber && (
                 <div className="mb-1 flex justify-between gap-2">
-                  <span className="shrink-0 text-gray-500">Transaction Reference:</span>
+                  <span className="shrink-0 text-gray-500">Invoice No.:</span>
                   <span className="break-all text-right text-gray-800">{transaction.transactionReference.referenceNumber}</span>
                 </div>
               )}
@@ -132,7 +138,7 @@ const ReceiptPreviewModal = ({
               )}
               <div className="flex justify-between gap-2">
                 <span className="shrink-0 text-gray-500">{isOrderConfirmation ? 'Payment Type:' : 'Payment:'}</span>
-                <span className="text-right text-gray-800">{transaction.paymentMethod || 'Cash'}</span>
+                <span className="text-right text-gray-800">{transaction.collectionSource === 'special_order_ledger' ? 'Recorded Special Order payments' : transaction.paymentMethod || 'Cash'}</span>
               </div>
             </div>
 
@@ -161,7 +167,7 @@ const ReceiptPreviewModal = ({
                   return (
                     <tr key={`${item.id || item.code || 'receipt-item'}-${index}`} className="border-b border-gray-50">
                       <td className={usesConfirmationLayout ? 'py-2 pr-2' : 'py-1'}>
-                        <div className="font-semibold leading-tight text-gray-800">{item.brand ? `${item.brand} ` : ''}{item.name || 'Item'}{item.color ? ` — ${item.color}` : ''}</div>
+                        <div className="font-semibold leading-tight text-gray-800">{item.brand && hasStoredProductName(item) ? `${item.brand} ` : ''}{getTransactionProductDisplayName(item, inventory, categories)}{item.color && hasStoredProductName(item) ? ` — ${item.color}` : ''}</div>
                         {item.code && <div className={`${usesConfirmationLayout ? 'text-[11px] text-gray-500' : 'text-[8px]'} leading-tight`}>{item.code}</div>}
                         {!usesUnitPriceColumn && <div className={`${usesConfirmationLayout ? 'text-[11px]' : 'text-[8px]'} leading-tight text-gray-400`}>{formatCurrency(unitPrice)} each</div>}
                       </td>
@@ -175,11 +181,12 @@ const ReceiptPreviewModal = ({
             </table>
 
             <div className={`${usesConfirmationLayout ? 'space-y-1.5 pt-3 text-xs leading-relaxed sm:text-[13px]' : 'space-y-1 pt-2 text-[9px] leading-tight'} border-t border-gray-200 text-right`}>
-              {usesConfirmationLayout && hasSavedNumber(transaction.netAmount) && (
-                <div className="flex justify-between text-gray-600"><span>Net Amount</span><span>{formatCurrency(transaction.netAmount)}</span></div>
+              {usesConfirmationLayout && vatNotCalculated && <div className="flex justify-between text-gray-600"><span>VAT Classification</span><span>{transaction.taxTreatment === 'vat_zero_rated' ? 'VAT Zero-Rated' : 'VAT-Rated'}</span></div>}
+              {usesConfirmationLayout && (vatNotCalculated || hasSavedNumber(transaction.netAmount)) && (
+                <div className="flex justify-between text-gray-600"><span>Net Amount</span><span>{vatNotCalculated ? 'Not calculated' : formatCurrency(transaction.netAmount)}</span></div>
               )}
-              {usesConfirmationLayout && hasSavedNumber(transaction.vatAmount) && (
-                <div className="flex justify-between text-gray-600"><span>VAT</span><span>{formatCurrency(transaction.vatAmount)}</span></div>
+              {usesConfirmationLayout && (vatNotCalculated || hasSavedNumber(transaction.vatAmount)) && (
+                <div className="flex justify-between text-gray-600"><span>VAT</span><span>{vatNotCalculated ? 'Not calculated' : formatCurrency(transaction.vatAmount)}</span></div>
               )}
               <div className={`${usesConfirmationLayout ? 'mt-2 pt-2 text-lg' : 'mt-1 pt-1 text-[13px]'} flex justify-between border-t border-gray-900 font-semibold text-gray-900`}>
                 <span>TOTAL</span>
@@ -199,6 +206,12 @@ const ReceiptPreviewModal = ({
                     <div className={`flex justify-between ${usesConfirmationLayout ? 'text-xs sm:text-[13px]' : 'text-[9px]'} text-gray-500`}>
                       <span>Payment Method</span>
                       <span>{transaction.creditPaymentMode}</span>
+                    </div>
+                  )}
+                  {hasSavedNumber(transaction.downPaymentAmount) && (
+                    <div className={`flex justify-between ${usesConfirmationLayout ? 'text-xs sm:text-[13px]' : 'text-[9px]'} text-gray-500`}>
+                      <span>Down Payment</span>
+                      <span>{formatCurrency(transaction.downPaymentAmount)}</span>
                     </div>
                   )}
                   {hasSavedNumber(transaction.amountPaid) && (
@@ -268,14 +281,13 @@ const ReceiptPreviewModal = ({
           </div>
         </div>
 
-        <div className={`grid grid-cols-2 gap-2 border-t border-gray-100 bg-gray-50 ${usesConfirmationLayout ? 'p-3 sm:p-4' : 'p-2'}`}>
-          <button type="button" onClick={onClose} disabled={isPrinting} className={`flex items-center justify-center rounded-xl bg-white px-4 ${usesConfirmationLayout ? 'py-2.5' : 'py-2'} text-xs font-semibold uppercase tracking-widest text-gray-600 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:bg-gray-100 disabled:opacity-50`}>
-            Close
-          </button>
-          <button type="button" onClick={onPrint} disabled={isPrinting} className={`flex items-center justify-center rounded-xl px-4 ${usesConfirmationLayout ? 'py-2.5' : 'py-2'} text-xs font-semibold uppercase tracking-widest text-white shadow-sm transition-all duration-300 ${isPrinting ? 'cursor-wait opacity-80' : 'hover:-translate-y-0.5 hover:opacity-90'}`} style={{ backgroundColor: isPrinted ? '#10B981' : '#111827', border: isPrinted ? '2px solid #10B981' : '2px solid #111827' }}>
-            {isPrinting ? 'Printing...' : isPrinted ? printedLabel : printLabel}
-          </button>
-        </div>
+        {!isCreditPaymentConfirmation && (
+          <div className={`flex shrink-0 justify-end gap-2 border-t border-gray-100 bg-gray-50 ${usesConfirmationLayout ? 'p-3 sm:p-4' : 'p-2'}`}>
+            <button type="button" onClick={onPrint} disabled={isPrinting} className={`flex items-center justify-center rounded-xl px-4 ${usesConfirmationLayout ? 'py-2.5' : 'py-2'} text-xs font-semibold uppercase tracking-widest text-white shadow-sm transition-all duration-300 ${isPrinting ? 'cursor-wait opacity-80' : 'hover:-translate-y-0.5 hover:opacity-90'}`} style={{ backgroundColor: isPrinted ? '#10B981' : '#111827', border: isPrinted ? '2px solid #10B981' : '2px solid #111827' }}>
+              {isPrinting ? 'Printing...' : isPrinted ? printedLabel : printLabel}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

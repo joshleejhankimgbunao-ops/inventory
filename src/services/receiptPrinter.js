@@ -8,7 +8,7 @@ const toOptionalNumber = (value) => {
   return Number.isFinite(number) ? number : null;
 };
 
-const normalizeReceiptItem = (item) => {
+const normalizeReceiptItem = (item, { operationalList = false } = {}) => {
   const qty = Number(item?.qty ?? item?.quantity ?? 0) || 0;
   const unitPrice = Number(item?.price ?? item?.unitPrice ?? 0) || 0;
   const subtotal = Number(item?.subtotal ?? (qty * unitPrice)) || 0;
@@ -22,13 +22,25 @@ const normalizeReceiptItem = (item) => {
     code: String(item?.code || '').trim(),
     sellingUnit: String(item?.sellingUnit || item?.unit || '').trim(),
     qty,
-    unitPrice,
-    subtotal,
+    unitPrice: operationalList ? 0 : unitPrice,
+    subtotal: operationalList ? 0 : subtotal,
+    ...(operationalList ? {
+      batchPicks: Array.isArray(item?.batchPicks) ? item.batchPicks.map((pick) => ({
+        batchId: String(pick?.batchId || '').trim(),
+        batchReference: String(pick?.batchReference || '').trim(),
+        lotNumber: String(pick?.lotNumber || '').trim(),
+        expiryDate: String(pick?.expiryDate || '').trim(),
+        quantity: Number(pick?.quantity || 0) || 0,
+        status: String(pick?.status || 'provisional').trim(),
+      })).filter((pick) => pick.batchId && pick.expiryDate && pick.quantity > 0) : [],
+      batchPickNotice: String(item?.batchPickNotice || '').trim(),
+    } : {}),
   };
 };
 
 const normalizeReceiptTransaction = (transaction = {}, settings = {}, { isReprint = false } = {}) => {
-  const items = Array.isArray(transaction?.items) ? transaction.items.map(normalizeReceiptItem) : [];
+  const isDraftOrderList = String(transaction?.documentType || '').trim() === 'order-list-draft';
+  const items = Array.isArray(transaction?.items) ? transaction.items.map((item) => normalizeReceiptItem(item, { operationalList: isDraftOrderList })) : [];
   const paymentMethod = String(transaction?.paymentMethod || '').trim();
   const balanceSource = transaction?.remainingBalance ?? transaction?.balance;
   const balance = toOptionalNumber(balanceSource);
@@ -48,6 +60,7 @@ const normalizeReceiptTransaction = (transaction = {}, settings = {}, { isReprin
       date: String(transaction?.date || transaction?.createdAt || '').trim(),
       cashier: String(transaction?.cashier || transaction?.cashierName || '').trim(),
       paymentMethod,
+      collectionSource: transaction?.collectionSource || 'sale',
       documentType: String(transaction?.documentType || '').trim(),
       status: String(transaction?.status || '').trim().toLowerCase(),
       voidInfo: transaction?.voidInfo ? {
@@ -68,8 +81,10 @@ const normalizeReceiptTransaction = (transaction = {}, settings = {}, { isReprin
       total: Number(transaction?.total ?? transaction?.totalAmount ?? 0) || 0,
       cash,
       change,
-      netAmount: Number(transaction?.netAmount ?? transaction?.total ?? transaction?.totalAmount ?? 0) || 0,
-      vatAmount: Number(transaction?.vatAmount || 0) || 0,
+      vatCalculationStatus: transaction?.vatCalculationStatus || 'calculated',
+      taxTreatment: transaction?.taxTreatment || null,
+      netAmount: transaction?.vatCalculationStatus === 'not_calculated' ? null : Number(transaction?.netAmount ?? transaction?.total ?? transaction?.totalAmount ?? 0) || 0,
+      vatAmount: transaction?.vatCalculationStatus === 'not_calculated' ? null : Number(transaction?.vatAmount || 0) || 0,
       grossAmount: Number(transaction?.grossAmount ?? transaction?.total ?? transaction?.totalAmount ?? 0) || 0,
       isReprint: Boolean(isReprint),
       items,
@@ -121,7 +136,13 @@ const postToLocalPrinterService = async (payload, timeoutMs = SINGLE_PRINT_TIMEO
 
 export const buildReceiptPrintPayload = (transaction = {}, settings = {}, options = {}) => normalizeReceiptTransaction(transaction, settings, options);
 
-export const printDocument = async ({ lines } = {}) => {
+export const printDocument = async ({
+  lines,
+  centeredHeaderLineCount = 0,
+  centeredLineIndexes = [],
+  alignedTextLines = [],
+  fullWidthSeparatorLineIndexes = [],
+} = {}) => {
   const normalizedLines = Array.isArray(lines)
     ? lines.map((line) => String(line ?? ''))
     : [];
@@ -130,8 +151,29 @@ export const printDocument = async ({ lines } = {}) => {
     throw new Error('At least one print line is required.');
   }
 
-  await postToLocalPrinterService({ lines: normalizedLines });
-  return { ok: true, source: 'local-service', payload: { lines: normalizedLines } };
+  const centeredCount = Number.isInteger(centeredHeaderLineCount)
+    ? Math.max(0, Math.min(centeredHeaderLineCount, normalizedLines.length))
+    : 0;
+  const normalizeIndexes = (indexes) => Array.isArray(indexes)
+    ? [...new Set(indexes.filter((index) => Number.isInteger(index) && index >= 0 && index < normalizedLines.length))]
+    : [];
+  const payload = { lines: normalizedLines, centeredHeaderLineCount: centeredCount };
+  const normalizedCenteredLineIndexes = normalizeIndexes(centeredLineIndexes);
+  const normalizedSeparators = normalizeIndexes(fullWidthSeparatorLineIndexes);
+  const normalizedAlignedLines = Array.isArray(alignedTextLines)
+    ? alignedTextLines
+      .filter((line) => Number.isInteger(line?.lineIndex) && line.lineIndex >= 0 && line.lineIndex < normalizedLines.length)
+      .map((line) => ({
+        lineIndex: line.lineIndex,
+        leftText: String(line.leftText ?? ''),
+        rightText: String(line.rightText ?? ''),
+      }))
+    : [];
+  if (normalizedCenteredLineIndexes.length > 0) payload.centeredLineIndexes = normalizedCenteredLineIndexes;
+  if (normalizedSeparators.length > 0) payload.fullWidthSeparatorLineIndexes = normalizedSeparators;
+  if (normalizedAlignedLines.length > 0) payload.alignedTextLines = normalizedAlignedLines;
+  await postToLocalPrinterService(payload);
+  return { ok: true, source: 'local-service', payload };
 };
 
 export const printReceipt = async ({

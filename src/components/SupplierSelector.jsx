@@ -15,6 +15,8 @@ const SupplierSelector = ({
     onSelect,
     selectedValue,
     placeholder,
+    name,
+    validationKey,
 }) => {
     const anchorRef = useRef(null);
     const dropdownRef = useRef(null);
@@ -178,6 +180,8 @@ const SupplierSelector = ({
         <div ref={anchorRef} className="relative w-full">
             <input
                 type="text"
+                name={name}
+                data-validation-key={validationKey}
                 value={query}
                 role="combobox"
                 aria-autocomplete="list"

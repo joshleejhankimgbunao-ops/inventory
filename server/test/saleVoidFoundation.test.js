@@ -137,6 +137,55 @@ test('valid-sales API excludes voided records while History does not filter them
   assert.equal(Object.hasOwn(capturedQueries[1], 'status'), false);
 });
 
+test('History always returns archived sales with their original archive and void status metadata', async (context) => {
+  const originalFind = Sale.find;
+  const archivedSale = regularCashSale({
+    isArchived: true,
+    archivedAt: new Date('2026-01-15T12:00:00.000Z'),
+    archivedBy: '68a01234567890abcdef2222',
+    status: 'voided',
+    createdAt: new Date('2026-01-12T00:00:00.000Z'),
+    totalAmount: 435.5,
+    customerName: 'Historical Customer',
+    transactionReference: { referenceNumber: 'REF-ARCHIVED-1' },
+  });
+  let capturedQuery;
+  context.after(() => { Sale.find = originalFind; });
+  Sale.find = (query) => {
+    capturedQuery = query;
+    return {
+      populate() { return this; },
+      sort: async () => [archivedSale],
+    };
+  };
+
+  const result = await listSalesHistoryView(
+    { query: { includeArchived: 'false' }, user: { role: 'admin' } },
+    { json: (body) => body },
+    assert.fail,
+  );
+
+  assert.deepEqual(capturedQuery, {});
+  assert.equal(result.length, 1);
+  assert.equal(result[0].isArchived, true);
+  assert.equal(result[0].status, 'voided');
+  assert.equal(result[0].total, 435.5);
+  assert.equal(result[0].customerName, 'Historical Customer');
+  assert.equal(result[0].transactionReference.referenceNumber, 'REF-ARCHIVED-1');
+  assert.equal(result[0].date, archivedSale.createdAt);
+});
+
+test('Sales API no longer exposes archive or restore mutations and retains void routes', () => {
+  const router = require('../src/routes/saleRoutes');
+  const routes = router.stack
+    .filter((layer) => layer.route)
+    .map((layer) => ({ path: layer.route.path, methods: layer.route.methods }));
+
+  assert.equal(routes.some((route) => route.path === '/:id/archive' || route.path === '/:id/restore'), false);
+  assert.equal(routes.some((route) => route.path === '/:id/void' && route.methods.post), true);
+  assert.equal(routes.some((route) => route.path === '/:id/void-request' && route.methods.post), true);
+});
+
 test('phase-1 eligibility accepts only persisted regular Cash Sales with valid product linkage', () => {
   assert.equal(getSaleVoidEligibility(regularCashSale()).eligible, true);
   assert.equal(getSaleVoidEligibility(regularCashSale({ status: undefined })).eligible, true);

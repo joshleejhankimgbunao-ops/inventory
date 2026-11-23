@@ -5,6 +5,7 @@ const { normalizeHumanReadable } = require('../../../shared/textNormalization.cj
 const { getEffectiveDefinitions, normalizeDefinitions } = require('../utils/productAttributes');
 const { categoryNameCondition } = require('../utils/categoryResolution');
 const { propagateCategoryRename } = require('../services/categoryAssociationService');
+const { publishCategoriesUpdated } = require('../services/realtimeService');
 
 const normalizeUnits = (units) => {
   if (!Array.isArray(units)) return undefined;
@@ -107,6 +108,7 @@ const createCategory = async (req, res, next) => {
       ...(productAttributes !== undefined ? { attributeSchemaVersion: 1 } : {}),
       showSupplier: true
     });
+    publishCategoriesUpdated({ reason: 'category.created', categoryId: category._id, name: category.name, isActive: category.isActive !== false });
     res.status(201).json(category);
   } catch (error) {
     if (error?.code === 'INVALID_PRODUCT_ATTRIBUTES') {
@@ -156,6 +158,7 @@ const updateCategory = async (req, res, next) => {
 
       }
       const previousName = category.name;
+      const previousIsActive = category.isActive !== false;
       const nameChanged = normalizedName !== undefined && normalizedName !== previousName;
       const updates = {
         normalizedName,
@@ -198,6 +201,17 @@ const updateCategory = async (req, res, next) => {
         applyCategoryUpdates(category, updates);
         updatedCategory = await category.save();
       }
+      const nextIsActive = updatedCategory.isActive !== false;
+      const reason = previousIsActive !== nextIsActive
+        ? (nextIsActive ? 'category.restored' : 'category.archived')
+        : (nameChanged ? 'category.renamed' : 'category.updated');
+      publishCategoriesUpdated({
+        reason,
+        categoryId: updatedCategory._id,
+        name: updatedCategory.name,
+        previousName,
+        isActive: nextIsActive,
+      });
       res.json({ ...updatedCategory.toObject(), productAttributes: getEffectiveDefinitions(updatedCategory) });
     } else {
       res.status(404);
@@ -238,6 +252,7 @@ const deleteCategory = async (req, res, next) => {
         });
       }
       await category.deleteOne();
+      publishCategoriesUpdated({ reason: 'category.deleted', categoryId: category._id, name: category.name, isActive: false });
       res.json({ message: 'Category removed' });
     } else {
       res.status(404);

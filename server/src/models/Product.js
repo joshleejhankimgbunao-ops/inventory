@@ -1,4 +1,56 @@
 const mongoose = require('mongoose');
+const { isValidExpiryDate } = require('../utils/productExpiry');
+const basisLimits = require('../../../shared/recommendationBasisLimits.json');
+
+const staffReasonSchema = new mongoose.Schema({
+  indicator: { type: String, enum: ['check', 'neutral', 'warning'], required: true },
+  text: { type: String, required: true, trim: true, maxlength: basisLimits.reasonText },
+}, { _id: false });
+const staffReasonsField = { type: [staffReasonSchema], default: undefined, validate: (rows) => !rows || rows.length <= basisLimits.reasonCount };
+
+const recommendationBasisSchema = new mongoose.Schema({
+  staffReasons: staffReasonsField,
+  type: { type: String, enum: ['alternative', 'budget'], required: true },
+  targetSku: { type: String, required: true },
+  candidateProduct: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
+  candidateSku: { type: String, required: true },
+  systemGenerated: { type: Boolean, default: false },
+  systemSuggestion: { type: String, default: undefined, trim: true, maxlength: basisLimits.systemSuggestion },
+  justification: { type: String, default: '', trim: true, maxlength: basisLimits.justification },
+  limitations: { type: String, default: '', trim: true, maxlength: basisLimits.limitations },
+  createdAt: { type: Date, required: true },
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  updatedAt: { type: Date, required: true },
+  updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  updatedByName: { type: String, default: '' },
+}, { _id: false });
+
+// Staff review is independent of legacy relationship membership and basis.
+const recommendationReviewSchema = new mongoose.Schema({
+  staffReasons: staffReasonsField,
+  targetSku: { type: String, required: true },
+  candidateProduct: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
+  candidateSku: { type: String, required: true },
+  decision: { type: String, enum: ['not_reviewed', 'approved', 'rejected'], required: true },
+  reviewReason: { type: String, default: '', trim: true, maxlength: basisLimits.reviewReason },
+  justification: { type: String, default: '', trim: true, maxlength: basisLimits.justification },
+  limitations: { type: String, default: '', trim: true, maxlength: basisLimits.limitations },
+  updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  updatedByName: { type: String, default: '' },
+  updatedAt: { type: Date, required: true },
+  revision: { type: Number, required: true, min: 1, validate: Number.isSafeInteger },
+}, { _id: false });
+
+// Initial receipt only: this is not a remaining/sellable batch balance.
+// Embedded so product + initial quantity + batch are one atomic insert.
+const initialStockBatchSchema = new mongoose.Schema({
+  quantityReceived: { type: Number, required: true, min: 0, validate: Number.isSafeInteger },
+  sellingUnit: { type: String, required: true, trim: true },
+  expiryDate: { type: String, required: true, validate: isValidExpiryDate },
+  lotNumber: { type: String, default: '', trim: true, maxlength: 100 },
+  receivedAt: { type: Date, default: Date.now, required: true },
+  receivedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+});
 
 const productSchema = new mongoose.Schema(
   {
@@ -9,7 +61,7 @@ const productSchema = new mongoose.Schema(
     },
     name: {
       type: String,
-      required: true,
+      default: '',
       trim: true,
     },
     color: {
@@ -60,15 +112,39 @@ const productSchema = new mongoose.Schema(
       default: '',
       trim: true,
     },
+    expiryTrackingEnabled: { type: Boolean, default: false },
+    // Current sellable batch lifecycle. Closed-period batches remain in the
+    // ledger for audit and historical Sale Void references, but are never
+    // considered by current-period stock operations.
+    expiryTrackingPeriodId: { type: String, default: null, trim: true },
+    expiryTrackingPeriodStartedAt: { type: Date, default: null },
+    // Aggregate stock that predates the current tracking period and still
+    // needs a physical batch assignment. Product.stock remains authoritative.
+    expiryUnassignedStock: { type: Number, default: 0, min: 0, validate: Number.isSafeInteger },
+    // Batch balances are authoritative only after an administrator reconciles
+    // physical lots against aggregate stock and active reservation holds.
+    expiryBatchReconciled: { type: Boolean, default: false },
+    expiryBatchReconciledAt: { type: Date, default: null },
+    expiryBatchReconciledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    initialStockBatch: { type: initialStockBatchSchema, default: null },
     stock: {
       type: Number,
       default: 0,
       min: 0,
     },
+    // Physical stock remains in `stock`; this counter is only an active hold.
+    reservedStock: { type: Number, default: 0, min: 0 },
     price: {
       type: Number,
       required: true,
       min: 0,
+    },
+    // Cost is recorded per sellable SKU. It is intentionally optional so
+    // historical products with no captured purchase cost remain unknown.
+    purchaseCost: {
+      type: Number,
+      min: 0,
+      default: undefined,
     },
     budgetTier: {
       type: String,
@@ -116,6 +192,9 @@ const productSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    recommendationBases: { type: [recommendationBasisSchema], default: [] },
+    recommendationReviews: { type: [recommendationReviewSchema], default: [] },
+    recommendationRevision: { type: Number, default: 0, min: 0, validate: Number.isSafeInteger },
     isActive: {
       type: Boolean,
       default: true,

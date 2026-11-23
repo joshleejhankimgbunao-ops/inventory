@@ -129,7 +129,7 @@ test('non-cashier self-profile updates retain their existing identity update cap
   assert.equal(user.phone, '09991234567');
 });
 
-test('Profile renders Cashier personal details as read-only and keeps Automatic Printing available', () => {
+test('Profile renders Cashier personal details as read-only without an obsolete automatic-print preference', () => {
   const fs = require('node:fs');
   const path = require('node:path');
   const source = fs.readFileSync(path.resolve(__dirname, '../../src/pages/Profile.jsx'), 'utf8');
@@ -137,7 +137,6 @@ test('Profile renders Cashier personal details as read-only and keeps Automatic 
   assert.match(source, /const isCashierProfile = userRole === ROLES\.CASHIER/);
   assert.match(source, /Personal account details are managed by an administrator\./);
   assert.match(source, /<dl className="grid grid-cols-1 gap-x-6 gap-y-5 md:grid-cols-2">/);
-  assert.match(source, /Automatically print the Order Confirmation after a successful transaction\./);
-  assert.match(source, /aria-label=\{`\$\{autoPrint \? 'Disable' : 'Enable'\} automatic printing`\}/);
+  assert.doesNotMatch(source, /Automatic Printing|Automatically print the Order Confirmation|autoPrintReceipts/);
   assert.match(source, /\{\(!isCashierProfile \|\| activeSection === 'security'\) && \(/);
 });

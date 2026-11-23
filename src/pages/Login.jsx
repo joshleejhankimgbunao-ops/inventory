@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
+// `motion` is used as a JSX member; core no-unused-vars does not count that reference.
+// eslint-disable-next-line no-unused-vars
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { showToast } from '../utils/toastHelper';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
@@ -6,9 +9,11 @@ import { ROLES } from '../constants/roles';
 import { loginApi, requestPasswordResetApi, requestPinResetApi } from '../services/authApi';
 import { setAuthToken } from '../services/apiClient';
 import DateTimeDisplay from '../components/DateTimeDisplay';
+import './Login.css';
 import logo from '../assets/logo.png';
 import img28 from '../assets/2.8 (1).jpg';
 import img16 from '../assets/1.6.jpg';
+import { authFormTransition, authFormVariants, getAuthMotionTransition } from '../utils/authTransitions';
 
 const EyeIcon = () => (
   <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -27,6 +32,7 @@ const EyeOffIcon = () => (
 );
 
 const Login = ({ onLogin }) => {
+  const prefersReducedMotion = useReducedMotion();
   const { appSettings, applyAuthenticatedSession } = useAuth();
   const { logActivity } = useInventory();
   const [email, setEmail] = useState('');
@@ -46,6 +52,10 @@ const Login = ({ onLogin }) => {
   const [showForgot, setShowForgot] = useState(false); // toggle forgot screen
   const [forgotType, setForgotType] = useState('password'); // or 'pin'
   const [forgotEmail, setForgotEmail] = useState('');
+  const formMotionTransition = getAuthMotionTransition(prefersReducedMotion, authFormTransition);
+  const authScreenKey = showForgot
+    ? `forgot-${forgotType}`
+    : needsPin ? 'pin-verification' : 'login-credentials';
 
   // clear email field whenever forgot panel opens
   useEffect(() => {
@@ -201,7 +211,9 @@ const Login = ({ onLogin }) => {
         setEmail('');
         setPassword('');
         setPin('');
-        setNeedsPin(false);
+        // Keep the PIN view mounted for the outer authentication screen's exit.
+        // Resetting needsPin here would start a competing PIN → Login animation
+        // while this entire screen is already transitioning to the Dashboard.
         logActivity(backendName, 'Logged In');
 
         onLogin();
@@ -255,9 +267,9 @@ const Login = ({ onLogin }) => {
   }, [needsPin, isLoading]);
    
   return (
-    <div className="login-page relative flex min-h-screen items-center justify-center bg-gradient-to-br from-[#111827] via-slate-900 to-[#0f1419] p-4 overflow-hidden">
+    <div className="login-page relative">
       {/* Header Date Time Display */}
-      <div className="absolute top-6 left-0 right-0 z-20 flex justify-center">
+      <div className="login-clock relative z-20 flex justify-center">
          <div className="login-date-pill bg-white/10 backdrop-blur-md border border-white/10 px-6 py-2 rounded-full shadow-lg">
             <DateTimeDisplay className="text-center" dateClassName="text-white font-medium" timeClassName="text-gray-300 font-normal" oneLine={true} />
          </div>
@@ -270,20 +282,33 @@ const Login = ({ onLogin }) => {
         <div className="absolute bottom-[-10%] left-[20%] w-[40%] h-[40%] bg-purple-100/10 rounded-full mix-blend-overlay filter blur-3xl opacity-30 animate-blob animation-delay-4000"></div>
       </div>
 
-      <div className={`login-card flex w-full max-w-4xl overflow-hidden rounded-2xl bg-white shadow-2xl z-10 transition-transform duration-300 ${errorShake ? 'animate-shake' : ''}`}>
+      <div className={`login-card flex w-full max-w-4xl rounded-2xl bg-white shadow-2xl z-10 transition-transform duration-300 ${errorShake ? 'animate-shake' : ''}`}>
         <div className="login-panel w-full p-6 md:w-[40%] flex flex-col justify-center relative">
           
-          <div className="mb-4 text-center mt-6">
-            <div className="mx-auto mb-2 h-14 w-14 hover:scale-105 transition-transform duration-500 cursor-pointer">
+          <div className="login-heading mb-4 text-center mt-6">
+            <div className="login-logo mx-auto mb-2 h-14 w-14 hover:scale-105 transition-transform duration-500 cursor-pointer">
                 <img src={logo} alt="Logo" className="h-full w-full object-contain drop-shadow-sm rounded-full" />
             </div>
-            <h2 className="login-title text-2xl font-semibold text-gray-900 tracking-tight">Welcome Back</h2>
-            <p className="login-subtitle text-xs font-medium text-gray-500 mt-1 mb-3">Inventory & Point of Sale Management System</p>
+            <h2 className="login-title text-large font-semibold m-3 text-gray-900 tracking-tight">Tableria La Confianza Workspace</h2>
           </div>
 
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.div
+              key={authScreenKey}
+              className="login-auth-transition-screen"
+              variants={authFormVariants}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+              transition={formMotionTransition}
+              onAnimationComplete={() => {
+                if (authScreenKey === 'pin-verification' && !isLoading) inputsRef.current?.[0]?.focus();
+              }}
+            >
           <form onSubmit={handleSubmit} className="space-y-3" autoComplete="on">
             {!showForgot && (
               <>
+            <div className="login-auth-step space-y-3">
             {!needsPin && (
             <>
             <div className="relative group">
@@ -300,7 +325,7 @@ const Login = ({ onLogin }) => {
               />
               <label 
                 htmlFor="username" 
-                className="login-input-label absolute left-10 top-0 z-10 origin-[0] -translate-y-1/2 scale-75 transform bg-white px-1 text-xs text-gray-400 duration-300 peer-placeholder-shown:top-1/2 peer-placeholder-shown:-translate-y-1/2 peer-placeholder-shown:scale-100 peer-focus:top-0 peer-focus:-translate-y-1/2 peer-focus:scale-75 peer-focus:text-gray-900"
+                className="login-input-label absolute left-10 z-10 bg-white px-1 text-xs text-gray-400"
               >
                 Username or Employee ID
               </label>
@@ -324,7 +349,7 @@ const Login = ({ onLogin }) => {
               />
               <label 
                 htmlFor="password" 
-                className="login-input-label absolute left-10 top-0 z-10 origin-[0] -translate-y-1/2 scale-75 transform bg-white px-1 text-xs text-gray-400 duration-300 peer-placeholder-shown:top-1/2 peer-placeholder-shown:-translate-y-1/2 peer-placeholder-shown:scale-100 peer-focus:top-0 peer-focus:-translate-y-1/2 peer-focus:scale-75 peer-focus:text-gray-900"
+                className="login-input-label absolute left-10 z-10 bg-white px-1 text-xs text-gray-400"
               >
                 Password
               </label>
@@ -336,6 +361,8 @@ const Login = ({ onLogin }) => {
               <button 
                 type="button" 
                 onClick={() => setShowPassword(!showPassword)}
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+                aria-pressed={showPassword}
                 className="login-password-toggle absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-900 transition-colors cursor-pointer outline-none"
               >
                 {showPassword ? <EyeOffIcon /> : <EyeIcon />}
@@ -346,30 +373,31 @@ const Login = ({ onLogin }) => {
 
             {needsPin && (
             <>
-            <div className="flex items-center mb-2">
+            <div className="login-pin-instruction flex items-center mb-2">
               <button
                 type="button"
                 onClick={() => { setNeedsPin(false); setPin(''); setEmail(''); setPassword(''); }}
-                className="group relative flex items-center justify-center h-6 w-6 text-gray-500 hover:text-gray-900 mr-2 -mt-1"
+                className="login-pin-back group relative flex items-center justify-center h-8 w-8 shrink-0 rounded-md text-gray-500 hover:text-gray-900 mr-2 -mt-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500"
                 aria-label="Back to Sign in"
-                title="Back to Sign in"
+                aria-describedby="login-pin-back-tooltip"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 leading-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <circle cx="12" cy="12" r="9"></circle>
                   <path d="M13.5 8.5 10 12l3.5 3.5"></path>
                 </svg>
-                <div className="pointer-events-none absolute bottom-full left-1/2 mb-2 w-max -translate-x-1/2 rounded bg-gray-900 px-2 py-1 text-[10px] font-medium text-white opacity-0 shadow-md transition-all duration-200 group-hover:opacity-100 group-hover:translate-y-0 translate-y-1">
+                <span id="login-pin-back-tooltip" role="tooltip" className="login-pin-back-tooltip pointer-events-none absolute bottom-full left-0 mb-2 w-max max-w-[calc(100vw-2rem)] rounded bg-gray-900 px-2 py-1 text-[10px] font-medium text-white opacity-0 shadow-md transition-all duration-200 group-hover:opacity-100 group-focus-visible:opacity-100">
                   Back to Sign in
-                  <div className="absolute -bottom-1 left-1/2 -ml-1 h-2 w-2 rotate-45 bg-gray-900"></div>
-                </div>
+                  <span className="absolute -bottom-1 left-3 h-2 w-2 rotate-45 bg-gray-900"></span>
+                </span>
               </button>
               <p className="text-sm text-gray-600 mb-2">Please enter your 6‑digit security PIN to continue.</p>
             </div>
-            <div className="flex justify-center gap-2 mt-4">
+            <div className="login-pin-grid mt-4" role="group" aria-label="Security PIN">
               {[...Array(6)].map((_, i) => (
+                <div className="login-pin-cell" key={i}>
                 <input
-                  key={i}
                   type="password"
+                  aria-label={`PIN digit ${i + 1}`}
                   inputMode="numeric"
                   pattern="[0-9]*"
                   maxLength={1}
@@ -413,10 +441,13 @@ const Login = ({ onLogin }) => {
                   className="login-pin-input w-10 h-10 text-center border border-gray-400 rounded-md text-base font-semibold text-gray-900 bg-white focus:border-gray-900 focus:outline-none"
                   required
                 />
+                <span className="login-pin-mask" aria-hidden="true">{pin[i] ? '\u2022' : ''}</span>
+                </div>
               ))}
             </div>
             </>
             )}
+            </div>
             {!showForgot && (
               <div className="mb-4 text-right text-xs">
                 <button
@@ -435,7 +466,9 @@ const Login = ({ onLogin }) => {
               <button
                 type="submit"
                 disabled={needsPin || isLoading || cooldown}
-                className={`login-primary-action w-full h-10 rounded-xl text-sm font-semibold tracking-wide mt-2 flex items-center justify-center gap-2 relative overflow-hidden ${(needsPin && !isLoading) ? 'bg-transparent text-black shadow-none cursor-default' : 'bg-[#111827] text-white shadow-lg transition-all duration-300'} ${(!needsPin && !isLoading) ? 'hover:opacity-90 transform active:scale-95 hover:-translate-y-0.5' : ''}`}
+                aria-live={needsPin ? 'polite' : undefined}
+                aria-atomic={needsPin ? 'true' : undefined}
+                className={`login-primary-action ${needsPin ? 'login-pin-status-slot' : ''} w-full h-10 rounded-xl text-sm font-semibold tracking-wide mt-2 flex items-center justify-center gap-2 relative overflow-hidden ${(needsPin && !isLoading) ? 'bg-transparent text-black shadow-none cursor-default' : 'bg-[#111827] text-white shadow-lg transition-all duration-300'} ${(!needsPin && !isLoading) ? 'hover:opacity-90 transform active:scale-95 hover:-translate-y-0.5' : ''}`}
               >
                 {isLoading ? (
                     <>
@@ -464,12 +497,7 @@ const Login = ({ onLogin }) => {
                         /* Empty state for cleaner UI since instructions are already above */
                         <span></span>
                       ) : (
-                        <>
-                        Sign In
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-5 h-5">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" />
-                        </svg>
-                        </>
+                        <span>Sign In</span>
                       )}
                     </>
                 )}
@@ -523,7 +551,7 @@ const Login = ({ onLogin }) => {
                     className="login-reset-secondary px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-600 transition-colors"
                     onClick={handleForgotBack}
                   >
-                    {forgotType === 'pin' ? 'Back to PIN' : 'Back to Sign In'}
+                    {forgotType === 'pin' ? 'Back to PIN' : 'Back'}
                   </button>
                   <button
                     type="button"
@@ -537,6 +565,8 @@ const Login = ({ onLogin }) => {
               </div>
             </div>
           )}
+            </motion.div>
+          </AnimatePresence>
 
           <div className="login-contact-area mt-8 pt-6 border-t border-gray-100">
             <div className="flex justify-center space-x-8">
@@ -586,7 +616,7 @@ const Login = ({ onLogin }) => {
             </div>
           </div>
         </div>
-        <div className="login-image-panel hidden md:w-[60%] md:block relative overflow-hidden group">
+        <div className="login-image-panel hidden rounded-r-2xl md:w-[60%] md:block relative overflow-hidden group">
           {/* Overlay Effect for "Cinematic" look */}
           <div className="login-image-overlay absolute inset-0 bg-gradient-to-t from-gray-900/10 via-transparent to-transparent z-10 pointer-events-none"></div>
           
@@ -613,8 +643,8 @@ const Login = ({ onLogin }) => {
       </div>
 
       {/* Footer */}
-      <div className="login-footer absolute bottom-4 w-full text-center z-0 pointer-events-none">
-        <div className="flex flex-col items-center justify-center space-y-1 opacity-60">
+      <div className="login-footer relative w-full text-center">
+        <div className="flex flex-col items-center justify-center space-y-1">
              <p className="text-[10px] font-semibold text-gray-100 tracking-[0.2em] ">
                 &copy; 2026 Tableria La Confianza Co., Inc.
             </p>

@@ -1,19 +1,23 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useLayoutEffect, useCallback } from 'react';
 import StatCard from '../components/StatCard';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, PieChart, Pie, Cell } from 'recharts';
+import StockMovement from '../components/StockMovement';
+import { getDashboardBusinessDate, getDashboardReportingPeriod } from '../../shared/dashboardReportingPeriod.mjs';
+import { Bar, BarChart, CartesianGrid, LabelList, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
 import { formatCurrency, formatNumber } from '../utils/numberFormat';
-import ColoredPiePercentageLabel from '../components/ColoredPiePercentageLabel';
-import { ANALYTICS_PIE_COLORS, SALES_ANALYTICS_LINE_STYLE } from '../utils/analyticsChart';
+import { DASHBOARD_BAR_ACTIVE_COLOR, DASHBOARD_BAR_COLOR, SALES_ANALYTICS_LINE_STYLE } from '../utils/analyticsChart';
+import { areTopSellingProductRowsStable, buildDashboardSalesByCategory, buildDashboardTopSellingProducts, getBoundedChartTooltipPosition, wrapDashboardCategoryLabel } from '../utils/dashboardOverviewCharts.mjs';
 import { getConfiguredCategoryCount } from '../utils/categorySummary';
 import { listCreditTransactionsApi } from '../services/inventoryApi';
 import { getOutstandingCreditSummary } from '../utils/creditDueStatus';
 import { getDashboardComparisonPeriod, getMetricTrend, getPreviousPeriodMetrics } from '../utils/dashboardTrend';
 import MetricTrendLine from '../components/MetricTrendLine';
-import { getValidSales } from '../../shared/saleLifecycle.mjs';
+import { getValidSales, isSalePhysicallyFulfilledForItemReporting } from '../../shared/saleLifecycle.mjs';
 import { subscribeRealtimeEvent } from '../services/realtimeClient';
 import { getCashierDashboardSales, getCashierSalesTotal } from '../utils/cashierDashboardMetrics';
+import { calculateActiveInventorySellingValue } from '../utils/dashboardInventoryValuation';
+import { getProductDisplayName } from '../utils/productDisplayName';
 
 const ReceiptText = ({ className = 'h-5 w-5' }) => (
     <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -24,9 +28,15 @@ const ReceiptText = ({ className = 'h-5 w-5' }) => (
 
 const ANALYTICS_VIEWS = [
     ['sales', 'Sales Analytics'],
-    ['products', 'Top-Selling Products'],
+    ['products', 'Top Selling Products'],
     ['categories', 'Sales by Category'],
 ];
+const TOP_SELLING_LABEL_WIDTH = 164;
+const TOP_SELLING_TOOLTIP_HEIGHT = 82;
+const CATEGORY_MIN_ITEM_WIDTH = 88;
+const CATEGORY_AXIS_HEIGHT = 38;
+const CATEGORY_SCROLLBAR_CLEARANCE = 16;
+const TOP_SELLING_RESIZE_SETTLE_MS = 140;
 
 const getSalesYAxisWidth = (data) => {
     const largestDataValue = Math.max(0, ...data.map((entry) => Math.abs(Number(entry?.sales) || 0)));
@@ -41,26 +51,100 @@ const getSalesYAxisWidth = (data) => {
     return Math.min(128, Math.max(64, Math.ceil(longestLabel.length * 7) + 16));
 };
 
-const TopSellingProductsTooltip = ({ active, payload, showFinancials }) => {
+const TopSellingProductsTooltip = ({ active, payload }) => {
     if (!active || !payload?.length) {
         return null;
     }
 
     const product = payload[0]?.payload;
-    const quantity = Number(product?.value || 0);
-    const percentage = Number(product?.percentage || 0);
     const revenue = Number(product?.revenue || 0);
-    const revenueLabel = showFinancials
-        ? formatCurrency(revenue)
-        : '₱••••••';
+    const unitsSold = formatTopProductUnits(product?.unitsSoldByUnit);
+
+    return (
+        <div className="flex h-[82px] w-56 flex-col justify-center gap-0.5 overflow-hidden rounded-lg border border-gray-200 bg-white px-3 py-2 shadow-sm">
+            <p title={product?.name || 'Unknown product'} className="truncate text-xs font-semibold leading-4 text-gray-900">{product?.name || 'Unknown product'}</p>
+            {product?.code && <p title={`SKU: ${product.code}`} className="truncate text-[10px] leading-3 text-gray-500">SKU: {product.code}</p>}
+            <p title={unitsSold} className="truncate text-[10px] leading-3 text-gray-600">Units Sold: {unitsSold}</p>
+            <p className="truncate text-xs leading-4 text-gray-800">Sales Revenue: {formatCurrency(revenue)}</p>
+        </div>
+    );
+};
+
+const formatTopProductUnits = (unitsSoldByUnit = []) => {
+    const entries = Array.isArray(unitsSoldByUnit) ? unitsSoldByUnit : [];
+    if (entries.length === 0) return '0';
+    return entries.map(({ quantity, sellingUnit }) => (
+        `${formatNumber(quantity)}${sellingUnit ? ` ${sellingUnit}` : ''}`
+    )).join(' + ');
+};
+
+const SalesByCategoryTooltip = ({ active, payload }) => {
+    if (!active || !payload?.length) return null;
+    const category = payload[0]?.payload;
 
     return (
         <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 shadow-sm">
-            <p className="text-xs font-semibold text-gray-900">{product?.name || 'Unknown product'}</p>
-            <p className="text-xs text-gray-700">Quantity: {formatNumber(quantity)} units ({percentage.toFixed(0)}%)</p>
-            <p className="text-xs text-gray-700">Total Sales: {revenueLabel}</p>
+            <p className="text-xs font-semibold text-gray-900">{category?.name || 'Uncategorized'}</p>
+            <p className="text-xs text-gray-700">Sales: {formatCurrency(category?.value || 0)}</p>
         </div>
     );
+};
+
+const truncateAxisLabel = (value, maxCharacters = 30) => {
+    const name = String(value || '').trim() || 'Unknown product';
+    return name.length > maxCharacters ? `${name.slice(0, maxCharacters - 1).trimEnd()}…` : name;
+};
+
+const ProductNameAxisTick = ({ x, y, payload, products = [] }) => {
+    const name = String(payload?.value || 'Unknown product');
+    const displayName = truncateAxisLabel(name);
+    const product = products.find((entry) => entry.displayName === payload?.value);
+    const unitsSold = formatTopProductUnits(product?.unitsSoldByUnit);
+    const textX = x - 4;
+
+    return (
+        <g>
+            <title>{name}</title>
+            <text x={textX} y={y - 2} textAnchor="end" fill="#334155" fontSize={10}>
+                <tspan x={textX}>{displayName}</tspan>
+                <tspan x={textX} dy={11} fill="#94A3B8" fontSize={9}>{unitsSold} sold</tspan>
+            </text>
+        </g>
+    );
+};
+
+const CategoryAxisTick = ({ x, y, payload }) => {
+    const name = String(payload?.value || 'Uncategorized');
+    const lines = wrapDashboardCategoryLabel(name, 14, 2);
+
+    return (
+        <g>
+            <title>{name}</title>
+            <text x={x} y={y + 7} textAnchor="middle" fill="#475569" fontSize={10}>
+                {lines.map((line, index) => <tspan key={`${index}-${line}`} x={x} dy={index === 0 ? 0 : 10}>{line}</tspan>)}
+            </text>
+        </g>
+    );
+};
+
+const ProductRevenueBarLabel = ({ x, y, width, height, value }) => {
+    return (
+        <text x={x + width + 6} y={y + height / 2 + 4} fill="#334155" fontSize={10} textAnchor="start">
+            {formatCurrency(value)}
+        </text>
+    );
+};
+
+const formatCompactCurrency = (value) => {
+    const amount = Number(value) || 0;
+    if (Math.abs(amount) >= 1000000) return `₱${(amount / 1000000).toFixed(1)}m`;
+    if (Math.abs(amount) >= 10000) return `₱${(amount / 1000).toFixed(0)}k`;
+    return formatCurrency(amount);
+};
+
+const getCategoryYAxisWidth = (data) => {
+    const largestValue = Math.max(0, ...data.map((entry) => Math.abs(Number(entry?.value) || 0)));
+    return Math.min(108, Math.max(70, Math.ceil(formatCurrency(largestValue).length * 7) + 12));
 };
 
 const SalesAnalyticsTooltip = ({ active, payload, label }) => {
@@ -104,7 +188,26 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
     const [showFinancials, setShowFinancials] = useState(true);
     const [analyticsView, setAnalyticsView] = useState('sales');
     const [salesTooltipPosition, setSalesTooltipPosition] = useState(null);
+    const categoryChartContainerRef = React.useRef(null);
+    const [categoryChartInitialDimension, setCategoryChartInitialDimension] = useState(null);
+    const topSellingChartContainerRef = React.useRef(null);
+    const topSellingTooltipFrameRef = React.useRef(null);
+    const topSellingTooltipPositionRef = React.useRef({ x: 0, y: 0 });
+    const topSellingTooltipWidthRef = React.useRef(224);
+    const topSellingTooltipAnchorRef = React.useRef(null);
+    const topSellingChartSizeRef = React.useRef(null);
+    const topSellingResizeSettleTimerRef = React.useRef(null);
+    const topSellingIsResizingRef = React.useRef(false);
+    const previousTopSellingRowsRef = React.useRef(null);
+    const [topSellingAnimationKey, setTopSellingAnimationKey] = useState(null);
+    const [isTopSellingChartResizing, setIsTopSellingChartResizing] = useState(false);
+    const [prefersReducedMotion, setPrefersReducedMotion] = useState(() => (
+        typeof window !== 'undefined'
+        && typeof window.matchMedia === 'function'
+        && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    ));
     const [creditTransactions, setCreditTransactions] = useState([]);
+    const creditTransactionsRequestRef = React.useRef(0);
     // helper for currency display (show or mask based on toggle)
     const formatMoney = (amount) => {
         if (!showFinancials) return '₱ ••••••';
@@ -113,10 +216,34 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
 
     // Date range state (quick buttons)
     const [dateRange, setDateRange] = useState('week'); // 'today','week','month','year','specific_date','custom'
-    const [specificDate, setSpecificDate] = useState(new Date().toISOString().split('T')[0]);
+    const [specificDate, setSpecificDate] = useState(getDashboardBusinessDate());
     const [customStartDate, setCustomStartDate] = useState('');
     const [customEndDate, setCustomEndDate] = useState('');
     const isSuperAdmin = userRole === ROLES.SUPER_ADMIN;
+
+    useEffect(() => {
+        if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined;
+
+        const motionPreference = window.matchMedia('(prefers-reduced-motion: reduce)');
+        const updateMotionPreference = (event) => setPrefersReducedMotion(event.matches);
+
+        if (typeof motionPreference.addEventListener === 'function') {
+            motionPreference.addEventListener('change', updateMotionPreference);
+            return () => motionPreference.removeEventListener('change', updateMotionPreference);
+        }
+
+        motionPreference.addListener(updateMotionPreference);
+        return () => motionPreference.removeListener(updateMotionPreference);
+    }, []);
+
+    useEffect(() => () => {
+        if (topSellingTooltipFrameRef.current !== null && typeof window !== 'undefined') {
+            window.cancelAnimationFrame(topSellingTooltipFrameRef.current);
+        }
+        if (topSellingResizeSettleTimerRef.current !== null && typeof window !== 'undefined') {
+            window.clearTimeout(topSellingResizeSettleTimerRef.current);
+        }
+    }, []);
 
     useEffect(() => {
         if (!isSuperAdmin) {
@@ -124,21 +251,39 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
         }
 
         let isMounted = true;
-        const loadCreditTransactions = () => listCreditTransactionsApi({ status: 'All' })
-            .then((rows) => {
-                if (isMounted) setCreditTransactions(Array.isArray(rows) ? rows : []);
-            })
-            .catch(() => {
-                if (isMounted) setCreditTransactions([]);
-            });
+        const loadCreditTransactions = async () => {
+            const requestId = ++creditTransactionsRequestRef.current;
+            try {
+                const rows = await listCreditTransactionsApi({ status: 'All' });
+                if (isMounted && requestId === creditTransactionsRequestRef.current) {
+                    setCreditTransactions(Array.isArray(rows) ? rows : []);
+                }
+            } catch {
+                // Keep the last successful dashboard snapshot until the next resync.
+            }
+        };
+        let refreshTimer = null;
+        const scheduleRefresh = () => {
+            if (refreshTimer) window.clearTimeout(refreshTimer);
+            refreshTimer = window.setTimeout(() => {
+                refreshTimer = null;
+                void loadCreditTransactions();
+            }, 80);
+        };
 
-        loadCreditTransactions();
-        const unsubscribeSale = subscribeRealtimeEvent('sale.updated', loadCreditTransactions);
-        const unsubscribeCredit = subscribeRealtimeEvent('credit-transactions.updated', loadCreditTransactions);
+        void loadCreditTransactions();
+        const unsubscribeSaleCreated = subscribeRealtimeEvent('sale.created', scheduleRefresh);
+        const unsubscribeSaleUpdated = subscribeRealtimeEvent('sale.updated', scheduleRefresh);
+        const unsubscribeCredit = subscribeRealtimeEvent('credit-transactions.updated', scheduleRefresh);
+        const unsubscribeResync = subscribeRealtimeEvent('realtime.resync', scheduleRefresh);
         return () => {
             isMounted = false;
-            unsubscribeSale();
+            creditTransactionsRequestRef.current += 1;
+            if (refreshTimer) window.clearTimeout(refreshTimer);
+            unsubscribeSaleCreated();
+            unsubscribeSaleUpdated();
             unsubscribeCredit();
+            unsubscribeResync();
         };
     }, [isSuperAdmin]);
     const availableAnalyticsViews = isSuperAdmin
@@ -151,41 +296,17 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
         : availableAnalyticsViews[0]?.[0] || null;
     const analyticsTitle = availableAnalyticsViews.find(([view]) => view === activeAnalyticsView)?.[1] || 'Analytics';
 
+    const selectedReportingPeriod = useMemo(
+        () => getDashboardReportingPeriod({ dateRange, specificDate, customStartDate, customEndDate }),
+        [dateRange, specificDate, customStartDate, customEndDate]
+    );
     const selectedDateTransactions = useMemo(() => {
-        const now = new Date();
-        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
+        if (!selectedReportingPeriod) return [];
         return getValidSales(transactions).filter(t => {
             const tDate = new Date(t.date);
-
-            if (dateRange === 'today') {
-                return tDate >= today;
-            } else if (dateRange === 'week') {
-                const weekAgo = new Date(today);
-                weekAgo.setDate(weekAgo.getDate() - 7);
-                return tDate >= weekAgo;
-            } else if (dateRange === 'month') {
-                return (
-                    tDate.getFullYear() === today.getFullYear() &&
-                    tDate.getMonth() === today.getMonth()
-                );
-            } else if (dateRange === 'year') {
-                return tDate.getFullYear() === today.getFullYear();
-            } else if (dateRange === 'custom' && customStartDate && customEndDate) {
-                const start = new Date(customStartDate);
-                const end = new Date(customEndDate);
-                end.setHours(23, 59, 59, 999);
-                return tDate >= start && tDate <= end;
-            } else if (dateRange === 'specific_date' && specificDate) {
-                const target = new Date(specificDate);
-                const endTarget = new Date(specificDate);
-                endTarget.setHours(23, 59, 59, 999);
-                return tDate >= target && tDate <= endTarget;
-            }
-
-            return true; // 'all' or undefined
+            return tDate >= new Date(selectedReportingPeriod.start) && tDate < new Date(selectedReportingPeriod.end);
         });
-    }, [transactions, dateRange, customStartDate, customEndDate, specificDate]);
+    }, [transactions, selectedReportingPeriod]);
 
     const cashierSelectedDateTransactions = useMemo(() => getCashierDashboardSales(
         selectedDateTransactions,
@@ -227,49 +348,160 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
 
     const salesYAxisWidth = useMemo(() => getSalesYAxisWidth(trendData), [trendData]);
 
-    const topProducts = useMemo(() => {
-        const inventoryNameByCode = new Map(
-            processedInventory
-                .filter((item) => item?.code)
-                .map((item) => [item.code, item.name])
-        );
-
-        const productStats = {};
-        transactionsForTopProducts.forEach(t => {
-            t.items.forEach(item => {
-                if (!productStats[item.code]) {
-                    const canonicalName = inventoryNameByCode.get(item.code) || item.name;
-                    productStats[item.code] = { code: item.code, name: canonicalName, sales: 0, revenue: 0 };
-                }
-                productStats[item.code].sales += item.qty || 0;
-                productStats[item.code].revenue += (item.price || 0) * (item.qty || 0);
-            });
+    const topProducts = useMemo(() => buildDashboardTopSellingProducts(
+        transactionsForTopProducts.filter(isSalePhysicallyFulfilledForItemReporting),
+        processedInventory,
+        10,
+        categories
+    ), [categories, transactionsForTopProducts, processedInventory]);
+    const topSellingBarData = useMemo(() => {
+        const visibleProducts = topProducts.slice(0, 5);
+        const nameCounts = new Map();
+        visibleProducts.forEach(({ name }) => {
+            const key = String(name || '').toLocaleLowerCase();
+            nameCounts.set(key, (nameCounts.get(key) || 0) + 1);
         });
-
-        return Object.values(productStats)
-            .sort((a, b) => b.sales - a.sales)
-            .slice(0, 10)
-            .map((p, idx) => ({
-                id: idx + 1,
-                code: p.code,
-                name: p.name,
-                sales: p.sales,
-                revenueAmount: p.revenue,
-                revenue: formatCurrency(p.revenue),
-                percent: Math.min(100, Math.round((p.sales / 50) * 100))
-            }));
-    }, [transactionsForTopProducts, processedInventory]);
-
-    const topSellingPieData = useMemo(() => {
-        const totalQuantity = topProducts.reduce((sum, product) => sum + (product.sales || 0), 0);
-
-        return topProducts.map(product => ({
-            name: product.name,
-            value: product.sales,
-            revenue: product.revenueAmount || 0,
-            percentage: totalQuantity > 0 ? (product.sales / totalQuantity) * 100 : 0,
+        return visibleProducts.map((product) => ({
+            ...product,
+            displayName: nameCounts.get(String(product.name || '').toLocaleLowerCase()) > 1 && product.code
+                ? `${product.name} (SKU ${product.code})`
+                : product.name,
+            value: product.revenue,
         }));
     }, [topProducts]);
+    const topSellingChartKey = JSON.stringify(topSellingBarData.map(({ code, name, displayName, revenue, unitsSoldByUnit }) => [code, name, displayName, revenue, unitsSoldByUnit]));
+    const handleTopSellingAnimationEnd = useCallback(() => {
+        setTopSellingAnimationKey((animationKey) => (
+            animationKey === topSellingChartKey ? null : animationKey
+        ));
+    }, [topSellingChartKey]);
+
+    useLayoutEffect(() => {
+        const previous = previousTopSellingRowsRef.current;
+        const dataChanged = previous?.dataKey !== topSellingChartKey;
+        if (dataChanged) {
+            const canAnimateValues = previous
+                && !prefersReducedMotion
+                && !isTopSellingChartResizing
+                && !topSellingIsResizingRef.current
+                && activeAnalyticsView === 'products'
+                && areTopSellingProductRowsStable(previous.rows, topSellingBarData);
+            // Sync Recharts animation state before paint so values-only updates start smoothly.
+            const nextAnimationKey = canAnimateValues ? topSellingChartKey : null;
+            if (topSellingAnimationKey !== nextAnimationKey) {
+                // eslint-disable-next-line react-hooks/set-state-in-effect
+                setTopSellingAnimationKey(nextAnimationKey);
+            }
+        } else if ((prefersReducedMotion || isTopSellingChartResizing) && topSellingAnimationKey !== null) {
+            setTopSellingAnimationKey(null);
+        }
+
+        previousTopSellingRowsRef.current = {
+            dataKey: topSellingChartKey,
+            rows: topSellingBarData,
+        };
+    }, [topSellingChartKey, topSellingBarData, prefersReducedMotion, topSellingAnimationKey, activeAnalyticsView, isTopSellingChartResizing]);
+
+    const applyTopSellingTooltipPosition = () => {
+        const tooltipWrapper = topSellingChartContainerRef.current?.querySelector('.recharts-tooltip-wrapper');
+        if (!tooltipWrapper) return;
+
+        const { x, y } = topSellingTooltipPositionRef.current;
+        tooltipWrapper.style.transform = `translate(${x}px, ${y}px)`;
+        if (tooltipWrapper.firstElementChild) {
+            tooltipWrapper.firstElementChild.style.width = `${topSellingTooltipWidthRef.current}px`;
+        }
+    };
+    const scheduleTopSellingTooltipPosition = () => {
+        if (typeof window === 'undefined') return;
+        if (topSellingTooltipFrameRef.current !== null) {
+            window.cancelAnimationFrame(topSellingTooltipFrameRef.current);
+        }
+        topSellingTooltipFrameRef.current = window.requestAnimationFrame(() => {
+            topSellingTooltipFrameRef.current = null;
+            applyTopSellingTooltipPosition();
+        });
+    };
+    const handleTopSellingChartPointerMove = (event) => {
+        const chartElement = event.currentTarget.querySelector('.recharts-wrapper');
+        const chartRect = chartElement?.getBoundingClientRect?.();
+        if (!chartRect || chartRect.width <= 0 || chartRect.height <= 0) {
+            topSellingTooltipAnchorRef.current = null;
+            return;
+        }
+
+        const tooltipWidth = Math.max(0, Math.min(224, chartRect.width - TOP_SELLING_LABEL_WIDTH - 16));
+        const minX = Math.min(TOP_SELLING_LABEL_WIDTH + 8, chartRect.width - tooltipWidth - 8);
+        const anchorX = event.clientX - chartRect.left;
+        const anchorY = event.clientY - chartRect.top;
+        topSellingTooltipAnchorRef.current = {
+            xRatio: anchorX / chartRect.width,
+            yRatio: anchorY / chartRect.height,
+        };
+        topSellingTooltipWidthRef.current = tooltipWidth;
+        Object.assign(topSellingTooltipPositionRef.current, getBoundedChartTooltipPosition({
+            anchorX,
+            anchorY,
+            containerWidth: chartRect.width,
+            containerHeight: chartRect.height,
+            tooltipWidth,
+            tooltipHeight: TOP_SELLING_TOOLTIP_HEIGHT,
+            minX,
+        }));
+        scheduleTopSellingTooltipPosition();
+    };
+    const handleTopSellingChartResize = (width, height) => {
+        if (width <= 0 || height <= 0) return;
+
+        const measuredSize = { width: Math.round(width), height: Math.round(height) };
+        const previousSize = topSellingChartSizeRef.current;
+        const sizeChanged = !previousSize
+            || previousSize.width !== measuredSize.width
+            || previousSize.height !== measuredSize.height;
+        if (!sizeChanged) return;
+
+        topSellingChartSizeRef.current = measuredSize;
+        if (previousSize) {
+            if (!topSellingIsResizingRef.current) {
+                topSellingIsResizingRef.current = true;
+                setIsTopSellingChartResizing(true);
+                if (topSellingAnimationKey !== null) setTopSellingAnimationKey(null);
+            }
+            if (topSellingResizeSettleTimerRef.current !== null) {
+                window.clearTimeout(topSellingResizeSettleTimerRef.current);
+            }
+            topSellingResizeSettleTimerRef.current = window.setTimeout(() => {
+                topSellingResizeSettleTimerRef.current = null;
+                topSellingIsResizingRef.current = false;
+                setIsTopSellingChartResizing(false);
+            }, TOP_SELLING_RESIZE_SETTLE_MS);
+        }
+
+        const tooltipWidth = Math.max(0, Math.min(224, measuredSize.width - TOP_SELLING_LABEL_WIDTH - 16));
+        topSellingTooltipWidthRef.current = tooltipWidth;
+
+        const anchor = topSellingTooltipAnchorRef.current;
+        if (!anchor) return;
+
+        const minX = Math.min(TOP_SELLING_LABEL_WIDTH + 8, measuredSize.width - tooltipWidth - 8);
+        Object.assign(topSellingTooltipPositionRef.current, getBoundedChartTooltipPosition({
+            anchorX: anchor.xRatio * measuredSize.width,
+            anchorY: anchor.yRatio * measuredSize.height,
+            containerWidth: measuredSize.width,
+            containerHeight: measuredSize.height,
+            tooltipWidth,
+            tooltipHeight: TOP_SELLING_TOOLTIP_HEIGHT,
+            minX,
+        }));
+        scheduleTopSellingTooltipPosition();
+    };
+    const clearTopSellingTooltipPosition = () => {
+        topSellingTooltipAnchorRef.current = null;
+        if (topSellingTooltipFrameRef.current !== null && typeof window !== 'undefined') {
+            window.cancelAnimationFrame(topSellingTooltipFrameRef.current);
+            topSellingTooltipFrameRef.current = null;
+        }
+    };
 
 
     // Full merchandise value of sales created within the selected date range.
@@ -282,7 +514,8 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
         customStartDate,
         customEndDate,
         specificDate,
-    }), [dateRange, customStartDate, customEndDate, specificDate]);
+        ...(dateRange === 'week' ? { reportingPeriod: selectedReportingPeriod } : {}),
+    }), [dateRange, customStartDate, customEndDate, specificDate, selectedReportingPeriod]);
     const previousPeriodMetrics = useMemo(() => (
         previousPeriod ? getPreviousPeriodMetrics(transactions, previousPeriod) : { sales: 0, orders: 0 }
     ), [transactions, previousPeriod]);
@@ -303,9 +536,10 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
 
     const lowStockCount = lowStockItems.length;
 
-    const totalInventoryValue = useMemo(() => {
-        return processedInventory.reduce((sum, it) => sum + ((it.price || 0) * (it.stock || 0)), 0);
-    }, [processedInventory]);
+    const totalInventorySellingValue = useMemo(
+        () => calculateActiveInventorySellingValue(processedInventory),
+        [processedInventory]
+    );
     const outstandingCredit = useMemo(
         () => getOutstandingCreditSummary(creditTransactions),
         [creditTransactions]
@@ -323,29 +557,36 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
     );
     const cashierTransactionCount = cashierSelectedDateTransactions.length;
     // Compute sales by product category (revenue = price * qty)
-    const salesByCategory = useMemo(() => {
-        if (!isSuperAdmin) return [];
+    const salesByCategory = useMemo(() => isSuperAdmin
+        ? buildDashboardSalesByCategory(selectedDateTransactions, processedInventory)
+        : [], [selectedDateTransactions, processedInventory, isSuperAdmin]);
+    const categoryYAxisWidth = useMemo(() => getCategoryYAxisWidth(salesByCategory), [salesByCategory]);
 
-        const inventoryByCode = new Map(processedInventory.map(it => [it.code, it]));
-        const map = new Map();
+    useLayoutEffect(() => {
+        const container = categoryChartContainerRef.current;
+        if (activeAnalyticsView !== 'categories' || !container) {
+            if (categoryChartInitialDimension !== null) {
+                // Reset so reopening the tab uses its current container dimensions.
+                // eslint-disable-next-line react-hooks/set-state-in-effect
+                setCategoryChartInitialDimension(null);
+            }
+            return;
+        }
 
-        selectedDateTransactions.forEach(tx => {
-            (tx.items || []).forEach(it => {
-                const price = Number(it.price || 0);
-                const qty = Number(it.qty || 0);
-                const revenue = price * qty;
-                const inv = inventoryByCode.get(it.code) || {};
-                const category = String(inv.category || it.category || 'Uncategorized').trim() || 'Uncategorized';
-                map.set(category, (map.get(category) || 0) + revenue);
-            });
-        });
+        const { width, height } = container.getBoundingClientRect();
+        const nextDimension = {
+            width: Math.round(width),
+            height: Math.round(height - CATEGORY_SCROLLBAR_CLEARANCE),
+        };
+        if (nextDimension.width <= 0 || nextDimension.height <= 0) return;
 
-        const total = Array.from(map.values()).reduce((s, v) => s + v, 0);
-
-        return Array.from(map.entries())
-            .map(([name, value]) => ({ name, value, percentage: total > 0 ? (value / total) * 100 : 0 }))
-            .sort((a, b) => b.value - a.value);
-    }, [selectedDateTransactions, processedInventory, isSuperAdmin]);
+        // Measure before paint so Recharts never paints its default -1 dimensions.
+        setCategoryChartInitialDimension((previous) => (
+            previous?.width === nextDimension.width && previous?.height === nextDimension.height
+                ? previous
+                : nextDimension
+        ));
+    }, [activeAnalyticsView, categoryChartInitialDimension, salesByCategory.length]);
 
     const handleSalesChartPointerMove = (event) => {
         const chartBounds = event.currentTarget.getBoundingClientRect();
@@ -378,7 +619,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                     <div className="relative z-20">
                         <select
                             value={dateRange}
-                            onChange={(e) => setDateRange(e.target.value)}
+                            onChange={(e) => { clearTopSellingTooltipPosition(); setDateRange(e.target.value); }}
                             className="appearance-none px-3.5 py-2 rounded-lg text-xs font-medium transition-colors hover:bg-slate-800 cursor-pointer pr-9 border border-slate-700 shadow-sm"
                             style={{
                                 backgroundColor: '#111827',
@@ -405,7 +646,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                                 type="date"
                                 value={customStartDate}
                                 max={new Date().toISOString().split('T')[0]}
-                                onChange={(e) => setCustomStartDate(e.target.value)}
+                                onChange={(e) => { clearTopSellingTooltipPosition(); setCustomStartDate(e.target.value); }}
                                 style={{ colorScheme: 'light' }}
                                 className="px-2 py-1.5 rounded-md border border-gray-300 text-xs font-semibold text-gray-900 bg-white focus:ring-2 focus:ring-gray-900 outline-none cursor-pointer"
                             />
@@ -414,7 +655,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                                 type="date"
                                 value={customEndDate}
                                 max={new Date().toISOString().split('T')[0]}
-                                onChange={(e) => setCustomEndDate(e.target.value)}
+                                onChange={(e) => { clearTopSellingTooltipPosition(); setCustomEndDate(e.target.value); }}
                                 style={{ colorScheme: 'light' }}
                                 className="px-2 py-1.5 rounded-md border border-gray-300 text-xs font-semibold text-gray-900 bg-white focus:ring-2 focus:ring-gray-900 outline-none cursor-pointer"
                             />
@@ -427,7 +668,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                                 type="date"
                                 value={specificDate}
                                 max={new Date().toISOString().split('T')[0]}
-                                onChange={(e) => setSpecificDate(e.target.value)}
+                                onChange={(e) => { clearTopSellingTooltipPosition(); setSpecificDate(e.target.value); }}
                                 style={{ colorScheme: 'light' }}
                                 className="px-2 py-1.5 rounded-md border border-gray-300 text-xs font-semibold text-gray-900 bg-white focus:ring-2 focus:ring-gray-900 outline-none cursor-pointer"
                             />
@@ -536,8 +777,9 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                             />
 
                             <StatCard
-                                title="Total Inventory Value"
-                                value={formatMoney(totalInventoryValue)}
+                                title="Active Inventory Selling Value"
+                                tooltip="Selling-price value of physical stock for active products, including reserved quantities. Not inventory cost."
+                                value={formatMoney(totalInventorySellingValue)}
                                 icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7.5A2.5 2.5 0 015.5 5h11A2.5 2.5 0 0119 7.5V8h1.5A1.5 1.5 0 0122 9.5v7a1.5 1.5 0 01-1.5 1.5H5.5A2.5 2.5 0 013 15.5v-8z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 8v7"/><circle cx="16" cy="12.5" r="1" fill="currentColor" stroke="none"/></svg>}
                                 color="indigo"
                                 onClick={() => onNavigate && onNavigate('Reports')}
@@ -572,8 +814,9 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                                 valueClassName="text-[21px] leading-tight"
                             />
                             <StatCard
-                                title="Inventory Value"
-                                value={formatMoney(totalInventoryValue)}
+                                title="Active Inventory Selling Value"
+                                tooltip="Selling-price value of physical stock for active products, including reserved quantities. Not inventory cost."
+                                value={formatMoney(totalInventorySellingValue)}
                                 icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7.5A2.5 2.5 0 015.5 5h11A2.5 2.5 0 0119 7.5V8h1.5A1.5 1.5 0 0122 9.5v7a1.5 1.5 0 01-1.5 1.5H5.5A2.5 2.5 0 013 15.5v-8z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 8v7"/><circle cx="16" cy="12.5" r="1" fill="currentColor" stroke="none"/></svg>}
                                 color="indigo"
                                 onClick={() => onNavigate && onNavigate('Reports')}
@@ -594,23 +837,24 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                                     <div className="p-1 bg-gray-100 rounded-lg text-gray-900">
                                         <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path></svg>
                                     </div>
-                                    <h3 className="text-[15px] font-semibold text-gray-900 dark:text-slate-100">My Top-Selling Products</h3>
+                                    <h3 className="text-[15px] font-semibold text-gray-900 dark:text-slate-100">My Top Products by Revenue</h3>
                                 </div>
                                 {topProducts.length > 0 ? (
                                     <div className="max-h-[calc(60vh-8rem)] overflow-y-auto overscroll-contain px-4 pb-1">
                                         <div className="flex items-center justify-end border-b border-slate-100 pb-1.5 text-[10px] font-medium uppercase tracking-wide text-slate-400 dark:border-slate-700 dark:text-slate-500">
-                                            Units Sold
+                                            Sales Revenue
                                         </div>
                                         <div className="divide-y divide-slate-100 dark:divide-slate-700">
                                             {topProducts.map(product => (
                                                 <div key={product.id} className="flex items-center gap-3 py-2.5">
                                                     <span className="w-5 shrink-0 text-xs font-medium tabular-nums text-slate-400 dark:text-slate-500">#{product.id}</span>
                                                     <div className="min-w-0 flex-1">
-                                                        <p className="truncate text-xs font-medium text-slate-800 dark:text-slate-100">{product.name}</p>
+                                                    <p className="truncate text-xs font-medium text-slate-800 dark:text-slate-100">{getProductDisplayName(product, categories)}</p>
                                                         {product.code && <p className="mt-0.5 truncate text-[10px] text-slate-400 dark:text-slate-500">{product.code}</p>}
+                                                        <p className="mt-0.5 truncate text-[10px] text-slate-500 dark:text-slate-400">{formatTopProductUnits(product.unitsSoldByUnit)} sold</p>
                                                     </div>
                                                     <span className="shrink-0 whitespace-nowrap text-xs font-semibold tabular-nums text-slate-700 dark:text-slate-200">
-                                                        {formatNumber(product.sales)} {Number(product.sales) === 1 ? 'unit' : 'units'}
+                                                        {formatCurrency(product.revenue)}
                                                     </span>
                                                 </div>
                                             ))}
@@ -657,7 +901,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                                                         }`}
                                                     >
                                                         <div className="min-w-0 flex-1">
-                                                            <p className="text-xs font-medium text-gray-900 leading-tight break-words whitespace-normal">{item.brand ? `${item.brand} ` : ''}{item.name}</p>
+                                                            <p className="text-xs font-medium text-gray-900 leading-tight break-words whitespace-normal">{item.brand && item.name ? `${item.brand} ` : ''}{getProductDisplayName(item, categories)}</p>
                                                             <p className={`text-[10px] font-mono font-normal ${isOutOfStock ? 'text-red-600' : 'text-yellow-600'}`}>{item.code}</p>
                                                         </div>
                                                         <div className="text-right shrink-0">
@@ -675,8 +919,8 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                 )}
 
                 {availableAnalyticsViews.length > 0 && (
-                    <div className="flex flex-col gap-4 mb-2 flex-1 min-h-0">
-                        <div className="grid min-h-[420px] grid-cols-1 gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-10">
+                    <div className="flex shrink-0 flex-col gap-4 mb-2">
+                        <div className="grid min-h-[420px] grid-cols-1 gap-4 lg:h-[420px] lg:grid-cols-10">
                             <div className="relative flex min-h-[420px] flex-col overflow-hidden rounded-xl border border-gray-100 bg-white p-0 shadow-sm lg:col-span-7 lg:h-full">
                             <div className="flex flex-col gap-3 px-4 py-3 shrink-0 sm:flex-row sm:items-center sm:justify-between">
                                 <div className="flex items-center gap-2">
@@ -693,6 +937,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                                             onChange={(event) => {
                                                 setAnalyticsView(event.target.value);
                                                 clearSalesTooltipPosition();
+                                                clearTopSellingTooltipPosition();
                                             }}
                                             aria-label="Analytics view"
                                             className="h-8 w-full appearance-none rounded-lg border border-gray-200 bg-white px-2.5 pr-8 text-xs font-medium text-slate-700 outline-none transition-colors hover:border-gray-300 focus:border-slate-500 focus:ring-2 focus:ring-slate-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:border-slate-600"
@@ -707,14 +952,22 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                                     </div>
                                     <div className="analytics-tabs hidden items-center gap-0.5 rounded-lg bg-gray-100 p-0.5 sm:flex" role="tablist" aria-label="Analytics view">
                                         {availableAnalyticsViews.map(([view, label]) => (
-                                            <button key={view} type="button" role="tab" aria-selected={analyticsView === view} onClick={() => { setAnalyticsView(view); clearSalesTooltipPosition(); }} className={`analytics-tab rounded-md border border-transparent px-2 py-1 text-xs transition-colors ${analyticsView === view ? 'analytics-tab-active bg-gray-900 font-semibold text-white' : 'analytics-tab-inactive font-medium text-slate-600 hover:bg-gray-200/70 hover:text-slate-900'}`}>{label}</button>
+                                            <button key={view} type="button" role="tab" aria-selected={analyticsView === view} onClick={() => { setAnalyticsView(view); clearSalesTooltipPosition(); clearTopSellingTooltipPosition(); }} className={`analytics-tab rounded-md border border-transparent px-2 py-1 text-xs transition-colors ${analyticsView === view ? 'analytics-tab-active bg-gray-900 font-semibold text-white' : 'analytics-tab-inactive font-medium text-slate-600 hover:bg-gray-200/70 hover:text-slate-900'}`}>{label}</button>
                                         ))}
                                     </div>
                                 </>
                                 )}
                             </div>
                             <div className="analytics-chart flex-1 min-h-0 w-full pl-2 pr-0 relative overflow-hidden">
-                                <div className="h-full w-full pr-2" onPointerMove={activeAnalyticsView === 'sales' ? handleSalesChartPointerMove : undefined} onPointerLeave={activeAnalyticsView === 'sales' ? clearSalesTooltipPosition : undefined}>
+                                <div
+                                    className="h-full w-full pr-2"
+                                    onPointerMove={activeAnalyticsView === 'sales'
+                                        ? handleSalesChartPointerMove
+                                        : activeAnalyticsView === 'products' ? handleTopSellingChartPointerMove : undefined}
+                                    onPointerLeave={activeAnalyticsView === 'sales'
+                                        ? clearSalesTooltipPosition
+                                        : activeAnalyticsView === 'products' ? clearTopSellingTooltipPosition : undefined}
+                                >
                                     {activeAnalyticsView === 'sales' ? (trendData.length > 0 ? (
                                         <ResponsiveContainer width="100%" height="100%" debounce={300}>
                                             <LineChart data={trendData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
@@ -746,26 +999,68 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                                                 </svg>
                                             )}
                                         />
-                                    )) : activeAnalyticsView === 'products' ? (topSellingPieData.length > 0 ? (
-                                        <ResponsiveContainer width="100%" height="100%" debounce={300}>
-                                            <PieChart>
-                                                <Tooltip content={(tooltipProps) => <TopSellingProductsTooltip {...tooltipProps} showFinancials={showFinancials} />} />
-                                                <Legend iconType="circle" iconSize={8} layout="horizontal" verticalAlign="bottom" align="center" wrapperStyle={{ fontSize: '10px', lineHeight: '1.35' }} formatter={(value) => <span style={{ color: '#111827' }}>{value}</span>} />
-                                                <Pie data={topSellingPieData} dataKey="value" nameKey="name" isAnimationActive={false} cx="50%" cy="42%" outerRadius="58%" label={(props) => <ColoredPiePercentageLabel {...props} compact />} labelLine={false}>
-                                                    {topSellingPieData.map((entry, index) => <Cell key={`analytics-product-${entry.name}`} fill={ANALYTICS_PIE_COLORS[index % ANALYTICS_PIE_COLORS.length]} />)}
-                                                </Pie>
-                                            </PieChart>
-                                        </ResponsiveContainer>
-                                    ) : <EmptyAnalyticsState title="No top-selling data in selected range" subtitle="Try expanding the date filter to view product mix insights." icon={<svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 3.055A9.001 9.001 0 1020.945 13H11V3.055z" /></svg>} />) : (salesByCategory.length > 0 ? (
-                                        <ResponsiveContainer width="100%" height="100%" debounce={300}>
-                                            <PieChart>
-                                                <Tooltip formatter={formatCurrency} />
-                                                <Legend iconType="circle" iconSize={8} layout="horizontal" verticalAlign="bottom" align="center" wrapperStyle={{ fontSize: '10px', lineHeight: '1.35' }} formatter={(value) => <span style={{ color: '#111827' }}>{value}</span>} />
-                                                <Pie data={salesByCategory} dataKey="value" nameKey="name" innerRadius="36%" outerRadius="58%" cx="50%" cy="42%" paddingAngle={2} label={({ percent }) => `${(percent * 100).toFixed(0)}%`} labelLine={false}>
-                                                    {salesByCategory.map((entry, index) => <Cell key={`analytics-category-${entry.name}`} fill={ANALYTICS_PIE_COLORS[index % ANALYTICS_PIE_COLORS.length]} />)}
-                                                </Pie>
-                                            </PieChart>
-                                        </ResponsiveContainer>
+                                    )) : activeAnalyticsView === 'products' ? (
+                                        <div ref={topSellingChartContainerRef} className="relative h-full w-full">
+                                            <ResponsiveContainer width="100%" height="100%" onResize={handleTopSellingChartResize}>
+                                            <BarChart data={topSellingBarData} layout="vertical" margin={{ top: 8, right: 104, bottom: 4, left: 0 }}>
+                                                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" />
+                                                    <XAxis type="number" axisLine={false} tickLine={false} tick={{ fill: '#64748B', fontSize: 10 }} tickFormatter={formatCompactCurrency} />
+                                                    <YAxis type="category" dataKey="displayName" width={TOP_SELLING_LABEL_WIDTH} tickMargin={3} interval={0} axisLine={false} tickLine={false} tick={<ProductNameAxisTick products={topSellingBarData} />} />
+                                                    <Tooltip
+                                                        content={TopSellingProductsTooltip}
+                                                        active={topSellingAnimationKey === topSellingChartKey ? false : undefined}
+                                                        shared
+                                                        cursor={false}
+                                                        isAnimationActive={false}
+                                                        allowEscapeViewBox={{ x: false, y: false }}
+                                                        wrapperStyle={{ zIndex: 20, pointerEvents: 'none' }}
+                                                    />
+                                                    <Bar
+                                                        dataKey="revenue"
+                                                        fill={DASHBOARD_BAR_COLOR}
+                                                        activeBar={{ fill: DASHBOARD_BAR_ACTIVE_COLOR }}
+                                                        radius={[0, 4, 4, 0]}
+                                                        isAnimationActive={topSellingAnimationKey === topSellingChartKey && !prefersReducedMotion && !isTopSellingChartResizing}
+                                                        animationBegin={0}
+                                                        animationDuration={380}
+                                                        animationEasing="ease-in-out"
+                                                        onAnimationEnd={handleTopSellingAnimationEnd}
+                                                    >
+                                                        <LabelList content={<ProductRevenueBarLabel />} />
+                                                    </Bar>
+                                                </BarChart>
+                                            </ResponsiveContainer>
+                                            {topSellingBarData.length === 0 && (
+                                                <div className="pointer-events-none absolute inset-0">
+                                                    <EmptyAnalyticsState title="No top-selling data in selected range" subtitle="Try expanding the date filter to view product sales." icon={<svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 3.055A9.001 9.001 0 1020.945 13H11V3.055z" /></svg>} />
+                                                </div>
+                                            )}
+                                        </div>
+                                    ) : (salesByCategory.length > 0 ? (
+                                        <div className="h-full w-full overflow-x-auto overflow-y-hidden overscroll-x-contain">
+                                            <div
+                                                ref={categoryChartContainerRef}
+                                                className="box-border h-full w-full"
+                                                style={{
+                                                    minWidth: `max(100%, ${salesByCategory.length * CATEGORY_MIN_ITEM_WIDTH}px)`,
+                                                    paddingBottom: CATEGORY_SCROLLBAR_CLEARANCE,
+                                                }}
+                                            >
+                                                {categoryChartInitialDimension && (
+                                                    <ResponsiveContainer width="100%" height="100%" initialDimension={categoryChartInitialDimension}>
+                                                        <BarChart data={salesByCategory} margin={{ top: 14, right: 8, bottom: 0, left: 0 }}>
+                                                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" />
+                                                            <XAxis dataKey="name" axisLine={false} tickLine={false} tickMargin={2} interval={0} height={CATEGORY_AXIS_HEIGHT} tick={<CategoryAxisTick />} />
+                                                            <YAxis type="number" width={categoryYAxisWidth} axisLine={false} tickLine={false} tick={{ fill: '#64748B', fontSize: 10 }} tickFormatter={formatCompactCurrency} />
+                                                            <Tooltip content={<SalesByCategoryTooltip />} cursor={false} />
+                                                            <Bar dataKey="value" fill={DASHBOARD_BAR_COLOR} activeBar={{ fill: DASHBOARD_BAR_ACTIVE_COLOR }} radius={[4, 4, 0, 0]} isAnimationActive={false}>
+                                                                <LabelList dataKey="value" position="top" formatter={formatCurrency} fill="#334155" fontSize={9} />
+                                                            </Bar>
+                                                        </BarChart>
+                                                    </ResponsiveContainer>
+                                                )}
+                                            </div>
+                                        </div>
                                     ) : <EmptyAnalyticsState title="No sales yet" subtitle="No category sales in selected range." icon={<svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 3.055A9.001 9.001 0 1020.945 13H11V3.055z" /></svg>} />)}
                                 </div>
                             </div>
@@ -775,7 +1070,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 px-3 py-2 shrink-0">
                                     <h3 className="text-sm font-semibold text-slate-800 flex items-center gap-2"><span className="p-1.5 bg-gray-100 rounded-lg text-slate-500"><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg></span>Low / Out of Stock</h3>
                                     <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-                                        <span className="bg-gray-100 text-gray-700 text-[9px] font-medium px-1.5 py-0.5 rounded-full">{lowStockCount} Items</span>
+                                        <span className="whitespace-nowrap rounded-full bg-gray-900 px-1.5 py-0.5 text-[9px] font-medium text-white">{lowStockCount} Items</span>
                                         <button type="button" onClick={() => onNavigate?.('Inventory')} className="inline-flex items-center gap-1 rounded-md px-1 py-1 text-[10px] font-medium text-slate-600 transition-colors hover:bg-gray-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-1">
                                             View Inventory <span aria-hidden="true">→</span>
                                         </button>
@@ -798,7 +1093,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                                                         }`}
                                                     >
                                                         <div className="min-w-0 flex-1">
-                                                            <p className="text-xs font-medium text-gray-900 leading-tight break-words whitespace-normal">{item.brand ? `${item.brand} ` : ''}{item.name}</p>
+                                                            <p className="text-xs font-medium text-gray-900 leading-tight break-words whitespace-normal">{item.brand && item.name ? `${item.brand} ` : ''}{getProductDisplayName(item, categories)}</p>
                                                             <p className={`text-[10px] font-mono font-normal ${isOutOfStock ? 'text-red-600' : 'text-yellow-600'}`}>{item.code}</p>
                                                         </div>
                                                         <div className="text-right shrink-0"><p className={`text-xs font-medium ${isOutOfStock ? 'text-red-600' : 'text-yellow-600'}`}>{item.stock}</p></div>
@@ -813,6 +1108,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
 
                     </div>
                 )}
+                {availableAnalyticsViews.length > 0 && <StockMovement />}
             </div>
         </div>
     );

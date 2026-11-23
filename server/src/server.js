@@ -4,6 +4,7 @@ const app = require('./app');
 const connectDB = require('./config/db');
 const { getJwtSecret } = require('./config/security');
 const { initializeAutomaticBackupScheduler } = require('./services/automaticBackupService');
+const { backfillMissingExpiryBatchReferences } = require('./services/expiryBatchReferenceService');
 
 const port = process.env.PORT || 5000;
 const host = String(process.env.API_HOST || '').trim();
@@ -12,6 +13,7 @@ const startServer = async () => {
   try {
     getJwtSecret();
     await connectDB();
+    await backfillMissingExpiryBatchReferences();
     await initializeAutomaticBackupScheduler();
 
     const onListening = () => {

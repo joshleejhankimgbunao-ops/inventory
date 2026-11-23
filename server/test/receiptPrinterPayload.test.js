@@ -3,6 +3,20 @@ const assert = require('node:assert/strict');
 
 const loadReceiptPrinter = () => import('../../src/services/receiptPrinter.js');
 
+test('Special Order slip keeps uncalculated VAT unknown while historical cash VAT stays numeric', async () => {
+  const { buildReceiptPrintPayload } = await loadReceiptPrinter();
+  const payload = buildReceiptPrintPayload({
+    id: 'TRX-SO', specialOrderNumber: 'SO-VAT', paymentMethod: 'other', collectionSource: 'special_order_ledger',
+    total: 100, grossAmount: 100, netAmount: null, vatAmount: null,
+    vatCalculationStatus: 'not_calculated', taxTreatment: 'vat_zero_rated', items: [],
+  }, {});
+  assert.equal(payload.receipt.netAmount, null);
+  assert.equal(payload.receipt.vatAmount, null);
+  assert.equal(payload.receipt.vatCalculationStatus, 'not_calculated');
+  assert.equal(payload.receipt.taxTreatment, 'vat_zero_rated');
+  assert.equal(payload.receipt.collectionSource, 'special_order_ledger');
+});
+
 test('historical cash payload uses the saved transaction snapshot and aliases', async () => {
   const { buildReceiptPrintPayload } = await loadReceiptPrinter();
   const transaction = {
@@ -55,6 +69,7 @@ test('draft Order List payload matches the printer-service receipt contract with
       sellingUnit: 'pack',
       price: 50,
       subtotal: 100,
+      batchPicks: [{ batchId: 'EB-001', batchReference: 'BT-20261028-001', lotNumber: 'LOT-001', expiryDate: '2027-01-31', quantity: 2, status: 'verified' }],
     }],
   }, { storeName: 'Tableria La Confianza' });
 
@@ -67,8 +82,10 @@ test('draft Order List payload matches the printer-service receipt contract with
     code: 'CMT-001',
     sellingUnit: 'pack',
     qty: 2,
-    unitPrice: 50,
-    subtotal: 100,
+    unitPrice: 0,
+    subtotal: 0,
+    batchPicks: [{ batchId: 'EB-001', batchReference: 'BT-20261028-001', lotNumber: 'LOT-001', expiryDate: '2027-01-31', quantity: 2, status: 'verified' }],
+    batchPickNotice: '',
   }]);
 });
 

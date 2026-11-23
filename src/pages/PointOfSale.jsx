@@ -1,12 +1,18 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import Pagination from '../components/Pagination';
-import { AnimatePresence, motion } from 'framer-motion';
+import CartRemovalConfirmation from '../components/CartRemovalConfirmation';
+import { DesktopProductGridSkeleton } from '../components/DesktopSkeletons';
+import ContextualEmptyState from '../components/ContextualEmptyState';
 import { showToast } from '../utils/toastHelper';
-import { getPosRecommendationAction, getRecommendationAvailability, getRelativePriceTier, getStockStatus } from '../utils/recommendationLogic';
+import { getPosRecommendationAction, getPosRecommendationAvailability, getPosRecommendationForCartAddition, getStockStatus } from '../utils/recommendationLogic';
+import { getPosRecommendationPresentation } from '../utils/recommendationPresentation';
+import { setFormValidationErrors } from '../utils/formValidationNavigation';
 import { useInventory } from '../context/InventoryContext';
 import { useAuth } from '../context/AuthContext';
-import { getAuthToken, isApiConnectionFailure } from '../services/apiClient';
-import { createPartnerApi, createSaleApi, listProductsApi, listPartnersApi } from '../services/inventoryApi';
+import { getAuthToken } from '../services/apiClient';
+import { getProductDisplayName, hasStoredProductName } from '../utils/productDisplayName';
+import { createPartnerApi, finalizeSaleWithReferenceApi, listProductsApi, listPartnersApi, listProductExpiryBatchesApi } from '../services/inventoryApi';
 import { printDocument, printReceipt } from '../services/receiptPrinter';
 import {
     formatMoneyInput,
@@ -21,27 +27,66 @@ import {
     sanitizeWholeNumberInput,
 } from '../utils/numericInput';
 import { formatCurrency } from '../utils/numberFormat';
-import { buildQuotationPrintLines, buildQuotationReceiptModel } from '../utils/quotationReceipt';
-import { hasUsableTransactionReference } from '../utils/transactionReference';
+import { buildQuotationPrintLayout, buildQuotationReceiptModel, downloadWalkInQuotationPdf } from '../utils/quotationReceipt';
+import { buildQuotationThermalHeaderLines } from '../utils/quotationThermalHeader';
 import { normalizeHumanReadable } from '../utils/textNormalization';
 import { createClientRequestId } from '../utils/clientRequestId';
-import { removeSelectedCartItems, toggleAllCartItemSelections, toggleCartItemSelection } from '../utils/cartSelection';
+import { getSelectedCartItems, removeSelectedCartItems, toggleAllCartItemSelections, toggleCartItemSelection } from '../utils/cartSelection';
 import { ROLES } from '../constants/roles';
 import TransactionReferenceModal from '../components/TransactionReferenceModal';
-import ViewportTooltip from '../components/ViewportTooltip';
+import OrderConfirmationModal from '../components/OrderConfirmationModal';
 import FormalPriceQuotationModal from '../components/FormalPriceQuotationModal';
+import EvidenceUploadField from '../components/EvidenceUploadField';
+import ViewportTooltip from '../components/ViewportTooltip';
+import PosNavigationCartIcon from '../components/PosNavigationCartIcon';
+import RecordActionIcon from '../components/RecordActionIcon';
+import { ExpiryBatchPickEditor } from '../components/ExpiryBatchVerification';
+import { isExpiryBatchVerificationConfirmed } from '../utils/expiryBatchVerification';
+import ToolbarDropdown from '../components/ToolbarDropdown';
+import ProductDetailsModalShell from '../components/ProductDetailsModalShell';
+import { subscribeRealtimeEvent } from '../services/realtimeClient';
 import { ORDER_CONFIRMATION_PREVIEW_SIZE } from '../constants/orderConfirmationPreview';
-import { buildFormalQuotationModel } from '../utils/formalQuotation';
-import { productAttributeValues } from '../utils/productAttributes';
+import { getEffectiveProductAttributes, productAttributeValues } from '../utils/productAttributes';
 import { formatProductAttributeValue } from '../utils/productFamilies';
+import { getProductDetailsSpecifications } from '../utils/productDetailsSpecifications';
 import {
-    getPosVariantSelectionModel,
+    getPosAttributeSelectionModel,
+    getPosRemainingAddableQuantity,
+    getPosVariantOptionLabel,
     getPosVariantValueKey,
+    getPosProductGroupKey,
+    getPosProductSelectionGroup,
     groupProductsForPos,
-    updatePosVariantSelection,
 } from '../utils/posVariantSelection';
 
 const getProductImageUrl = (item) => String(item?.imageUrl || '').trim();
+const getOrderListVariationDetails = (item, categories) => {
+    if (item?.displayNameIsFallback) return '';
+    const specifications = getProductDetailsSpecifications(item, categories)
+        .filter(({ name }) => name.toLowerCase() !== 'brand');
+    const specificationNames = new Set(specifications.map(({ name }) => name.toLowerCase()));
+    const additionalSpecifications = [
+        ['Color', item?.color],
+        ['Size', item?.size],
+        ['Volume', item?.volume],
+        ['Finish', item?.finish],
+        ['Type', item?.type],
+    ]
+        .filter(([name, value]) => value !== null && value !== undefined && String(value).trim() !== '' && !specificationNames.has(name.toLowerCase()))
+        .map(([name, value]) => ({ name, value }));
+
+    return [...specifications, ...additionalSpecifications]
+        .map(({ name, value }) => `${name}: ${value}`)
+        .join(', ');
+};
+const CART_ITEM_INTERACTIVE_TARGET_SELECTOR = 'button, a, input, select, textarea, [role="button"], [contenteditable="true"], [data-cart-long-press-disabled]';
+const isMobilePosViewport = () => typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(max-width: 767px)').matches;
+const isMobileTouchViewport = () => isMobilePosViewport()
+    && window.matchMedia('(pointer: coarse)').matches;
+const isCartItemInteractiveTarget = (target) => typeof target?.closest === 'function'
+    && Boolean(target.closest(CART_ITEM_INTERACTIVE_TARGET_SELECTOR));
 const sanitizeCashTenderedInput = (value) => {
     const source = String(value ?? '');
     return /^\d*(?:\.\d{0,2})?$/.test(source) ? source : '';
@@ -70,17 +115,6 @@ const getCashChangeCentavos = (cashValue, payableTotal) => {
     return cashCentavos - totalCentavos;
 };
 
-const formatCurrencyFromCentavos = (centavos) => {
-    if (!Number.isSafeInteger(centavos) || centavos < 0) return formatCurrency(0);
-
-    const pesos = Math.floor(centavos / 100);
-    const remainingCentavos = String(centavos % 100).padStart(2, '0');
-    return `\u20B1${pesos.toLocaleString('en-PH')}.${remainingCentavos}`;
-};
-
-const MotionButton = motion.button;
-const MotionDiv = motion.div;
-
 const PosFieldTooltip = ({ id, children }) => (
     <div
         id={id}
@@ -94,7 +128,7 @@ const PosFieldTooltip = ({ id, children }) => (
     </div>
 );
 
-const ProductThumbnail = ({ item, className = '', onPreview, fit = 'cover' }) => {
+const ProductThumbnail = ({ item, className = '', onPreview, fit = 'cover', interactive = true }) => {
     const imageUrl = getProductImageUrl(item);
     const [failedImageUrl, setFailedImageUrl] = useState('');
     const imageFailed = Boolean(imageUrl && failedImageUrl === imageUrl);
@@ -102,25 +136,33 @@ const ProductThumbnail = ({ item, className = '', onPreview, fit = 'cover' }) =>
     const thumbnailClassName = `shrink-0 overflow-hidden rounded-xl border border-slate-200 bg-slate-50 ${className}`;
 
     if (imageUrl && !imageFailed) {
+        const image = (
+            <img
+                src={imageUrl}
+                alt={item?.name || item?.code || 'Product image'}
+                onError={() => setFailedImageUrl(imageUrl)}
+                className={`h-full w-full ${fit === 'contain' ? 'object-contain' : 'object-cover'}`}
+            />
+        );
+
+        if (!interactive) {
+            return <div aria-hidden="true" className={thumbnailClassName}>{image}</div>;
+        }
+
         return (
             <button
                 type="button"
                 onClick={(event) => onPreview?.(event, item)}
-                className={`${thumbnailClassName} cursor-zoom-in transition-transform hover:scale-[1.02] focus:outline-none focus:ring-2 focus:ring-slate-900`}
+                className={`${thumbnailClassName} cursor-zoom-in transition-all hover:opacity-90 hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-slate-900`}
                 aria-label={`Enlarge image for ${item?.name || item?.code || 'product'}`}
             >
-                <img
-                    src={imageUrl}
-                    alt={item?.name || item?.code || 'Product image'}
-                    onError={() => setFailedImageUrl(imageUrl)}
-                    className={`h-full w-full ${fit === 'contain' ? 'object-contain' : 'object-cover'}`}
-                />
+                {image}
             </button>
         );
     }
 
     return (
-        <div className={thumbnailClassName}>
+        <div aria-hidden={!interactive || undefined} className={thumbnailClassName}>
             <div className="flex h-full w-full items-center justify-center">
                 <svg className="h-7 w-7 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M4 16l4-4a3 3 0 014 0l4 4m-2-2l2-2a3 3 0 014 0l2 2m-14 4h16" />
@@ -128,6 +170,23 @@ const ProductThumbnail = ({ item, className = '', onPreview, fit = 'cover' }) =>
             </div>
         </div>
     );
+};
+
+const PosRecommendationReasons = ({ recommendation }) => {
+    const explanation = getPosRecommendationPresentation(recommendation);
+    if (!explanation) return null;
+    const staffRows = explanation.visible.filter((row) => row.staff);
+    const recordedRows = explanation.visible.filter((row) => !row.staff);
+    const reasonRow = (row) => <li key={row.key} data-reason-source={row.staff ? 'staff' : 'system'} className="flex min-w-0 items-start gap-1.5">
+        <span aria-hidden="true" className={row.kind === 'match' ? 'text-emerald-700' : row.kind === 'warning' ? 'text-amber-700' : 'text-slate-500'}>{row.kind === 'match' ? '✓' : row.kind === 'warning' ? '⚠' : '='}</span>
+        <span className="min-w-0 break-words">{row.text}</span>
+    </li>;
+    return <div className="mt-2 border-t border-slate-100 pt-2 text-[11px] leading-snug text-slate-700">
+        <p className="font-semibold text-slate-800">Why Recommended?</p>
+        {staffRows.length > 0 && <><p className="mt-1 text-[10px] text-slate-500">Staff reasons</p><ul className="mt-0.5 space-y-1" aria-label="Staff recommendation reasons">{staffRows.map(reasonRow)}</ul></>}
+        {recordedRows.length > 0 && <><p className="mt-1 text-[10px] text-slate-500">{staffRows.length ? 'Recorded facts and cautions' : 'Recorded facts'}</p><ul className="mt-0.5 space-y-1" aria-label="Recommendation reasons">{recordedRows.map(reasonRow)}</ul></>}
+        {explanation.more.length > 0 && <details className="mt-1"><summary className="w-fit cursor-pointer rounded-sm text-slate-600 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-700">More details</summary><ul className="mt-1 space-y-1">{explanation.more.map(reasonRow)}</ul></details>}
+    </div>;
 };
 
 const PointOfSale = () => {
@@ -141,8 +200,10 @@ const PointOfSale = () => {
 
     const productListRef = useRef(null);
     const printLockRef = useRef(false);
+    const orderListGenerationInFlightRef = useRef(false);
+    const pendingOrderListAutoPrintRef = useRef(false);
     const {
-        processedInventory: inventory,
+        processedInventory: sourceInventory,
         categories: categoryDefinitions,
         setInventory,
         setTransactions,
@@ -151,8 +212,25 @@ const PointOfSale = () => {
         addToSyncQueue,
         syncQueue,
         isOnline,
+        isInventoryLoading,
+        inventoryLoadError,
+        retryInventory,
     } = useInventory();
-    const { appSettings: settings, currentUserName, currentUserFullName, userRole } = useAuth();
+    const { appSettings: settings, currentUserName, currentUserFullName, userRole, userPreferences } = useAuth();
+    // POS presents sellable stock; other modules retain the physical quantity.
+    const inventory = useMemo(() => sourceInventory.map((item) => {
+        const stock = Math.max(0, Number(item.availableToSell ?? (Number(item.stock || 0) - Number(item.reservedStock || 0))));
+        const name = getProductDisplayName(item, categoryDefinitions);
+        return {
+            ...item,
+            name,
+            displayNameIsFallback: !hasStoredProductName(item),
+            physicalStock: item.stock,
+            stock,
+            status: getStockStatus({ ...item, name, stock }, settings),
+        };
+    }), [categoryDefinitions, sourceInventory, settings]);
+    const isInitialInventoryPending = isInventoryLoading && sourceInventory.length === 0;
     const canQuickAddCreditCustomer = userRole === ROLES.SUPER_ADMIN || userRole === ROLES.ADMIN;
 
     const showErrorDetails = (message, title = 'Action Failed') => {
@@ -212,20 +290,83 @@ const PointOfSale = () => {
     const [isCartSelectionMode, setIsCartSelectionMode] = useState(false);
     const [selectedCartItemCodes, setSelectedCartItemCodes] = useState([]);
     const [isBulkRemoveConfirmationOpen, setIsBulkRemoveConfirmationOpen] = useState(false);
+    const [pendingCartRemoval, setPendingCartRemoval] = useState(null);
+    const [isMobilePosLayout, setIsMobilePosLayout] = useState(() => isMobilePosViewport());
+    const [isCartDrawerOpen, setIsCartDrawerOpen] = useState(false);
+    const [isCurrentOrderCollapsed, setIsCurrentOrderCollapsed] = useState(false);
+    const [isHeaderCartVisible, setIsHeaderCartVisible] = useState(true);
+    const [cartCountFeedback, setCartCountFeedback] = useState(false);
+    const cartItemCount = cart.reduce((total, item) => total + item.qty, 0);
+    const lastCartCatalogWarningRef = useRef('');
+    useEffect(() => {
+        if (!sourceInventory.length || cart.length === 0) {
+            lastCartCatalogWarningRef.current = '';
+            return;
+        }
+
+        const changedItems = cart.flatMap((cartItem) => {
+            const latest = sourceInventory.find((product) => (
+                (cartItem.id && String(product.id || product._id) === String(cartItem.id))
+                || String(product.code || '') === String(cartItem.code || '')
+            ));
+            if (!latest) return [{ code: cartItem.code, state: 'missing' }];
+
+            const latestAvailable = Math.max(0, Number(latest.availableToSell ?? (Number(latest.stock || 0) - Number(latest.reservedStock || 0))));
+            const cartAvailable = Number(cartItem.stock ?? cartItem.availableToSell);
+            const latestPrice = Number(latest.price ?? latest.unitPrice);
+            const cartPrice = Number(cartItem.price ?? cartItem.unitPrice);
+            const inactive = latest.isActive === false || latest.isArchived === true;
+            const availabilityChanged = Number.isFinite(cartAvailable) && cartAvailable !== latestAvailable;
+            const priceChanged = Number.isFinite(latestPrice) && Number.isFinite(cartPrice) && latestPrice !== cartPrice;
+            if (!inactive && latestAvailable >= Number(cartItem.qty || 0) && !availabilityChanged && !priceChanged) return [];
+            return [{ code: cartItem.code, state: `${inactive ? 'inactive' : 'active'}:${latestAvailable}:${latestPrice}` }];
+        });
+        const warningSignature = changedItems.map(({ code, state }) => `${code}:${state}`).sort().join('|');
+        if (warningSignature && warningSignature !== lastCartCatalogWarningRef.current) {
+            showToast('Cart Needs Recheck', 'A product availability or price changed. Review the cart before checkout.', 'warning', `pos-cart-recheck-${warningSignature}`);
+        }
+        lastCartCatalogWarningRef.current = warningSignature;
+    }, [cart, sourceInventory]);
+    const cartToggleButtonRef = useRef(null);
+    const floatingCartButtonRef = useRef(null);
+    const cartDrawerRef = useRef(null);
+    const cartDrawerCloseButtonRef = useRef(null);
+    const bulkRemoveCancelButtonRef = useRef(null);
+    const singleCartRemovalCancelButtonRef = useRef(null);
+    const singleCartRemovalTriggerRef = useRef(null);
+    const singleCartRemovalLockedRef = useRef(false);
+    const cartDrawerRestoreFocusRef = useRef(true);
+    const cartLongPressTimerRef = useRef(null);
+    const cartLongPressTouchRef = useRef(null);
+    const suppressedCartClickRef = useRef(null);
+    const suppressedCartClickTimerRef = useRef(null);
+    const cartCountFeedbackTimerRef = useRef(null);
+    const previousCartItemCountRef = useRef(cartItemCount);
     const [searchQuery, setSearchQuery] = useState('');
     const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
     const [selectedCategory, setSelectedCategory] = useState('All');
     const [recommendationModal, setRecommendationModal] = useState({ isOpen: false, item: null, alternatives: [], budgetOptions: null, kind: 'alternative' }); // Recommendation Modal State
-    const [recommendationChooserItem, setRecommendationChooserItem] = useState(null);
+    const recommendationAddInProgressRef = useRef(false);
+    const [recommendationQuantities, setRecommendationQuantities] = useState({});
+    const recommendationDialogRef = useRef(null);
+    const recommendationCloseButtonRef = useRef(null);
+    const recommendationReturnFocusRef = useRef(null);
     const [productDetailsItem, setProductDetailsItem] = useState(null);
+    const productDetailsDialogRef = useRef(null);
+    const productDetailsCloseButtonRef = useRef(null);
+    const productDetailsTriggerRef = useRef(null);
+    const returnFocusToProductDetailsTriggerRef = useRef(false);
     
     // Payment State
     const [paymentType, setPaymentType] = useState('cash');
     const [cashAmount, setCashAmount] = useState(''); // Use string for input handling
     const [selectedVatMode, setSelectedVatMode] = useState('vatable');
-    const [regularCustomers, setRegularCustomers] = useState([]);
+    const [, setRegularCustomers] = useState([]);
     const [creditCustomers, setCreditCustomers] = useState([]);
     const [selectedCreditCustomerId, setSelectedCreditCustomerId] = useState('');
+    const creditCustomerRequestSequenceRef = useRef(0);
+    const selectedCreditCustomerIdRef = useRef(selectedCreditCustomerId);
+    selectedCreditCustomerIdRef.current = selectedCreditCustomerId;
     const [creditCustomerSearchQuery, setCreditCustomerSearchQuery] = useState('');
     const [isCreditCustomerComboboxOpen, setIsCreditCustomerComboboxOpen] = useState(false);
     const [highlightedCreditCustomerIndex, setHighlightedCreditCustomerIndex] = useState(-1);
@@ -235,34 +376,140 @@ const PointOfSale = () => {
     const [selectedCreditTermDays, setSelectedCreditTermDays] = useState(MIN_CREDIT_TERM_DAYS);
     const [selectedCreditPaymentMode, setSelectedCreditPaymentMode] = useState('');
     const [customCreditPaymentMode, setCustomCreditPaymentMode] = useState('');
-    const [isCreditPaymentModeOpen, setIsCreditPaymentModeOpen] = useState(false);
+    const [downPaymentAmount, setDownPaymentAmount] = useState('');
+    const [downPaymentProofFiles, setDownPaymentProofFiles] = useState([]);
     const [isCheckoutProcessing, setIsCheckoutProcessing] = useState(false);
-    const [isOrderSummaryDetailsCollapsed, setIsOrderSummaryDetailsCollapsed] = useState(false);
     const checkoutInFlightRef = useRef(false);
     
     // Quotation State
-    const [quotationType, setQuotationType] = useState(null);
-    const [showQuotationTypeChooser, setShowQuotationTypeChooser] = useState(false);
-    const [showQuotationCustomerSelector, setShowQuotationCustomerSelector] = useState(false);
-    const [showQuotationDetails, setShowQuotationDetails] = useState(false);
-    const [quotationCustomerQuery, setQuotationCustomerQuery] = useState('');
-    const [selectedQuotationCustomer, setSelectedQuotationCustomer] = useState(null);
-    const [quotationDetails, setQuotationDetails] = useState({ attentionName: '', attentionPosition: '', authorizedSignatoryName: '' });
     const [showQuotationPreview, setShowQuotationPreview] = useState(false);
     const [quotationData, setQuotationData] = useState(null);
-    const [formalQuotationData, setFormalQuotationData] = useState(null);
+    // Regular-customer quotations now belong to Special Orders. These inert values
+    // keep legacy modal markup unreachable while it is removed in a later UI cleanup.
+    const showQuotationCustomerSelector = false;
+    const showQuotationDetails = false;
+    const selectedQuotationCustomer = null;
+    const quotationCustomerQuery = '';
+    const quotationDetails = {};
+    const filteredQuotationCustomers = [];
+    const hasQuotationSignatoryName = false;
+    const quotationType = 'walk_in';
+    const formalQuotationData = null;
+    const setShowQuotationCustomerSelector = () => {};
+    const setShowQuotationDetails = () => {};
+    const setQuotationCustomerQuery = () => {};
+    const setQuotationDetails = () => {};
+    const setFormalQuotationData = () => {};
+    const openQuotationDetails = () => {};
+    const returnToQuotationCustomerSelector = () => {};
+    const previewFormalQuotation = () => {};
 
     // Receipt Modal State
     const [showReceipt, setShowReceipt] = useState(false);
     const [lastTransaction, setLastTransaction] = useState(null);
-    const [pendingReferenceSaleId, setPendingReferenceSaleId] = useState('');
-    const [pendingOfflineCheckout, setPendingOfflineCheckout] = useState(null);
+    const [checkoutDraft, setCheckoutDraft] = useState(null);
+    const [checkoutReferenceDraft, setCheckoutReferenceDraft] = useState({ referenceNumber: '', documentFile: null });
     const [checkoutPhase, setCheckoutPhase] = useState(null);
     const [checkoutOpenedAt, setCheckoutOpenedAt] = useState('');
+    const [posBatchPickData, setPosBatchPickData] = useState({});
+    const [posBatchVerificationRecords, setPosBatchVerificationRecords] = useState({});
+    const [posBatchPickLoading, setPosBatchPickLoading] = useState(false);
+    const [posBatchPickError, setPosBatchPickError] = useState('');
 
-    const creditPaymentModeRef = useRef(null);
+    const [posBatchRefreshNonce, setPosBatchRefreshNonce] = useState(0);
+    const expiryTrackedCartItems = useMemo(() => cart.filter((item) => item.expiryTrackingEnabled === true), [cart]);
+    const posBatchVerificationItems = useMemo(() => expiryTrackedCartItems.map((item) => {
+        const productKey = String(item.id || item.code);
+        const data = posBatchPickData[productKey];
+        return {
+            productId: String(item.id || ''),
+            productKey,
+            name: item.name,
+            sku: item.code,
+            quantity: Number(item.qty || 0),
+            unit: item.sellingUnit || '',
+            loading: posBatchPickLoading && !data,
+            error: data?.error || (!item.id ? 'This cart item has no current product ID. Refresh the catalog before proceeding.' : ''),
+            reconciled: Boolean(data?.reconciled),
+            provisional: Boolean(data?.provisional),
+            proposedAllocations: data?.proposedAllocations || null,
+            batchOptions: data?.batchOptions || [],
+            productStock: data?.productStock,
+            productReserved: data?.productReserved,
+        };
+    }), [expiryTrackedCartItems, posBatchPickData, posBatchPickLoading]);
+
+    useEffect(() => {
+        if (checkoutPhase !== 'order-list') return undefined;
+        const tracked = cart.filter((item) => item.expiryTrackingEnabled === true);
+        if (!tracked.length) {
+            setPosBatchPickData({});
+            setPosBatchVerificationRecords({});
+            setPosBatchPickError('');
+            setPosBatchPickLoading(false);
+            return undefined;
+        }
+        let cancelled = false;
+        setPosBatchPickData({});
+        setPosBatchVerificationRecords({});
+        setPosBatchPickError('');
+        setPosBatchPickLoading(true);
+        Promise.all(tracked.map(async (item) => {
+            const key = String(item.id || item.code);
+            if (!item.id) return [key, { error: 'This cart item has no current product ID.' }];
+            try {
+                const result = await listProductExpiryBatchesApi(item.id, item.qty);
+                return [key, result];
+            } catch (error) {
+                return [key, { error: error?.message || 'Unable to check batches.' }];
+            }
+        })).then((entries) => {
+            if (cancelled) return;
+            setPosBatchPickData(Object.fromEntries(entries));
+            const failed = entries.find(([, result]) => result?.error);
+            if (failed) setPosBatchPickError('Unable to load batch picks. Refresh the Order List and try again.');
+        }).finally(() => {
+            if (!cancelled) setPosBatchPickLoading(false);
+        });
+        return () => { cancelled = true; };
+    }, [checkoutPhase, cart, posBatchRefreshNonce]);
+
+    useEffect(() => {
+        if (checkoutPhase !== 'order-list' || expiryTrackedCartItems.length === 0) return undefined;
+        let refreshTimer = null;
+        const relevantCodes = new Set(expiryTrackedCartItems.map((item) => String(item.code || '').toUpperCase()));
+        const scheduleBatchRefresh = (event) => {
+            if (event?.type === 'inventory.updated') {
+                try {
+                    const payload = JSON.parse(event.data || '{}');
+                    const changedCodes = Array.isArray(payload.productCodes) ? payload.productCodes.map((code) => String(code || '').toUpperCase()) : [];
+                    if (changedCodes.length && !changedCodes.some((code) => relevantCodes.has(code))) return;
+                } catch {
+                    // Refresh conservatively if the event payload cannot be inspected.
+                }
+            }
+            if (refreshTimer) window.clearTimeout(refreshTimer);
+            refreshTimer = window.setTimeout(() => {
+                refreshTimer = null;
+                setPosBatchRefreshNonce((value) => value + 1);
+            }, 80);
+        };
+        const unsubscribeInventory = subscribeRealtimeEvent('inventory.updated', scheduleBatchRefresh);
+        const unsubscribeResync = subscribeRealtimeEvent('realtime.resync', scheduleBatchRefresh);
+        return () => {
+            if (refreshTimer) window.clearTimeout(refreshTimer);
+            unsubscribeInventory();
+            unsubscribeResync();
+        };
+    }, [checkoutPhase, expiryTrackedCartItems]);
+
+    useEffect(() => {
+        if (checkoutPhase !== 'order-list') {
+            orderListGenerationInFlightRef.current = false;
+        }
+    }, [checkoutPhase]);
+
     const creditCustomerComboboxRef = useRef(null);
-    const customCreditPaymentModeInputRef = useRef(null);
     const cartSelectionEntryButtonRef = useRef(null);
     const quickAddCreditCustomerInFlightRef = useRef(false);
     const quickAddCreditCustomerRequestIdRef = useRef('');
@@ -281,49 +528,14 @@ const PointOfSale = () => {
         };
     }, [searchQuery]);
 
-    useEffect(() => {
-        if (!recommendationChooserItem) return undefined;
-        const handleKeyDown = (event) => {
-            if (event.key === 'Escape') setRecommendationChooserItem(null);
-        };
-        document.addEventListener('keydown', handleKeyDown);
-        return () => document.removeEventListener('keydown', handleKeyDown);
-    }, [recommendationChooserItem]);
-
-    useEffect(() => {
-        if (!isCreditPaymentModeOpen) return undefined;
-
-        const closeWhenFocusLeaves = (target) => {
-            if (!creditPaymentModeRef.current?.contains(target)) {
-                setIsCreditPaymentModeOpen(false);
-            }
-        };
-        const handlePointerDown = (event) => closeWhenFocusLeaves(event.target);
-        const handleFocusIn = (event) => closeWhenFocusLeaves(event.target);
-        const handleKeyDown = (event) => {
-            if (event.key !== 'Escape') return;
-            setIsCreditPaymentModeOpen(false);
-            creditPaymentModeRef.current?.querySelector('button')?.focus();
-        };
-
-        document.addEventListener('pointerdown', handlePointerDown);
-        document.addEventListener('focusin', handleFocusIn);
-        document.addEventListener('keydown', handleKeyDown);
-        return () => {
-            document.removeEventListener('pointerdown', handlePointerDown);
-            document.removeEventListener('focusin', handleFocusIn);
-            document.removeEventListener('keydown', handleKeyDown);
-        };
-    }, [isCreditPaymentModeOpen]);
-
     const createClosedVariantModalState = () => ({
         isOpen: false,
         group: null,
         step: 'brand',
         selectedBrand: null,
-        selectedSize: null,
-        selectedColor: null,
+        selectedAttributes: {},
         selectedVariantCode: null,
+        selectedVariantId: null,
         quantity: 1,
     });
     const createOpenVariantModalState = (group) => ({
@@ -331,12 +543,28 @@ const PointOfSale = () => {
         group,
         step: group?.brandOptions?.length > 1 ? 'brand' : 'variants',
         selectedBrand: null,
-        selectedSize: null,
-        selectedColor: null,
+        selectedAttributes: {},
         selectedVariantCode: null,
+        selectedVariantId: null,
         quantity: 1,
     });
     const [variantModal, setVariantModal] = useState(createClosedVariantModalState);
+    const [isVariantAddProcessing, setIsVariantAddProcessing] = useState(false);
+    const variantAddInProgressRef = useRef(false);
+    const variantAddPendingRef = useRef(null);
+
+    useEffect(() => {
+        const pendingAdd = variantAddPendingRef.current;
+        if (!pendingAdd) return;
+
+        const addedItem = cart.find((item) => item.code === pendingAdd.code);
+        if (Number(addedItem?.qty || 0) !== pendingAdd.expectedQuantity) return;
+
+        setVariantModal((previous) => previous.isOpen ? { ...previous, quantity: 1 } : previous);
+        variantAddPendingRef.current = null;
+        variantAddInProgressRef.current = false;
+        setIsVariantAddProcessing(false);
+    }, [cart]);
 
     const variantModalSelectedVariant = useMemo(() => {
         if (!variantModal.isOpen || !variantModal.group || variantModal.step !== 'variants') return null;
@@ -344,10 +572,10 @@ const PointOfSale = () => {
         const variants = variantModal.group.variants.filter((variant) => (
             !variantModal.selectedBrand || getPosVariantValueKey(variant, 'brand') === variantModal.selectedBrand
         ));
-        return getPosVariantSelectionModel(variants, {
-            size: variantModal.selectedSize,
-            color: variantModal.selectedColor,
-        }, variantModal.selectedVariantCode, variantModal.group.variantDimensions?.filter((dimension) => dimension !== 'brand')).matchedVariant;
+        return getPosAttributeSelectionModel(
+            variants, variantModal.group.attributeDefinitions, variantModal.selectedAttributes,
+            variantModal.selectedVariantCode ? { code: variantModal.selectedVariantCode, id: variantModal.selectedVariantId } : null
+        ).matchedVariant;
     }, [variantModal]);
 
     const variantModalImageItem = useMemo(() => {
@@ -358,8 +586,65 @@ const PointOfSale = () => {
         ));
         const brandRepresentative = variants.find((variant) => getProductImageUrl(variant)) || null;
 
-        return getProductImageUrl(variantModalSelectedVariant) ? variantModalSelectedVariant : brandRepresentative;
+        return variantModalSelectedVariant || brandRepresentative;
     }, [variantModal, variantModalSelectedVariant]);
+
+    const productDetailsSpecifications = useMemo(
+        () => getProductDetailsSpecifications(productDetailsItem, categoryDefinitions),
+        [categoryDefinitions, productDetailsItem]
+    );
+
+    useEffect(() => {
+        if (!productDetailsItem || !returnFocusToProductDetailsTriggerRef.current || enlargedProductImage) return undefined;
+
+        const closeButton = productDetailsCloseButtonRef.current;
+        closeButton?.focus();
+        const handleDetailsKeyDown = (event) => {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                setProductDetailsItem(null);
+                return;
+            }
+            if (event.key !== 'Tab') return;
+
+            const controls = [...(productDetailsDialogRef.current?.querySelectorAll(
+                'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'
+            ) || [])].filter((control) => control.getClientRects().length > 0);
+            const first = controls[0];
+            const last = controls.at(-1);
+            if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last?.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first?.focus();
+            }
+        };
+
+        window.addEventListener('keydown', handleDetailsKeyDown);
+        return () => window.removeEventListener('keydown', handleDetailsKeyDown);
+    }, [productDetailsItem, enlargedProductImage]);
+
+    useEffect(() => {
+        if (productDetailsItem || !returnFocusToProductDetailsTriggerRef.current) return undefined;
+        returnFocusToProductDetailsTriggerRef.current = false;
+        const frameId = window.requestAnimationFrame(() => productDetailsTriggerRef.current?.focus());
+        return () => window.cancelAnimationFrame(frameId);
+    }, [productDetailsItem]);
+
+    useEffect(() => {
+        if (recommendationModal.isOpen) {
+            const frameId = window.requestAnimationFrame(() => recommendationCloseButtonRef.current?.focus());
+            return () => window.cancelAnimationFrame(frameId);
+        }
+
+        const returnFocusTarget = recommendationReturnFocusRef.current;
+        recommendationReturnFocusRef.current = null;
+        if (!returnFocusTarget?.isConnected) return undefined;
+        const frameId = window.requestAnimationFrame(() => returnFocusTarget.focus?.({ preventScroll: true }));
+        return () => window.cancelAnimationFrame(frameId);
+    }, [recommendationModal.isOpen]);
 
     const normalizeTransactionId = (value) => {
         return String(value || '').trim().toUpperCase();
@@ -441,17 +726,84 @@ const PointOfSale = () => {
         });
     }, [inventory, categoryDefinitions, debouncedSearchQuery, selectedCategory, settings]);
 
+    const clearProductFilters = () => {
+        setSearchQuery('');
+        setSelectedCategory('All');
+    };
+    const activeSellableProductCount = inventory.filter((item) => !item.isArchived && item.isActive !== false).length;
+    const posEmptyState = inventoryLoadError && sourceInventory.length === 0
+        ? { title: 'Products unavailable', description: 'Products could not be loaded. Please try again.', actionLabel: 'Retry', onAction: retryInventory }
+        : (searchQuery.trim() || selectedCategory !== 'All') && activeSellableProductCount > 0
+            ? { title: 'No matching results', description: 'Try a different search or filter.', actionLabel: 'Clear Filters', onAction: clearProductFilters }
+            : { title: 'No products available', description: 'There are no active products available for sale.' };
+
+    const activePosGroups = useMemo(() => groupProductsForPos(
+        inventory.filter((item) => !item.isArchived && item.isActive !== false), categoryDefinitions
+    ).map((item) => item.isGroup ? item : {
+        ...item,
+        isGroup: true,
+        groupKey: getPosProductGroupKey(item),
+        variants: [item],
+        brandOptions: [],
+        attributeDefinitions: getEffectiveProductAttributes(categoryDefinitions.find((category) => category.name === item.category)),
+    }), [inventory, categoryDefinitions]);
+    const openVariantGroup = (item) => setVariantModal(createOpenVariantModalState(
+        activePosGroups.find((group) => group.isGroup && group.groupKey === item.groupKey) || item
+    ));
+
+    const viewedOptionGroup = useMemo(() => variantModal.selectionProduct
+        ? getPosProductSelectionGroup(variantModal.selectionProduct, inventory, categoryDefinitions)
+        : null, [variantModal.selectionProduct, inventory, categoryDefinitions]);
+
     useEffect(() => {
+        if (variantModal.selectionProduct) {
+            if (!viewedOptionGroup) setVariantModal(createClosedVariantModalState());
+            else if (viewedOptionGroup !== variantModal.group) setVariantModal((previous) => ({ ...previous, group: viewedOptionGroup }));
+            return;
+        }
         if (!variantModal.isOpen || !variantModal.group?.groupKey) return;
 
-        const refreshedGroup = filteredProducts.find((item) => (
+        const refreshedGroup = activePosGroups.find((item) => (
             item.isGroup && item.groupKey === variantModal.group.groupKey
         ));
-
-        if (refreshedGroup && refreshedGroup !== variantModal.group) {
-            setVariantModal((previous) => ({ ...previous, group: refreshedGroup }));
+        if (!refreshedGroup) {
+            setVariantModal((previous) => previous.group?.groupKey === variantModal.group.groupKey && !previous.selectionProduct
+                ? createClosedVariantModalState() : previous);
+            return;
         }
-    }, [filteredProducts, variantModal.isOpen, variantModal.group]);
+        if (refreshedGroup !== variantModal.group) {
+            setVariantModal((previous) => {
+                if (!previous.isOpen || previous.selectionProduct || previous.group?.groupKey !== refreshedGroup.groupKey
+                    || previous.group === refreshedGroup) return previous;
+                const selectedSku = previous.selectedVariantCode
+                    ? { code: previous.selectedVariantCode, id: previous.selectedVariantId } : null;
+                const brandVariants = (group) => group.variants.filter((item) => (
+                    !previous.selectedBrand || getPosVariantValueKey(item, 'brand') === previous.selectedBrand
+                ));
+                const oldSelection = getPosAttributeSelectionModel(
+                    brandVariants(previous.group), previous.group.attributeDefinitions,
+                    previous.selectedAttributes, selectedSku
+                ).matchedVariant;
+                const nextModel = getPosAttributeSelectionModel(
+                    brandVariants(refreshedGroup), refreshedGroup.attributeDefinitions,
+                    previous.selectedAttributes, selectedSku
+                );
+                // Keep the cashier's latest resolved identity, even when a new
+                // sibling makes its attributes ambiguous. Never replace a SKU.
+                const previousIdentity = oldSelection || selectedSku;
+                const retainedSelection = previousIdentity && nextModel.candidates.find((item) => (
+                    item.code === previousIdentity.code && String(item.id) === String(previousIdentity.id)
+                ));
+                if (previousIdentity && !retainedSelection) return createClosedVariantModalState();
+                return { ...previous,
+                    group: refreshedGroup,
+                    selectedAttributes: nextModel.selections,
+                    selectedVariantCode: retainedSelection?.code || previous.selectedVariantCode,
+                    selectedVariantId: retainedSelection?.id || previous.selectedVariantId,
+                };
+            });
+        }
+    }, [activePosGroups, variantModal.isOpen, variantModal.group, variantModal.selectionProduct, viewedOptionGroup]);
 
     // Reset pagination when filters change
     useEffect(() => {
@@ -459,42 +811,58 @@ const PointOfSale = () => {
     }, [debouncedSearchQuery, selectedCategory]);
 
     useEffect(() => {
-        if (cart.length === 0 && cashAmount !== '') {
-            setCashAmount('');
+        if (cart.length === 0) {
+            if (cashAmount !== '') setCashAmount('');
+            if (downPaymentAmount !== '') setDownPaymentAmount('');
+            if (downPaymentProofFiles.length) setDownPaymentProofFiles([]);
         }
-    }, [cart.length, cashAmount]);
+    }, [cart.length, cashAmount, downPaymentAmount, downPaymentProofFiles.length]);
 
     useEffect(() => {
         let isMounted = true;
-
+        let inFlight = false;
+        let refreshPending = false;
         const loadEligibleCreditCustomers = async () => {
+            if (inFlight) {
+                refreshPending = true;
+                return;
+            }
+            inFlight = true;
+            const requestId = ++creditCustomerRequestSequenceRef.current;
             try {
                 const rows = await listPartnersApi({ type: 'customer', includeArchived: false });
-                if (!isMounted) return;
+                if (!isMounted || requestId !== creditCustomerRequestSequenceRef.current) return;
 
                 const activeRegularCustomers = (Array.isArray(rows) ? rows : []).filter(isActiveRegularCustomer);
                 const eligible = activeRegularCustomers.filter(isEligibleCreditCustomer);
-
+                const selectedId = String(selectedCreditCustomerIdRef.current || '');
                 setRegularCustomers(activeRegularCustomers);
                 setCreditCustomers(eligible);
 
-                if (eligible.length === 0) {
+                if (selectedId && !eligible.some((customer) => String(customer?._id || customer?.id || '') === selectedId)) {
                     setSelectedCreditCustomerId('');
-                    return;
+                    showToast('Customer Needs Recheck', 'The selected customer is no longer eligible for credit checkout.', 'warning', 'pos-credit-customer-inactive');
                 }
             } catch {
-                if (isMounted) {
-                    setCreditCustomers([]);
-                    setRegularCustomers([]);
-                    setSelectedCreditCustomerId('');
+                // Keep the last known options and selection on transient refresh failures.
+            } finally {
+                inFlight = false;
+                if (refreshPending && isMounted) {
+                    refreshPending = false;
+                    void loadEligibleCreditCustomers();
                 }
             }
         };
 
-        loadEligibleCreditCustomers();
+        void loadEligibleCreditCustomers();
+        const unsubscribePartners = subscribeRealtimeEvent('partners.updated', loadEligibleCreditCustomers);
+        const unsubscribeResync = subscribeRealtimeEvent('realtime.resync', loadEligibleCreditCustomers);
 
         return () => {
             isMounted = false;
+            creditCustomerRequestSequenceRef.current += 1;
+            unsubscribePartners();
+            unsubscribeResync();
         };
     }, []);
 
@@ -551,18 +919,10 @@ const PointOfSale = () => {
             ?.scrollIntoView({ block: 'nearest' });
     }, [highlightedCreditCustomerIndex, isCreditCustomerComboboxOpen]);
 
-    const filteredQuotationCustomers = useMemo(() => {
-        const normalizedQuery = String(quotationCustomerQuery || '').trim().toLowerCase();
-        if (!normalizedQuery) return regularCustomers;
-        return regularCustomers.filter((customer) => [customer?.name, customer?.email, customer?.contact, customer?.address]
-            .some((value) => String(value || '').toLowerCase().includes(normalizedQuery)));
-    }, [regularCustomers, quotationCustomerQuery]);
-
-    const hasQuotationSignatoryName = String(quotationDetails.authorizedSignatoryName || '').trim().length > 0;
-
     const selectCreditCustomer = (customer) => {
         const customerId = String(customer?._id || customer?.id || '');
         const customerName = String(customer?.name || '').trim();
+        if (customerId !== selectedCreditCustomerId) setDownPaymentProofFiles([]);
         setSelectedCreditCustomerId(customerId);
         setCreditCustomerSearchQuery(customerName);
         setIsCreditCustomerComboboxOpen(false);
@@ -570,6 +930,7 @@ const PointOfSale = () => {
     };
 
     const clearCreditCustomerSelection = () => {
+        setDownPaymentProofFiles([]);
         setSelectedCreditCustomerId('');
         setCreditCustomerSearchQuery('');
         setHighlightedCreditCustomerIndex(-1);
@@ -635,6 +996,7 @@ const PointOfSale = () => {
 
         const name = normalizeHumanReadable(quickAddCreditCustomerName);
         if (!name) {
+            setFormValidationErrors(event.currentTarget, { customerName: 'Enter the customer name.' });
             showErrorDetails('Customer name is required.', 'Missing Customer Name');
             return;
         }
@@ -723,25 +1085,6 @@ const PointOfSale = () => {
         return labels[mode] || String(mode || '');
     };
 
-    const focusCustomCreditPaymentModeInput = () => {
-        window.requestAnimationFrame(() => {
-            const input = customCreditPaymentModeInputRef.current;
-            if (!input) return;
-
-            input.focus({ preventScroll: true });
-            if (input.value) {
-                input.select();
-            }
-
-            const inputBounds = input.getBoundingClientRect();
-            const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
-            if (inputBounds.top < 0 || inputBounds.bottom > viewportHeight) {
-                input.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-            }
-        });
-    };
-
-
     useEffect(() => {
         if (!productListRef.current) return;
         productListRef.current.scrollTop = 0;
@@ -774,13 +1117,36 @@ const PointOfSale = () => {
             .slice(0, 120);
     }, [inventory]);
 
+    const closeRecommendationModal = () => {
+        setRecommendationModal({ isOpen: false, item: null, alternatives: [], budgetOptions: null });
+        setRecommendationQuantities({});
+    };
+
+    const getCartAdditionResult = (previousCart, product, requestedQty) => {
+        const existingItem = previousCart.find(item => item.code === product.code);
+        const currentQtyInCart = existingItem ? existingItem.qty : 0;
+        if (currentQtyInCart + requestedQty > product.stock) {
+            return { ok: false, error: `Only ${product.stock} units available!` };
+        }
+
+        const nextCart = existingItem
+            ? previousCart.map(item => item.code === product.code
+                ? { ...item, qty: item.qty + requestedQty }
+                : item)
+            : [...previousCart, { ...product, qty: requestedQty }];
+        return { ok: true, cart: nextCart };
+    };
+
     const addToCart = (product, forceAdd = false, options = {}) => {
         const silentNotification = Boolean(options?.silentNotification);
         const requestedQty = Math.max(1, Math.floor(Number(options?.quantity) || 1));
         if (!forceAdd) {
             if (product.stock <= 0) {
-                const availability = getRecommendationAvailability(product, inventory, settings);
-                if (availability.hasAlternatives) {
+                const availability = getPosRecommendationAvailability(product, inventory, settings, { categories: categoryDefinitions, cart });
+                if (availability.hasAny) {
+                    recommendationAddInProgressRef.current = false;
+                    setRecommendationQuantities({});
+                    recommendationReturnFocusRef.current = document.activeElement;
                     setRecommendationModal({ isOpen: true, item: product, alternatives: availability.alternatives, budgetOptions: null, type: 'out-of-stock', kind: 'alternative' });
                 } else {
                     showToast('No Alternatives', 'No alternatives found for this item.', 'info', 'pos-budget-no-alternatives');
@@ -789,82 +1155,165 @@ const PointOfSale = () => {
             }
         }
 
-        setCart(prevCart => {
-            const existingItem = prevCart.find(item => item.code === product.code);
-            
-            // Check if adding requested quantity exceeds stock
-            const currentQtyInCart = existingItem ? existingItem.qty : 0;
-            if (currentQtyInCart + requestedQty > product.stock) {
-                showErrorDetails(`Only ${product.stock} units available!`);
-                return prevCart;
+        if (options?.fromVariantModal) {
+            const result = getCartAdditionResult(cart, product, requestedQty);
+            if (!result.ok) {
+                showErrorDetails(result.error);
+                return false;
             }
-
-            if (existingItem) {
-                return prevCart.map(item => 
-                    item.code === product.code 
-                        ? { ...item, qty: item.qty + requestedQty } 
-                        : item
-                );
-            } else {
-                return [...prevCart, { ...product, qty: requestedQty }];
-            }
-        });
+            setCart(result.cart);
+        } else {
+            setCart(prevCart => {
+                const result = getCartAdditionResult(prevCart, product, requestedQty);
+                if (!result.ok) {
+                    showErrorDetails(result.error);
+                    return prevCart;
+                }
+                return result.cart;
+            });
+        }
 
         if (forceAdd) {
-            setRecommendationModal({ isOpen: false, item: null, alternatives: [], budgetOptions: null });
+            closeRecommendationModal();
             if (!silentNotification) {
                 showToast("Item Added", "Item added to cart.", "success", "pos-add-cart");
             }
         }
+        return true;
     };
 
-    const selectRecommendedAlternative = (alternative) => {
-        addToCart(alternative, true, { silentNotification: true });
-        setRecommendationModal({ isOpen: false, item: null, alternatives: [] });
-        showToast(
-            'Selected Alternative',
-            `${alternative.brand ? `${alternative.brand} ` : ''}${alternative.name}${alternative.color ? ` — ${alternative.color}` : ''}`,
-            'success',
-            'pos-selected-alternative'
-        );
+    const addRecommendedAlternativeToCart = (alternative, requestedQuantity = 1) => {
+        if (recommendationAddInProgressRef.current) return;
+        const result = getPosRecommendationForCartAddition({
+            targetCode: recommendationModal.item?.code,
+            targetId: recommendationModal.item?.id,
+            candidateCode: alternative.code,
+            candidateId: alternative.id,
+            inventory,
+            cart,
+            settings,
+            categories: categoryDefinitions,
+            requestedQuantity,
+        });
+        if (!result.ok) {
+            showErrorDetails(result.error);
+            return;
+        }
+        recommendationAddInProgressRef.current = true;
+        const added = addToCart(result.product, true, {
+            quantity: requestedQuantity,
+            fromVariantModal: true,
+        });
+        if (!added) recommendationAddInProgressRef.current = false;
     };
 
-    const getRecommendationResults = (product, kind) => {
-        const availability = getRecommendationAvailability(product, inventory, settings);
-        return kind === 'budget' ? availability.budgetOptions : availability.alternatives;
+    const getRecommendationResults = (product, options = {}) => {
+        return getPosRecommendationAvailability(product, inventory, settings, { categories: categoryDefinitions, cart, ...options });
+    };
+
+    const updateRecommendationQuantity = (product, rawValue) => {
+        const safeValue = sanitizeWholeNumberInput(rawValue);
+        const maxQuantity = getPosRemainingAddableQuantity(product, cart);
+        const parsed = Number(safeValue);
+        const quantity = isWholeNumberInput(safeValue, { min: 1 })
+            ? Math.min(maxQuantity, parsed)
+            : 1;
+        setRecommendationQuantities((previous) => ({ ...previous, [product.code]: Math.max(1, quantity) }));
     };
 
     const openRecommendationResults = (product, kind, options = {}) => {
-        const alternatives = getRecommendationResults(product, kind);
-        if (alternatives.length === 0) {
+        const requestedQuantity = options.requestedQuantity || product.requestedRecommendationQuantity || 1;
+        const availability = getRecommendationResults(product, { requestedQuantity });
+        if (!availability.hasAny) {
             showToast('No Alternatives', 'No alternatives found for this item.', 'info', 'pos-budget-no-alternatives');
             return;
         }
 
         const status = getStockStatus(product, settings);
         const type = options.type || (status === 'Out of Stock' ? 'out-of-stock' : status === 'Low Stock' ? 'low-stock' : 'in-stock');
+        recommendationAddInProgressRef.current = false;
+        setRecommendationQuantities({});
+        recommendationReturnFocusRef.current = document.activeElement;
         setRecommendationModal({
             isOpen: true,
             item: product,
-            alternatives,
+            alternatives: availability.alternatives,
             budgetOptions: null,
             type,
             kind,
-            returnToChooser: options.returnToChooser === true,
+            requestedQuantity,
         });
     };
 
     const openAvailableRecommendations = (product, availability, options = {}) => {
         const action = getPosRecommendationAction(availability);
-        if (action === 'chooser') {
-            setRecommendationChooserItem(product);
-            return;
-        }
         if (action) openRecommendationResults(product, action, options);
     };
 
+    const activeRecommendationTarget = recommendationModal.isOpen
+        ? inventory.find((item) => item.code === recommendationModal.item?.code && item.id === recommendationModal.item?.id)
+        : null;
+    const liveRecommendationOptions = activeRecommendationTarget
+        ? getRecommendationResults(activeRecommendationTarget, { requestedQuantity: recommendationModal.requestedQuantity || 1 })
+        : { alternatives: [], otherOptions: [], hasAny: false };
+
     const removeFromCart = (code) => {
         setCart(prevCart => prevCart.filter(item => item.code !== code));
+    };
+
+    const requestSingleCartRemoval = (item, event) => {
+        if (!item || singleCartRemovalLockedRef.current) return;
+        singleCartRemovalLockedRef.current = true;
+        singleCartRemovalTriggerRef.current = event?.currentTarget || document.activeElement;
+        setPendingCartRemoval({ code: item.code, item });
+    };
+
+    const closeSingleCartRemoval = () => {
+        if (!pendingCartRemoval || !singleCartRemovalLockedRef.current) return;
+        singleCartRemovalLockedRef.current = false;
+        setPendingCartRemoval(null);
+        const trigger = singleCartRemovalTriggerRef.current;
+        window.requestAnimationFrame(() => {
+            if (trigger?.isConnected) trigger.focus?.();
+            singleCartRemovalTriggerRef.current = null;
+        });
+    };
+
+    const confirmSingleCartRemoval = () => {
+        if (!pendingCartRemoval || !singleCartRemovalLockedRef.current) return;
+        const { code } = pendingCartRemoval;
+        setCart((previousCart) => previousCart.filter((item) => item.code !== code));
+        setPendingCartRemoval(null);
+        window.requestAnimationFrame(() => {
+            const nextRemoveButton = [...document.querySelectorAll('[data-pos-cart-item-remove]')]
+                .find((button) => button.getClientRects().length > 0);
+            const fallbackFocusTarget = isCartDrawerOpen && isMobilePosLayout
+                ? cartDrawerCloseButtonRef.current
+                : document.getElementById('pos-current-order-title');
+            (nextRemoveButton || fallbackFocusTarget || cartToggleButtonRef.current)?.focus?.();
+            singleCartRemovalTriggerRef.current = null;
+            singleCartRemovalLockedRef.current = false;
+        });
+    };
+
+    const handleSingleCartRemovalDialogKeyDown = (event) => {
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            event.stopPropagation();
+            closeSingleCartRemoval();
+            return;
+        }
+        if (event.key !== 'Tab') return;
+
+        const cancelButton = singleCartRemovalCancelButtonRef.current;
+        const removeButton = event.currentTarget.querySelector('[data-confirm-cart-removal]');
+        if (event.shiftKey && document.activeElement === cancelButton) {
+            event.preventDefault();
+            removeButton?.focus();
+        } else if (!event.shiftKey && document.activeElement === removeButton) {
+            event.preventDefault();
+            cancelButton?.focus();
+        }
     };
 
     const exitCartSelectionMode = ({ restoreFocus = false } = {}) => {
@@ -881,6 +1330,143 @@ const PointOfSale = () => {
         setSelectedCartItemCodes((previousCodes) => toggleCartItemSelection(previousCodes, code));
     };
 
+    const cancelCartItemLongPress = () => {
+        if (cartLongPressTimerRef.current !== null) {
+            window.clearTimeout(cartLongPressTimerRef.current);
+            cartLongPressTimerRef.current = null;
+        }
+        cartLongPressTouchRef.current = null;
+    };
+
+    const handleCartItemTouchStart = (event, code) => {
+        cancelCartItemLongPress();
+        if (!isMobileTouchViewport() || event.touches.length !== 1 || isCartItemInteractiveTarget(event.target)) return;
+
+        if (suppressedCartClickTimerRef.current !== null) {
+            window.clearTimeout(suppressedCartClickTimerRef.current);
+            suppressedCartClickTimerRef.current = null;
+        }
+        suppressedCartClickRef.current = null;
+
+        const touch = event.touches[0];
+        const gesture = { code, startX: touch.clientX, startY: touch.clientY, fired: false };
+        cartLongPressTouchRef.current = gesture;
+        cartLongPressTimerRef.current = window.setTimeout(() => {
+            if (cartLongPressTouchRef.current !== gesture) return;
+
+            gesture.fired = true;
+            setIsCartSelectionMode(true);
+            toggleCartSelection(code);
+
+            const suppression = { code, expiresAt: Date.now() + 750 };
+            suppressedCartClickRef.current = suppression;
+            suppressedCartClickTimerRef.current = window.setTimeout(() => {
+                if (suppressedCartClickRef.current === suppression) suppressedCartClickRef.current = null;
+                suppressedCartClickTimerRef.current = null;
+            }, 750);
+        }, 500);
+    };
+
+    const handleCartItemTouchMove = (event, code) => {
+        const gesture = cartLongPressTouchRef.current;
+        if (!gesture || gesture.code !== code) return;
+        if (event.touches.length !== 1) {
+            cancelCartItemLongPress();
+            return;
+        }
+
+        const touch = event.touches[0];
+        const deltaX = touch.clientX - gesture.startX;
+        const deltaY = touch.clientY - gesture.startY;
+        if (Math.hypot(deltaX, deltaY) > 12) cancelCartItemLongPress();
+    };
+
+    const handleCartItemTouchEnd = () => {
+        cancelCartItemLongPress();
+    };
+
+    const handleCartItemClick = (event, code) => {
+        const suppression = suppressedCartClickRef.current;
+        if (suppression) {
+            suppressedCartClickRef.current = null;
+            if (suppressedCartClickTimerRef.current !== null) {
+                window.clearTimeout(suppressedCartClickTimerRef.current);
+                suppressedCartClickTimerRef.current = null;
+            }
+            if (suppression.code === code && Date.now() <= suppression.expiresAt) {
+                event.preventDefault();
+                return;
+            }
+        }
+
+        if (isCartSelectionMode) {
+            toggleCartSelection(code);
+            return;
+        }
+
+        const item = cart.find((cartItem) => cartItem.code === code);
+        if (item) {
+            productDetailsTriggerRef.current = event.currentTarget;
+            returnFocusToProductDetailsTriggerRef.current = true;
+            setProductDetailsItem(item);
+        }
+    };
+
+    const handleCartItemKeyDown = (event, item) => {
+        if (event.target !== event.currentTarget || (event.key !== 'Enter' && event.key !== ' ')) return;
+
+        event.preventDefault();
+        if (isCartSelectionMode) {
+            toggleCartSelection(item.code);
+            return;
+        }
+
+        productDetailsTriggerRef.current = event.currentTarget;
+        returnFocusToProductDetailsTriggerRef.current = true;
+        setProductDetailsItem(item);
+    };
+
+    const preventMobileCartCardSelection = (event) => {
+        if (isMobileTouchViewport() && !isCartItemInteractiveTarget(event.target)) event.preventDefault();
+    };
+
+    const openCartDrawer = () => {
+        cartDrawerRestoreFocusRef.current = true;
+        setIsCartDrawerOpen(true);
+    };
+
+    const closeCartDrawer = ({ restoreFocus = true } = {}) => {
+        cartDrawerRestoreFocusRef.current = restoreFocus;
+        setIsCartDrawerOpen(false);
+    };
+
+    const runCartAction = (action) => {
+        if (isCartDrawerOpen) closeCartDrawer({ restoreFocus: false });
+        action();
+    };
+
+    const handleCartDrawerKeyDown = (event) => {
+        if (isBulkRemoveConfirmationOpen) return;
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            closeCartDrawer();
+            return;
+        }
+        if (event.key !== 'Tab') return;
+
+        const controls = [...(cartDrawerRef.current?.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])') || [])]
+            .filter((control) => control.getClientRects().length > 0);
+        const first = controls[0];
+        const last = controls.at(-1);
+        if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last?.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first?.focus();
+        }
+    };
+
     const toggleAllCartSelections = () => {
         setSelectedCartItemCodes((previousCodes) => toggleAllCartItemSelections(previousCodes, cart));
     };
@@ -891,18 +1477,13 @@ const PointOfSale = () => {
     };
 
     const requestBulkRemove = () => {
-        if (selectedCartItemCodes.length === 0) return;
-
-        if (selectedCartItemCodes.length === 1) {
-            removeSelectedCartLines();
-            return;
-        }
-
+        if (selectedCartItemCount === 0) return;
         setIsBulkRemoveConfirmationOpen(true);
     };
 
     const handlePaymentTypeChange = (nextPaymentType) => {
         setPaymentType(nextPaymentType);
+        if (nextPaymentType !== 'credit') setDownPaymentProofFiles([]);
         if (isCartSelectionMode) exitCartSelectionMode();
     };
 
@@ -917,6 +1498,91 @@ const PointOfSale = () => {
     }, [cart, isCartSelectionMode]);
 
     useEffect(() => {
+        const mobileQuery = window.matchMedia('(max-width: 767px)');
+        const syncViewport = () => {
+            const isMobile = mobileQuery.matches;
+            setIsMobilePosLayout(isMobile);
+            if (!isMobile) {
+                cartDrawerRestoreFocusRef.current = false;
+                setIsCartDrawerOpen(false);
+            }
+        };
+        syncViewport();
+        if (mobileQuery.addEventListener) mobileQuery.addEventListener('change', syncViewport);
+        else mobileQuery.addListener?.(syncViewport);
+        return () => {
+            if (mobileQuery.removeEventListener) mobileQuery.removeEventListener('change', syncViewport);
+            else mobileQuery.removeListener?.(syncViewport);
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!isMobilePosLayout) {
+            setIsHeaderCartVisible(true);
+            return undefined;
+        }
+
+        const headerCartButton = cartToggleButtonRef.current;
+        if (!headerCartButton || typeof IntersectionObserver === 'undefined') {
+            setIsHeaderCartVisible(true);
+            return undefined;
+        }
+
+        const observer = new IntersectionObserver(([entry]) => {
+            setIsHeaderCartVisible(Boolean(entry?.isIntersecting && entry.intersectionRatio > 0));
+        }, { threshold: 0 });
+        observer.observe(headerCartButton);
+        return () => observer.disconnect();
+    }, [isMobilePosLayout]);
+
+    useEffect(() => {
+        if (!isCartDrawerOpen || !isMobilePosLayout) return undefined;
+
+        const previousBodyOverflow = document.body.style.overflow;
+        const returnFocusTarget = cartToggleButtonRef.current;
+        document.body.style.overflow = 'hidden';
+        const focusFrame = window.requestAnimationFrame(() => cartDrawerCloseButtonRef.current?.focus());
+
+        return () => {
+            window.cancelAnimationFrame(focusFrame);
+            document.body.style.overflow = previousBodyOverflow;
+
+            const shouldRestoreFocus = cartDrawerRestoreFocusRef.current;
+            cartDrawerRestoreFocusRef.current = true;
+            if (shouldRestoreFocus) {
+                window.requestAnimationFrame(() => {
+                    if (isMobilePosViewport() && returnFocusTarget?.isConnected) returnFocusTarget.focus();
+                });
+            }
+        };
+    }, [isCartDrawerOpen, isMobilePosLayout]);
+
+    useEffect(() => {
+        if (previousCartItemCountRef.current === cartItemCount) return undefined;
+        previousCartItemCountRef.current = cartItemCount;
+        setCartCountFeedback(true);
+
+        if (cartCountFeedbackTimerRef.current !== null) window.clearTimeout(cartCountFeedbackTimerRef.current);
+        const timer = window.setTimeout(() => {
+            setCartCountFeedback(false);
+            cartCountFeedbackTimerRef.current = null;
+        }, 280);
+        cartCountFeedbackTimerRef.current = timer;
+        return () => {
+            if (cartCountFeedbackTimerRef.current === timer) {
+                window.clearTimeout(timer);
+                cartCountFeedbackTimerRef.current = null;
+            }
+        };
+    }, [cartItemCount]);
+
+    useEffect(() => () => {
+        if (cartLongPressTimerRef.current !== null) window.clearTimeout(cartLongPressTimerRef.current);
+        if (suppressedCartClickTimerRef.current !== null) window.clearTimeout(suppressedCartClickTimerRef.current);
+        if (cartCountFeedbackTimerRef.current !== null) window.clearTimeout(cartCountFeedbackTimerRef.current);
+    }, []);
+
+    useEffect(() => {
         if (!isBulkRemoveConfirmationOpen) return undefined;
 
         const handleKeyDown = (event) => {
@@ -928,6 +1594,22 @@ const PointOfSale = () => {
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [isBulkRemoveConfirmationOpen]);
+
+    useEffect(() => {
+        if (!isBulkRemoveConfirmationOpen) return undefined;
+        const previousFocus = document.activeElement;
+        const frameId = window.requestAnimationFrame(() => bulkRemoveCancelButtonRef.current?.focus());
+        return () => {
+            window.cancelAnimationFrame(frameId);
+            if (previousFocus?.isConnected) window.requestAnimationFrame(() => previousFocus.focus?.());
+        };
+    }, [isBulkRemoveConfirmationOpen]);
+
+    useEffect(() => {
+        if (!pendingCartRemoval) return undefined;
+        const frameId = window.requestAnimationFrame(() => singleCartRemovalCancelButtonRef.current?.focus());
+        return () => window.cancelAnimationFrame(frameId);
+    }, [pendingCartRemoval]);
 
     const updateQuantity = (code, newQty) => {
         if (newQty <= 0) {
@@ -996,7 +1678,7 @@ const PointOfSale = () => {
         };
     };
 
-    const completeOfflineCheckout = ({ transactionData, cartSnapshot, canSyncOnline, total, referenceNumber }) => {
+    const _completeOfflineCheckout = ({ transactionData, cartSnapshot, canSyncOnline, total, referenceNumber }) => {
         const referencedTransaction = {
             ...transactionData,
             transactionReference: {
@@ -1015,11 +1697,11 @@ const PointOfSale = () => {
             showToast('Offline Mode', 'Transaction saved locally and will sync when online.', 'info', 'pos-offline-sync');
         }
 
-        setInventory(inventory.map((item) => {
+        setInventory(sourceInventory.map((item) => {
             const cartItem = cartSnapshot.find((candidate) => candidate.code === item.code);
             if (!cartItem) return item;
             const stock = item.stock - cartItem.qty;
-            return { ...item, stock, status: getStockStatus({ ...item, stock }, settings) };
+            return { ...item, stock, availableToSell: Math.max(0, Number(item.availableToSell ?? item.stock) - cartItem.qty), status: getStockStatus({ ...item, stock }, settings) };
         }));
         setTransactions((previous) => [referencedTransaction, ...previous]);
         cartSnapshot.forEach((item) => {
@@ -1034,17 +1716,38 @@ const PointOfSale = () => {
         return referencedTransaction;
     };
 
+    const reportCheckoutFieldError = (field, message) => {
+        const scope = document.querySelector('[data-validation-scope="pos-payment"]');
+        if (scope) setFormValidationErrors(scope, { [field]: message });
+    };
+
     const handleCheckout = async () => {
         if (checkoutInFlightRef.current) {
             return;
         }
 
-        if (pendingOfflineCheckout) return;
-
         if (cart.length === 0) return;
 
         const isCreditCheckout = paymentType === 'credit';
         const isCashCheckout = paymentType === 'cash';
+
+        if (cart.some((item) => item.expiryTrackingEnabled === true)
+            && !posBatchVerificationItems.every((item) => isExpiryBatchVerificationConfirmed(item, posBatchVerificationRecords[item.productKey]))) {
+            showErrorDetails('Confirm the physical batch picks in the Order List before continuing.');
+            setCheckoutPhase('order-list');
+            const item = posBatchVerificationItems.find((candidate) => !isExpiryBatchVerificationConfirmed(candidate, posBatchVerificationRecords[candidate.productKey]));
+            if (item && item.reconciled && !item.loading && !item.error && item.proposedAllocations?.length) {
+                window.requestAnimationFrame(() => {
+                    const scope = document.querySelector('[data-validation-scope="pos-order-list"]');
+                    if (!scope?.isConnected) return;
+                    const validationPrefix = `batchPicks.${item.productKey}`;
+                    const confirmButton = Array.from(scope.querySelectorAll('[data-validation-key]')).find((control) => control.dataset.validationKey === `${validationPrefix}.confirm`);
+                    const field = confirmButton && !confirmButton.disabled ? 'confirm' : 'batch';
+                    setFormValidationErrors(scope, { [`${validationPrefix}.${field}`]: `Review the physical batch allocation for ${item.name || item.sku || 'this product'}.` });
+                });
+            }
+            return;
+        }
 
         // Calculate totals (Tax removed)
         const total = calculateTotal();
@@ -1055,24 +1758,44 @@ const PointOfSale = () => {
         const totalCentavos = getMoneyCentavosFromAmount(total);
         const hasValidCashAmount = cashCentavos !== null;
         const cash = hasValidCashAmount ? moneyFromCentavos(cashCentavos) : 0;
+        const normalizedDownPaymentAmount = formatMoneyInput(downPaymentAmount);
+        const downPaymentCentavos = parseMoneyToCentavos(normalizedDownPaymentAmount);
 
         if (isCashCheckout) {
             if (cashCentavos === null || totalCentavos === null) {
                 const tooLarge = isMoneyInputTooLarge(normalizedCashAmount) || totalCentavos === null;
-                showErrorDetails(tooLarge ? 'Amount is too large. Please enter a smaller value.' : 'Enter a valid cash amount.');
+                const message = tooLarge ? 'Amount is too large. Please enter a smaller value.' : 'Enter a valid cash amount.';
+                reportCheckoutFieldError('cashAmount', message);
+                showErrorDetails(message);
                 return;
             }
             if (cashCentavos < totalCentavos) {
+                reportCheckoutFieldError('cashAmount', 'Cash tendered must cover the total due.');
                 showErrorDetails("Insufficient cash amount!");
                 return;
             }
         } else if (isCreditCheckout && !selectedCreditCustomer) {
+            reportCheckoutFieldError('customerId', 'Select an eligible regular customer.');
             showErrorDetails('Select an eligible regular customer for credit checkout.');
             return;
         } else if (isCreditCheckout && !resolveCreditPaymentModeLabel()) {
+            reportCheckoutFieldError('creditPaymentMode', 'Select a down payment method.');
             showErrorDetails('Please select a payment method for credit checkout.');
             return;
+        } else if (isCreditCheckout && (downPaymentCentavos === null || downPaymentCentavos < 1)) {
+            reportCheckoutFieldError('downPayment', 'Enter a down payment of at least ₱0.01.');
+            showErrorDetails('Enter a down payment of at least ₱0.01.');
+            return;
+        } else if (isCreditCheckout && (totalCentavos === null || downPaymentCentavos >= totalCentavos)) {
+            reportCheckoutFieldError('downPayment', 'Down payment must be less than the total amount.');
+            showErrorDetails('Down payment must be less than the total amount.');
+            return;
+        } else if (isCreditCheckout && (downPaymentProofFiles.length < 1 || downPaymentProofFiles.length > 3)) {
+            reportCheckoutFieldError('proofFiles', 'Choose 1 to 3 Down Payment Proof photos.');
+            showErrorDetails('Choose 1 to 3 Down Payment Proof photos.');
+            return;
         } else if (isCreditCheckout && parsedCreditTermDays === null) {
+            reportCheckoutFieldError('termDays', `Enter a whole-number credit term from ${MIN_CREDIT_TERM_DAYS} to ${MAX_CREDIT_TERM_DAYS} days.`);
             showErrorDetails(`Enter a whole-number credit term from ${MIN_CREDIT_TERM_DAYS} to ${MAX_CREDIT_TERM_DAYS} days.`);
             return;
         }
@@ -1098,12 +1821,15 @@ const PointOfSale = () => {
             cashTendered: isCashCheckout ? normalizedCashAmount : '',
             change: isCashCheckout ? moneyFromCentavos(cashCentavos - totalCentavos) : 0,
             paymentMethod: isCreditCheckout ? 'Credit' : 'Cash',
-            paymentStatus: isCreditCheckout ? 'Pending' : 'Paid',
+            paymentStatus: isCreditCheckout ? 'Partially Paid' : 'Paid',
             customerId: isCreditCheckout ? selectedCreditCustomerId : '',
             customerName: isCreditCheckout
                 ? (selectedCreditCustomer?.name || '')
                 : '',
             creditPaymentMode: isCreditCheckout ? resolveCreditPaymentModeLabel() : '',
+            downPaymentAmount: isCreditCheckout ? moneyFromCentavos(downPaymentCentavos) : 0,
+            amountPaid: isCreditCheckout ? moneyFromCentavos(downPaymentCentavos) : 0,
+            remainingBalance: isCreditCheckout ? moneyFromCentavos(totalCentavos - downPaymentCentavos) : 0,
             termDays: isCreditCheckout ? parsedCreditTermDays : null,
             dueDate: isCreditCheckout && computedCreditDueDate ? computedCreditDueDate.toISOString() : null,
             cashier: currentUserFullName || currentUserName,
@@ -1113,6 +1839,13 @@ const PointOfSale = () => {
         const authToken = getAuthToken();
         const hasSession = Boolean(authToken);
         const canSyncOnline = hasSession && navigator.onLine && cartSnapshot.every(item => item.id);
+
+        if (cartSnapshot.some((item) => item.expiryTrackingEnabled === true) && !canSyncOnline) {
+            showErrorDetails('Expiry-tracked items need an online connection for physical batch verification and payment.');
+            checkoutInFlightRef.current = false;
+            setIsCheckoutProcessing(false);
+            return;
+        }
 
         if (isCreditCheckout && !canSyncOnline) {
             showErrorDetails(
@@ -1125,201 +1858,188 @@ const PointOfSale = () => {
             return;
         }
 
-        try {
-            if (canSyncOnline) {
-                try {
-                    const apiItems = cartSnapshot.map(item => ({
-                        productId: item.id,
-                        quantity: item.qty,
-                    }));
-
-                    const savedSale = await createSaleApi(
-                        apiItems,
-                        isCreditCheckout ? 'credit' : paymentType,
-                        transactionData.clientRequestId,
-                        isCreditCheckout
-                            ? {
-                                customerId: selectedCreditCustomerId,
-                                customerName: selectedCreditCustomer?.name || '',
-                                creditPaymentMode: selectedCreditPaymentMode,
-                                creditPaymentModeOther: selectedCreditPaymentMode === 'other' ? customCreditPaymentMode : '',
-                                termDays: parsedCreditTermDays,
-                                notes: `Preferred mode of payment: ${resolveCreditPaymentModeLabel()}`,
-                                vatMode: normalizeVatMode(selectedVatMode),
-                            }
-                            : {
-                                vatMode: normalizeVatMode(selectedVatMode),
-                                cashTendered: normalizedCashAmount,
-                            }
-                    );
-                    
-                    // If we get here, sync was successful
-                    try {
-                        const remoteProducts = await listProductsApi();
-                        if (Array.isArray(remoteProducts) && remoteProducts.length > 0) {
-                            setInventory(remoteProducts);
-                        }
-                    } catch (refreshError) {
-                        // The sale is already accepted at this point. A refresh failure must
-                        // not reclassify it as an offline or rejected transaction.
-                        console.warn('Sale completed, but inventory refresh failed:', refreshError);
-                    }
-
-                    const remoteTransaction = {
-                        id: savedSale?._id ? `TRX-${savedSale._id.slice(-8).toUpperCase()}` : transactionData.id,
-                        sourceId: savedSale?._id ? String(savedSale._id) : '',
-                        date: savedSale?.createdAt ? new Date(savedSale.createdAt).toLocaleString() : transactionData.date,
-                        items: [...cartSnapshot],
-                        total: savedSale?.totalAmount ?? total,
-                        netAmount: Number(savedSale?.netAmount || vatForTransaction.netAmount || total),
-                        vatAmount: Number(savedSale?.vatAmount || vatForTransaction.vatAmount || 0),
-                        grossAmount: Number(savedSale?.grossAmount || (savedSale?.totalAmount ?? total)),
-                        pricingMode: 'inclusive',
-                        vatMode: normalizeVatMode(savedSale?.vatMode || selectedVatMode),
-                        customerIsVatExempt: false,
-                        cash: isCashCheckout ? cash : 0,
-                        cashTendered: isCashCheckout ? normalizedCashAmount : '',
-                        change: isCashCheckout ? moneyFromCentavos(cashCentavos - totalCentavos) : 0,
-                        paymentMethod: isCreditCheckout ? 'Credit' : 'Cash',
-                        paymentStatus: savedSale?.paymentStatus || (isCreditCheckout ? 'Pending' : 'Paid'),
-                        customerId: isCreditCheckout ? String(savedSale?.customer || selectedCreditCustomerId) : '',
-                        customerName: isCreditCheckout
-                            ? (savedSale?.customerName || selectedCreditCustomer?.name || '')
-                            : '',
-                        creditPaymentMode: isCreditCheckout
-                            ? (resolveCreditPaymentModeLabel() || '')
-                            : '',
-                        termDays: isCreditCheckout ? Number(savedSale?.creditTermDays || selectedCreditTermDays) : null,
-                        dueDate: isCreditCheckout ? (savedSale?.dueDate || computedCreditDueDate.toISOString()) : null,
-                        cashImpactAmount: isCreditCheckout ? 0 : (savedSale?.totalAmount ?? total),
-                        cashier: currentUserFullName || currentUserName,
-                        cashierRole: String(userRole || '').toLowerCase(),
-                        transactionReference: savedSale?.transactionReference || null,
-                    };
-
-                    if (!isCreditCheckout) {
-                        setTransactions(prev => upsertTransactionByIdentity(prev, remoteTransaction));
-                    }
-                    cartSnapshot.forEach(item => {
-                        logAction('DEDUCT', item.code, `Sold ${item.qty} Qty (TRX: ${remoteTransaction.id})`, currentUserName);
-                    });
-
-                    setCart([]);
-                    setCashAmount('');
-                    setLastTransaction(remoteTransaction);
-                    setPendingReferenceSaleId('');
-                    setShowReceipt(false);
-                    setCheckoutPhase('confirmation');
-                    // Completion feedback waits until the required Transaction Reference save succeeds.
-                    return;
-                } catch (error) {
-                    if (!isApiConnectionFailure(error) || isCreditCheckout) {
-                        console.warn('Online checkout was rejected or failed after an HTTP response:', error);
-                        const message = error?.message || 'Checkout failed. Please retry.';
-                        showErrorDetails(message);
-                        return;
-                    }
-
-                    console.warn('API connection failed before a response was received; using offline checkout:', error);
+        // Payment only prepares an editable draft. No Sale, inventory mutation,
+        // credit record, or activity log exists until Save Transaction.
+        setCheckoutDraft({
+            transactionData,
+            cartSnapshot,
+            canSyncOnline,
+            isCreditCheckout,
+            isCashCheckout,
+            downPaymentProofFiles: isCreditCheckout ? [...downPaymentProofFiles] : [],
+            apiItems: cartSnapshot.map((item) => ({ productId: item.id, quantity: item.qty })),
+            saleOptions: isCreditCheckout
+                ? {
+                    customerId: selectedCreditCustomerId,
+                    customerName: selectedCreditCustomer?.name || '',
+                    creditPaymentMode: selectedCreditPaymentMode,
+                    creditPaymentModeOther: selectedCreditPaymentMode === 'other' ? customCreditPaymentMode : '',
+                    downPaymentAmount: normalizedDownPaymentAmount,
+                    termDays: parsedCreditTermDays,
+                    notes: `Down payment method: ${resolveCreditPaymentModeLabel()}`,
+                    vatMode: normalizeVatMode(selectedVatMode),
                 }
+                : {
+                    vatMode: normalizeVatMode(selectedVatMode),
+                    cashTendered: normalizedCashAmount,
+                },
+            batchVerifications: expiryTrackedCartItems.map((item) => {
+                const key = String(item.id || item.code);
+                const record = posBatchVerificationRecords[key];
+                return {
+                    productId: String(item.id || ''),
+                    proposedAllocations: record?.proposedAllocations || posBatchPickData[key]?.proposedAllocations || [],
+                    verifiedAllocations: record?.allocations || [],
+                    reason: String(record?.reason || '').trim(),
+                    productStock: posBatchPickData[key]?.productStock,
+                    productReserved: posBatchPickData[key]?.productReserved,
+                };
+            }),
+        });
+        setCheckoutPhase('confirmation');
+        checkoutInFlightRef.current = false;
+        setIsCheckoutProcessing(false);
+        return;
+    };
+
+    const finalizeCheckoutDraft = async ({ referenceNumber, documentFile }) => {
+        if (checkoutInFlightRef.current || !checkoutDraft) {
+            throw new Error('The checkout draft is no longer available. Return to Payment and try again.');
+        }
+
+        checkoutInFlightRef.current = true;
+        setIsCheckoutProcessing(true);
+        try {
+            const { transactionData, cartSnapshot, canSyncOnline, isCreditCheckout, apiItems, saleOptions, downPaymentProofFiles: draftProofFiles, batchVerifications = [] } = checkoutDraft;
+            if (!canSyncOnline) {
+                if (batchVerifications.length) throw new Error('Expiry-tracked items require a live connection for batch verification.');
+                if (isCreditCheckout) throw new Error('Credit checkout requires a live backend connection. Please reconnect and retry.');
+                if (documentFile) throw new Error('Supporting images require a live connection. Enter an Invoice No. to save this cash sale offline.');
+
+                const referencedTransaction = {
+                    ...transactionData,
+                    transactionReference: { referenceNumber: String(referenceNumber || '').trim(), supportingDocument: null },
+                };
+                const queued = addToSyncQueue({
+                    ...referencedTransaction,
+                    clientRequestId: referencedTransaction.clientRequestId,
+                    items: cartSnapshot.map((item) => ({ ...item, id: item.id || item._id })),
+                });
+                if (!queued) throw new Error('The sale could not be added to your offline sync queue.');
+                return { transaction: referencedTransaction, offline: true };
             }
 
-            // Offline Cash Sales require a Reference No. before any local stock,
-            // history, or sync-queue mutation is applied.
-            setCheckoutPhase(null);
-            setPendingOfflineCheckout({ transactionData, cartSnapshot, canSyncOnline, total });
-            return;
+            const savedSale = await finalizeSaleWithReferenceApi({
+                items: apiItems,
+                paymentMethod: isCreditCheckout ? 'credit' : 'cash',
+                clientRequestId: transactionData.clientRequestId,
+                referenceNumber,
+                documentFile,
+                downPaymentProofFiles: draftProofFiles,
+                batchVerifications,
+                options: saleOptions,
+            });
+
+            const remoteTransaction = {
+                ...transactionData,
+                id: savedSale?._id ? `TRX-${savedSale._id.slice(-8).toUpperCase()}` : '',
+                sourceId: savedSale?._id ? String(savedSale._id) : '',
+                date: savedSale?.createdAt ? new Date(savedSale.createdAt).toLocaleString() : transactionData.date,
+                total: savedSale?.totalAmount ?? transactionData.total,
+                netAmount: Number(savedSale?.netAmount ?? transactionData.netAmount),
+                vatAmount: Number(savedSale?.vatAmount ?? transactionData.vatAmount),
+                grossAmount: Number(savedSale?.grossAmount ?? transactionData.grossAmount),
+                paymentStatus: savedSale?.paymentStatus || transactionData.paymentStatus,
+                downPaymentAmount: transactionData.downPaymentAmount,
+                amountPaid: transactionData.amountPaid,
+                remainingBalance: transactionData.remainingBalance,
+                transactionReference: savedSale?.transactionReference || null,
+            };
+            try {
+                const remoteProducts = await listProductsApi();
+                if (Array.isArray(remoteProducts)) setInventory(remoteProducts);
+            } catch (refreshError) {
+                console.warn('Sale finalized, but inventory refresh failed:', refreshError);
+            }
+            return { transaction: remoteTransaction, offline: false };
         } finally {
             checkoutInFlightRef.current = false;
             setIsCheckoutProcessing(false);
         }
     };
 
-    const [printStatus, setPrintStatus] = useState('idle'); // idle, printing, success
-
-    const openOrderList = () => {
-        if (cart.length === 0 || isCheckoutProcessing) return;
-        setCheckoutOpenedAt(new Date().toLocaleString());
-        setCheckoutPhase('order-list');
+    const completeFinalizedCheckout = ({ transaction, offline }) => {
+        const draft = checkoutDraft;
+        if (!draft) return;
+        if (offline) {
+            setInventory((previous) => previous.map((item) => {
+                const cartItem = draft.cartSnapshot.find((candidate) => candidate.code === item.code);
+                if (!cartItem) return item;
+                const stock = item.stock - cartItem.qty;
+                return { ...item, stock, availableToSell: Math.max(0, Number(item.availableToSell ?? item.stock) - cartItem.qty), status: getStockStatus({ ...item, stock }, settings) };
+            }));
+        }
+        if (!draft.isCreditCheckout) setTransactions((previous) => upsertTransactionByIdentity(previous, transaction));
+        draft.cartSnapshot.forEach((item) => {
+            logAction('DEDUCT', item.code, `Sold ${item.qty} Qty (TRX: ${transaction.id})`, currentUserName);
+        });
+        setCart([]);
+        setPosBatchPickData({});
+        setPosBatchVerificationRecords({});
+        setCashAmount('');
+        setDownPaymentAmount('');
+        setDownPaymentProofFiles([]);
+        setLastTransaction(transaction);
+        setCheckoutDraft(null);
+        setCheckoutReferenceDraft({ referenceNumber: '', documentFile: null });
+        setShowReceipt(false);
+        setCheckoutPhase(null);
+        logActivity(currentUserName, 'Processed Sale', `Transaction ${transaction.id} — ${formatCurrency(transaction.total)}`);
+        if (offline) showToast('Offline Mode', 'Transaction saved locally and will sync when online.', 'info', 'pos-offline-sync');
+        showTransactionCompletionToast(transaction);
     };
 
-    const handleGenerateQuotation = () => {
-        setQuotationType(null);
-        setFormalQuotationData(null);
-        setSelectedQuotationCustomer(null);
-        setQuotationDetails({ attentionName: '', attentionPosition: '', authorizedSignatoryName: '' });
-        setShowQuotationDetails(false);
-        setShowQuotationTypeChooser(true);
+    const [printStatus, setPrintStatus] = useState('idle'); // idle, printing, success
+    const [quotationPdfStatus, setQuotationPdfStatus] = useState('idle');
+
+    const openOrderList = () => {
+        if (cart.length === 0 || isCheckoutProcessing || orderListGenerationInFlightRef.current) return;
+        orderListGenerationInFlightRef.current = true;
+        const openedAt = new Date().toLocaleString();
+        setLastTransaction(null);
+        setCheckoutDraft(null);
+        setCheckoutReferenceDraft({ referenceNumber: '', documentFile: null });
+        setCheckoutOpenedAt(openedAt);
+        setCheckoutPhase('order-list');
+
+        // This is the explicit Order List draft-generation action. Never auto-print
+        // from cart changes, checkout completion, or the viewing-only confirmation.
+        if (userPreferences.autoPrintReceipts) {
+            if (cart.some((item) => item.expiryTrackingEnabled === true)) {
+                pendingOrderListAutoPrintRef.current = true;
+            } else {
+                void handlePrintOrderList({ date: openedAt });
+            }
+        }
     };
 
     const openWalkInQuotation = () => {
+        const generatedAt = new Date().toISOString();
         const quoteData = {
             quotationType: 'walk_in',
             items: [...cart],
-            total: calculateTotal()
+            total: calculateTotal(),
+            generatedAt,
+            quotationNumber: `QTN-${new Date(generatedAt).getFullYear()}-${String(Date.now()).slice(-4)}`,
+            cashierName: currentUserName,
         };
 
-        setQuotationType('walk_in');
-        setShowQuotationTypeChooser(false);
         setQuotationData(quoteData);
         setShowQuotationPreview(true);
     };
 
-    const openRegularCustomerSelector = () => {
-        setQuotationType('regular_customer');
-        setQuotationCustomerQuery('');
-        setSelectedQuotationCustomer(null);
-        setFormalQuotationData(null);
-        setShowQuotationDetails(false);
-        setShowQuotationTypeChooser(false);
-        setShowQuotationCustomerSelector(true);
-    };
-
-    const openQuotationDetails = (customer) => {
-        setSelectedQuotationCustomer(customer);
-        setQuotationDetails({
-            attentionName: String(customer?.attentionName || ''),
-            attentionPosition: String(customer?.attentionPosition || ''),
-            authorizedSignatoryName: String(settings?.authorizedSignatoryName || ''),
-        });
-        setShowQuotationCustomerSelector(false);
-        setShowQuotationDetails(true);
-    };
-
-    const returnToQuotationCustomerSelector = () => {
-        setShowQuotationDetails(false);
-        setShowQuotationCustomerSelector(true);
-    };
-
-    const previewFormalQuotation = (event) => {
-        event.preventDefault();
-        if (!selectedQuotationCustomer) {
-            showErrorDetails('Select a valid regular customer.');
-            return;
-        }
-
-        const authorizedSignatoryName = normalizeHumanReadable(quotationDetails.authorizedSignatoryName);
-        if (!authorizedSignatoryName) {
-            showErrorDetails('Authorized Signatory Name is required.', 'Quotation Details');
-            return;
-        }
-
-        const quotationSpecificDetails = {
-            ...quotationDetails,
-            authorizedSignatoryName,
-        };
-
-        const quotation = buildFormalQuotationModel({
-            items: cart,
-            customer: selectedQuotationCustomer,
-            settings,
-            quotationDetails: quotationSpecificDetails,
-            categories: categoryDefinitions,
-            date: new Date(),
-        });
-        setQuotationType('regular_customer');
-        setFormalQuotationData(quotation);
-        setShowQuotationDetails(false);
+    const handleGenerateQuotation = () => {
+        openWalkInQuotation();
     };
 
     const handlePrintQuotationDoc = () => {
@@ -1339,8 +2059,9 @@ const PointOfSale = () => {
         }
 
         const quotationReceipt = buildQuotationReceiptModel(quote, settings);
+        const quotationPrintLayout = buildQuotationPrintLayout(quotationReceipt);
 
-        void printDocument({ lines: buildQuotationPrintLines(quotationReceipt) })
+        void printDocument(quotationPrintLayout)
             .then((result) => {
                 setPrintStatus('success');
                 showToast(
@@ -1365,19 +2086,54 @@ const PointOfSale = () => {
             });
     };
 
+    const handleDownloadQuotationPdf = () => {
+        if (quotationPdfStatus === 'downloading') return;
+
+        const quote = quotationData;
+        if (!quote) {
+            showErrorDetails('Please generate a quotation first.');
+            return;
+        }
+
+        setQuotationPdfStatus('downloading');
+        const quotationReceipt = buildQuotationReceiptModel(quote, settings);
+        void downloadWalkInQuotationPdf(quotationReceipt)
+            .then(() => {
+                setQuotationPdfStatus('success');
+                showToast('Download Success', 'Quotation PDF downloaded successfully.', 'success', 'pos-download-quotation');
+                window.setTimeout(() => setQuotationPdfStatus('idle'), 1500);
+            })
+            .catch((error) => {
+                setQuotationPdfStatus('idle');
+                showErrorDetails(error?.message || 'Unable to download quotation PDF.');
+            });
+    };
+
     const completeOrderConfirmationPreview = () => {
         setShowReceipt(false);
         setCheckoutPhase(null);
-
-        if (
-            lastTransaction?.sourceId
-            && !hasUsableTransactionReference({ existingReference: lastTransaction.transactionReference })
-        ) {
-            setPendingReferenceSaleId(lastTransaction.sourceId);
-        }
     };
 
-    const handlePrintOrderList = async () => {
+    const proceedToPayment = () => {
+        if (posBatchPickLoading) return;
+        if (expiryTrackedCartItems.length) {
+            if (!getAuthToken() || !navigator.onLine) {
+                showErrorDetails('Expiry-tracked items need an online connection for physical batch verification.');
+                return;
+            }
+            const allConfirmed = posBatchVerificationItems.every((item) => isExpiryBatchVerificationConfirmed(
+                item,
+                posBatchVerificationRecords[item.productKey]
+            ));
+            if (!allConfirmed) {
+                showErrorDetails('Confirm each batch pick before continuing to payment. Batch verification is needed in Inventory for existing stock.');
+                return;
+            }
+        }
+        setCheckoutPhase('payment');
+    };
+
+    const handlePrintOrderList = async (options = {}) => {
         if (cart.length === 0 || printStatus === 'printing' || printLockRef.current) {
             return;
         }
@@ -1387,9 +2143,36 @@ const PointOfSale = () => {
         try {
             const result = await printReceipt({
                 transaction: {
-                    date: checkoutOpenedAt || new Date().toLocaleString(),
+                    date: options?.date || checkoutOpenedAt || new Date().toLocaleString(),
                     cashier: currentUserFullName || currentUserName,
-                    items: [...cart],
+                    items: cart.map((item) => {
+                        const key = String(item.id || item.code);
+                        const pickData = posBatchPickData[key];
+                        const verification = posBatchVerificationRecords[key];
+                        const allocations = verification?.confirmed
+                            ? verification.allocations
+                            : pickData?.proposedAllocations || [];
+                        return {
+                            ...item,
+                            batchPickNotice: item.expiryTrackingEnabled === true
+                                ? pickData?.error
+                                    ? 'Batch details not loaded; refresh before picking.'
+                                    : !pickData?.reconciled
+                                        ? 'Verify batches before picking.'
+                                        : !pickData?.proposedAllocations
+                                            ? 'Insufficient eligible batch stock.'
+                                            : ''
+                                : '',
+                            batchPicks: allocations.map((allocation) => ({
+                                batchId: allocation.batchId,
+                                batchReference: allocation.batchReference || '',
+                                lotNumber: allocation.lotNumber || '',
+                                expiryDate: allocation.expiryDate,
+                                quantity: Number(allocation.quantity || 0),
+                                status: verification?.confirmed ? 'verified' : 'provisional',
+                            })),
+                        };
+                    }),
                     documentType: 'order-list-draft',
                 },
                 settings,
@@ -1418,10 +2201,39 @@ const PointOfSale = () => {
         }
     };
 
+    const handlePrintOrderListRef = useRef(handlePrintOrderList);
+    handlePrintOrderListRef.current = handlePrintOrderList;
+
+    useEffect(() => {
+        if (!pendingOrderListAutoPrintRef.current) return;
+        if (checkoutPhase !== 'order-list') {
+            pendingOrderListAutoPrintRef.current = false;
+            return;
+        }
+        if (posBatchPickLoading) return;
+        const trackedData = expiryTrackedCartItems.map((item) => posBatchPickData[String(item.id || item.code)]);
+        if (trackedData.some((item) => !item || item.error)) return;
+        pendingOrderListAutoPrintRef.current = false;
+        void handlePrintOrderListRef.current?.({ date: checkoutOpenedAt || new Date().toLocaleString() });
+    }, [checkoutPhase, posBatchPickLoading, posBatchPickData, expiryTrackedCartItems, checkoutOpenedAt]);
+
     const receiptTitle = 'Order Confirmation';
     const payableTotalForChange = calculateTotal();
     const changeCentavosForDisplay = getCashChangeCentavos(cashAmount, payableTotalForChange);
     const isCashAmountTooLarge = paymentType === 'cash' && isMoneyInputTooLarge(cashAmount);
+    const normalizedDownPaymentAmount = formatMoneyInput(downPaymentAmount);
+    const downPaymentCentavos = parseMoneyToCentavos(normalizedDownPaymentAmount);
+    const payableTotalCentavos = getMoneyCentavosFromAmount(payableTotalForChange);
+    const downPaymentInputError = paymentType === 'credit' && downPaymentAmount !== '' && (
+        downPaymentCentavos === null || downPaymentCentavos < 1
+            ? 'Enter at least ₱0.01.'
+            : payableTotalCentavos === null || downPaymentCentavos >= payableTotalCentavos
+                ? 'Must be less than the total amount.'
+                : ''
+    );
+    const creditRemainingBalance = downPaymentCentavos !== null && payableTotalCentavos !== null && downPaymentCentavos > 0 && downPaymentCentavos < payableTotalCentavos
+        ? moneyFromCentavos(payableTotalCentavos - downPaymentCentavos)
+        : null;
     const isCheckoutDisabled = cart.length === 0 || isCheckoutProcessing;
     const isConfirmationPaymentDisabled = cart.length === 0
         || isCheckoutProcessing
@@ -1430,6 +2242,12 @@ const PointOfSale = () => {
         || (paymentType === 'credit' && (
             !selectedCreditCustomer
             || !resolveCreditPaymentModeLabel()
+            || downPaymentCentavos === null
+            || downPaymentCentavos < 1
+            || payableTotalCentavos === null
+            || downPaymentCentavos >= payableTotalCentavos
+            || downPaymentProofFiles.length < 1
+            || downPaymentProofFiles.length > 3
             || parsedCreditTermDays === null
         ));
     const creditDateFormatOptions = { year: 'numeric', month: 'long', day: 'numeric' };
@@ -1454,8 +2272,31 @@ const PointOfSale = () => {
     const confirmationDate = lastTransaction?.date || checkoutOpenedAt;
     const confirmationCash = lastTransaction ? lastTransaction.cash : (changeCentavosForDisplay === null ? 0 : moneyFromCentavos(parseMoneyToCentavos(formatMoneyInput(cashAmount)) || 0));
     const confirmationChange = lastTransaction ? lastTransaction.change : (changeCentavosForDisplay === null ? 0 : moneyFromCentavos(changeCentavosForDisplay));
-    const selectedCartItemCount = selectedCartItemCodes.filter((code) => cart.some((item) => item.code === code)).length;
+    const selectedCartItems = getSelectedCartItems(cart, selectedCartItemCodes);
+    const selectedCartItemCount = selectedCartItems.length;
     const areAllCartItemsSelected = cart.length > 0 && selectedCartItemCount === cart.length;
+    const isBlockingPosModalOpen = Boolean(
+        isBulkRemoveConfirmationOpen
+        || recommendationModal.isOpen
+        || productDetailsItem
+        || enlargedProductImage
+        || isQuickAddCreditCustomerOpen
+        || showQuotationPreview
+        || showReceipt
+        || checkoutPhase
+        || variantModal.isOpen
+    );
+    const isFloatingCartVisible = isMobilePosLayout
+        && !isHeaderCartVisible
+        && !isCartDrawerOpen
+        && !isBlockingPosModalOpen;
+    const isInlineCartPanelCollapsed = isCurrentOrderCollapsed && !isMobilePosLayout;
+
+    useEffect(() => {
+        if (!isFloatingCartVisible && document.activeElement === floatingCartButtonRef.current && isHeaderCartVisible) {
+            cartToggleButtonRef.current?.focus();
+        }
+    }, [isFloatingCartVisible, isHeaderCartVisible]);
 
     return (
         <div className="flex min-h-[calc(100dvh-80px)] flex-col gap-2 overflow-y-auto md:h-[calc(100vh-80px)] md:overflow-hidden">
@@ -1463,43 +2304,34 @@ const PointOfSale = () => {
 
 
             <div className="flex flex-col md:flex-row flex-1 gap-2 md:min-h-0">
-            {pendingOfflineCheckout && (
-                <TransactionReferenceModal
-                    requiredFlow
-                    referenceNumberOnly
-                    saveLabel="Save Offline Sale"
-                    failureMessage="The offline sale was not saved."
-                    onSave={({ referenceNumber }) => completeOfflineCheckout({
-                        ...pendingOfflineCheckout,
-                        referenceNumber,
-                    })}
-                    onSaved={(completedTransaction) => {
-                        setPendingOfflineCheckout(null);
-                        showTransactionCompletionToast(completedTransaction);
-                    }}
+            {checkoutPhase === 'confirmation' && checkoutDraft && (
+                <OrderConfirmationModal
+                    transaction={checkoutDraft.transactionData}
+                    customer={checkoutDraft.isCreditCheckout ? selectedCreditCustomer : null}
+                    settings={settings}
+                    pending
+                    onBack={() => setCheckoutPhase('payment')}
+                    onContinue={() => setCheckoutPhase('reference')}
                 />
             )}
-            {pendingReferenceSaleId && lastTransaction && (
+            {checkoutPhase === 'reference' && checkoutDraft && (
                 <TransactionReferenceModal
-                    saleId={pendingReferenceSaleId}
+                    initialDraft={checkoutReferenceDraft}
+                    onDraftChange={setCheckoutReferenceDraft}
+                    onBack={() => setCheckoutPhase('confirmation')}
                     requiredFlow
-                    saveLabel="Save Reference"
-                    onSaved={(updated) => {
-                        const nextTransaction = { ...lastTransaction, transactionReference: updated.transactionReference };
-                        setLastTransaction(nextTransaction);
-                        if (String(nextTransaction.paymentMethod).toLowerCase() !== 'credit') {
-                            setTransactions((previous) => upsertTransactionByIdentity(previous, nextTransaction));
-                        }
-                        setPendingReferenceSaleId('');
-                        showTransactionCompletionToast(nextTransaction);
-                    }}
+                    referenceNumberOnly={!checkoutDraft.canSyncOnline}
+                    saveLabel="Save Transaction"
+                    failureMessage="The transaction was not saved. Check your connection and try again with the same draft."
+                    onSave={finalizeCheckoutDraft}
+                    onSaved={completeFinalizedCheckout}
                 />
             )}
             {checkoutPhase === 'order-list' && (
                 <div className="app-modal-backdrop fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="order-list-title">
-                    <div className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+                    <div data-validation-scope="pos-order-list" className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
                         <header className="flex items-center justify-between border-b border-slate-100 bg-slate-50 px-5 py-4"><div><h3 id="order-list-title" className="text-xl font-semibold text-slate-900">Order List</h3><p className="mt-0.5 text-xs text-slate-500">Review and adjust products before payment.</p></div><button type="button" onClick={() => setCheckoutPhase(null)} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Back to POS cart">×</button></header>
-                        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-4 sm:p-5">
+                        <div className="pos-order-list-scroll-area min-h-0 flex flex-1 flex-col gap-3 overflow-y-auto p-4 sm:p-5">
                             {cart.length === 0 ? (
                                 <div className="flex min-h-[16rem] flex-col items-center justify-center px-4 py-8 text-center">
                                     <span className="flex h-12 w-12 items-center justify-center rounded-full bg-slate-100 text-slate-400" aria-hidden="true">
@@ -1511,16 +2343,50 @@ const PointOfSale = () => {
                                     <p className="mt-1 text-xs text-slate-500">Add items from the product list to continue.</p>
                                 </div>
                             ) : cart.map((item) => (
-                                <div key={item.code} className="flex items-center gap-3 rounded-xl border border-slate-100 px-3 py-2.5"><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-slate-900">{item.brand ? `${item.brand} ` : ''}{item.name}{item.color ? ` â€” ${item.color}` : ''}</p><p className="mt-0.5 text-[11px] text-slate-500">{item.code}{getSellingUnit(item) ? ` · ${getSellingUnit(item)}` : ''}</p></div><div className="flex items-center gap-1.5"><button type="button" onClick={() => updateQuantity(item.code, item.qty - 1)} className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" aria-label={`Decrease ${item.name} quantity`}>−</button><span className="w-7 text-center text-sm font-semibold text-slate-900">{item.qty}</span><button type="button" onClick={() => updateQuantity(item.code, item.qty + 1)} className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-900 text-white hover:bg-slate-800" aria-label={`Increase ${item.name} quantity`}>+</button></div><button type="button" onClick={() => removeFromCart(item.code)} className="rounded-lg p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600" aria-label={`Remove ${item.name}`}>×</button></div>
+                                <div key={item.code} className="pos-order-list-item-card grid grid-cols-[3rem_minmax(0,1fr)] items-center gap-x-3 gap-y-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 shadow-sm sm:flex sm:gap-3">
+                                    <ProductThumbnail item={item} className="row-span-2 h-12 w-12 self-start rounded-lg sm:row-span-1 sm:self-auto" onPreview={handleProductImagePreviewClick} fit="contain" />
+                                    <div className="min-w-0 sm:flex-1">
+                                        <p className="break-words text-sm font-semibold text-slate-900">{item.brand && !item.displayNameIsFallback ? `${item.brand} ` : ''}{item.name}</p>
+                                        <p className="mt-0.5 break-all text-[11px] text-slate-500">SKU: {item.code}{getSellingUnit(item) ? ` | ${getSellingUnit(item)}` : ''}</p>
+                                        {!item.displayNameIsFallback && <p className="mt-0.5 break-words text-[11px] text-slate-600">{getOrderListVariationDetails(item, categoryDefinitions)}</p>}
+                                    </div>
+                                    <div className="pos-order-list-item-controls col-start-2 flex min-w-0 items-center gap-1.5 sm:col-auto sm:ml-auto sm:shrink-0">
+                                        <button type="button" onClick={() => updateQuantity(item.code, item.qty - 1)} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" aria-label={`Decrease ${item.name} quantity`}>&minus;</button>
+                                        <span className="w-7 shrink-0 text-center text-sm font-semibold text-slate-900">{item.qty}</span>
+                                        <button type="button" onClick={() => updateQuantity(item.code, item.qty + 1)} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-white hover:bg-slate-800" aria-label={`Increase ${item.name} quantity`}>+</button>
+                                        <button type="button" onClick={() => removeFromCart(item.code)} className="shrink-0 rounded-lg p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600" aria-label={`Remove ${item.name}`}>&times;</button>
+                                    </div>
+                                </div>
                             ))}
+                            {expiryTrackedCartItems.length > 0 && <section className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3" aria-labelledby="pos-batch-verification-heading">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <div>
+                                        <h4 id="pos-batch-verification-heading" className="text-sm font-semibold text-slate-900">Physical Batch Verification</h4>
+                                        <p className="mt-0.5 text-xs text-slate-600">Review the proposed batches and confirm each pick before saving the sale.</p>
+                                    </div>
+                                    <button type="button" onClick={() => setPosBatchRefreshNonce((value) => value + 1)} disabled={posBatchPickLoading} className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 disabled:opacity-50">{posBatchPickLoading ? 'Checking…' : 'Refresh Batches'}</button>
+                                </div>
+                                {posBatchPickLoading && <p role="status" className="text-xs text-slate-600">Loading current batch availability…</p>}
+                                {posBatchPickError && <p role="alert" className="text-xs text-rose-700">{posBatchPickError}</p>}
+                                <div className="space-y-2">
+                                    {posBatchVerificationItems.map((item) => <ExpiryBatchPickEditor
+                                        key={item.productKey}
+                                        item={item}
+                                        record={posBatchVerificationRecords[item.productKey]}
+                                        disabled={posBatchPickLoading}
+                                        validationKeyPrefix={`batchPicks.${item.productKey}`}
+                                        onChange={(productKey, record) => setPosBatchVerificationRecords((previous) => ({ ...previous, [productKey]: record }))}
+                                    />)}
+                                </div>
+                            </section>}
                         </div>
-                        <footer className="grid grid-cols-3 gap-2 border-t border-slate-100 bg-slate-50 p-3 sm:p-4"><button type="button" onClick={() => setCheckoutPhase(null)} className="rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">Back to Cart</button><button type="button" onClick={handlePrintOrderList} disabled={printStatus === 'printing' || cart.length === 0} className="rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">{printStatus === 'printing' ? 'Printing…' : 'Print Order List'}</button><button type="button" onClick={() => setCheckoutPhase('payment')} disabled={cart.length === 0} className="rounded-xl bg-slate-900 px-3 py-2.5 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50">Proceed to Payment</button></footer>
+                        <footer className="grid grid-cols-2 gap-2 border-t border-slate-100 bg-slate-50 p-3 sm:p-4"><button type="button" onClick={handlePrintOrderList} disabled={printStatus === 'printing' || cart.length === 0 || posBatchPickLoading} className="rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">{printStatus === 'printing' ? 'Printing…' : 'Print Order List'}</button><button type="button" onClick={proceedToPayment} disabled={cart.length === 0 || posBatchPickLoading} className="rounded-xl bg-slate-900 px-3 py-2.5 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50">Proceed to Payment</button></footer>
                     </div>
                 </div>
             )}
-            {(checkoutPhase === 'payment' || (checkoutPhase === 'confirmation' && lastTransaction)) && !isQuickAddCreditCustomerOpen && (
+            {checkoutPhase === 'payment' && !isQuickAddCreditCustomerOpen && (
                 <div className="app-modal-backdrop fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="order-confirmation-title">
-                    <div className={`flex ${ORDER_CONFIRMATION_PREVIEW_SIZE.modal} max-h-[92vh] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl`}>
+                    <div data-validation-scope="pos-payment" className={`flex ${ORDER_CONFIRMATION_PREVIEW_SIZE.modal} max-h-[92vh] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl`}>
                         <header className="flex items-center justify-between border-b border-slate-100 bg-slate-50 px-5 py-4">
                             <h3 id="order-confirmation-title" className="text-xl font-semibold text-slate-900">{lastTransaction ? 'Order Confirmation' : 'Payment'}</h3>
                             {!lastTransaction && <button type="button" onClick={() => setCheckoutPhase('order-list')} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Back to order list">×</button>}
@@ -1531,118 +2397,149 @@ const PointOfSale = () => {
                                     <div>
                                         <label className="mb-1.5 block text-xs font-medium text-slate-600">Payment Method</label>
                                         <div className="inline-flex w-full rounded-lg border border-slate-200 bg-slate-100 p-1">
-                                            <button type="button" onClick={() => handlePaymentTypeChange('cash')} className={`flex-1 rounded-md py-2 text-xs font-semibold ${paymentType === 'cash' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Cash</button>
-                                            <button type="button" onClick={() => handlePaymentTypeChange('credit')} className={`flex-1 rounded-md py-2 text-xs font-semibold ${paymentType === 'credit' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Credit</button>
+                                            <button type="button" onClick={() => handlePaymentTypeChange('cash')} className={`flex-1 rounded-md py-2 text-xs font-semibold ${paymentType === 'cash' ? 'bg-slate-900 text-slate-200 shadow-sm' : 'bg-slate-100 text-slate-700'}`}>Cash</button>
+                                            <button type="button" onClick={() => handlePaymentTypeChange('credit')} className={`flex-1 rounded-md py-2 text-xs font-semibold ${paymentType === 'credit' ? 'bg-slate-900 text-slate-200 shadow-sm' : 'bg-slate-100 text-slate-700'}`}>Credit</button>
                                         </div>
                                     </div>
                                     {paymentType === 'cash' ? (
                                         <>
                                             <div className="grid gap-3 sm:grid-cols-2">
-                                                <label className="block text-xs font-medium text-slate-600">Cash Tendered<input type="text" inputMode="decimal" value={cashAmount} onKeyDown={preventInvalidMoneyKeyDown} onPaste={preventInvalidMoneyPaste} onChange={(event) => setCashAmount(sanitizeCashTenderedInput(event.target.value))} onBlur={() => setCashAmount((value) => formatMoneyInput(value))} placeholder="0.00" className="mt-1.5 h-10 w-full rounded-lg border border-slate-300 px-3 text-right text-sm text-slate-900" /></label>
+                                                <label className="block text-xs font-medium text-slate-600">Cash Tendered<input type="text" name="cashAmount" data-validation-key="cashAmount" inputMode="decimal" value={cashAmount} onKeyDown={preventInvalidMoneyKeyDown} onPaste={preventInvalidMoneyPaste} onChange={(event) => setCashAmount(sanitizeCashTenderedInput(event.target.value))} onBlur={() => setCashAmount((value) => formatMoneyInput(value))} placeholder="0.00" className="mt-1.5 h-10 w-full rounded-lg border border-slate-300 px-3 text-right text-sm text-slate-900" /></label>
                                                 <label className="block text-xs font-medium text-slate-600">VAT Mode<select value={selectedVatMode} onChange={(event) => setSelectedVatMode(event.target.value)} className="mt-1.5 h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-900">{VAT_MODE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
                                             </div>
-                                            <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3.5">
+                                            <div className="space-y-2 rounded-xl border border-slate-300 bg-slate-50 p-3.5">
                                                 <div className="flex items-center justify-between"><span className="font-medium text-slate-500">Total Due</span><span className="text-lg font-semibold text-slate-900">{formatCurrency(confirmationTotal)}</span></div>
                                                 <div className="flex items-center justify-between border-t border-slate-200 pt-2"><span className="font-medium text-slate-500">Change</span><span className="font-semibold text-slate-900">{formatCurrency(confirmationChange)}</span></div>
                                             </div>
                                         </>
                                     ) : (
                                         <div className="space-y-3">
-                                            <div ref={creditCustomerComboboxRef} className="relative">
+                                            <div ref={creditCustomerComboboxRef} className="space-y-1.5">
                                                 <label htmlFor="credit-customer-search" className="block text-xs font-medium text-slate-600">Regular Customer</label>
-                                                <div className="relative mt-1.5">
-                                                    <input
-                                                        id="credit-customer-search"
-                                                        type="text"
-                                                        value={creditCustomerSearchQuery}
-                                                        onFocus={() => setIsCreditCustomerComboboxOpen(true)}
-                                                        onChange={(event) => {
-                                                            setCreditCustomerSearchQuery(event.target.value);
-                                                            if (selectedCreditCustomerId) setSelectedCreditCustomerId('');
-                                                            setHighlightedCreditCustomerIndex(-1);
-                                                            setIsCreditCustomerComboboxOpen(true);
-                                                        }}
-                                                        onKeyDown={handleCreditCustomerKeyDown}
-                                                        onBlur={() => window.setTimeout(() => setIsCreditCustomerComboboxOpen(false), 150)}
-                                                        placeholder="Search or select customer..."
-                                                        role="combobox"
-                                                        aria-autocomplete="list"
-                                                        aria-controls="credit-customer-options"
-                                                        aria-expanded={isCreditCustomerComboboxOpen}
-                                                        aria-activedescendant={highlightedCreditCustomerIndex >= 0
-                                                            ? `credit-customer-option-${highlightedCreditCustomerIndex}`
-                                                            : undefined}
-                                                        className="h-10 w-full rounded-lg border border-slate-300 bg-white px-3 pr-9 text-sm text-slate-900 focus:border-slate-500 focus:outline-none"
-                                                    />
-                                                    {(creditCustomerSearchQuery || selectedCreditCustomerId) && (
-                                                        <button
-                                                            type="button"
-                                                            onMouseDown={(event) => event.preventDefault()}
-                                                            onClick={clearCreditCustomerSelection}
-                                                            className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-slate-400 hover:text-slate-700"
-                                                            aria-label="Clear regular customer"
-                                                        >
-                                                            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18 18 6M6 6l12 12" /></svg>
-                                                        </button>
+                                                <div className="flex items-start gap-2">
+                                                    <div className="relative min-w-0 flex-1">
+                                                        <input
+                                                            id="credit-customer-search"
+                                                            name="customerId"
+                                                            data-validation-key="customerId"
+                                                            data-validation-aliases="customer"
+                                                            type="text"
+                                                            value={creditCustomerSearchQuery}
+                                                            onFocus={() => setIsCreditCustomerComboboxOpen(true)}
+                                                            onChange={(event) => {
+                                                                setCreditCustomerSearchQuery(event.target.value);
+                                                                if (selectedCreditCustomerId) setSelectedCreditCustomerId('');
+                                                                setHighlightedCreditCustomerIndex(-1);
+                                                                setIsCreditCustomerComboboxOpen(true);
+                                                            }}
+                                                            onKeyDown={handleCreditCustomerKeyDown}
+                                                            onBlur={() => window.setTimeout(() => setIsCreditCustomerComboboxOpen(false), 150)}
+                                                            placeholder="Search or select customer..."
+                                                            role="combobox"
+                                                            aria-autocomplete="list"
+                                                            aria-controls="credit-customer-options"
+                                                            aria-expanded={isCreditCustomerComboboxOpen}
+                                                            aria-activedescendant={highlightedCreditCustomerIndex >= 0
+                                                                ? `credit-customer-option-${highlightedCreditCustomerIndex}`
+                                                                : undefined}
+                                                            className="h-10 w-full rounded-lg border border-slate-300 bg-white px-3 pr-9 text-sm text-slate-900 focus:border-slate-500 focus:outline-none"
+                                                        />
+                                                        {(creditCustomerSearchQuery || selectedCreditCustomerId) && (
+                                                            <button
+                                                                type="button"
+                                                                onMouseDown={(event) => event.preventDefault()}
+                                                                onClick={clearCreditCustomerSelection}
+                                                                className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-slate-400 hover:text-slate-700"
+                                                                aria-label="Clear regular customer"
+                                                            >
+                                                                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18 18 6M6 6l12 12" /></svg>
+                                                            </button>
+                                                        )}
+                                                        {isCreditCustomerComboboxOpen && (
+                                                            <div id="credit-customer-options" className="absolute left-0 top-full z-30 mt-1 max-h-44 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white py-1 shadow-lg" role="listbox">
+                                                                {creditCustomers.length === 0 ? (
+                                                                    <p className="px-3 py-2 text-xs text-slate-500">No eligible regular customers available.</p>
+                                                                ) : filteredCreditCustomers.length === 0 ? (
+                                                                    <p className="px-3 py-2 text-xs text-slate-500">No matching customers found.</p>
+                                                                ) : filteredCreditCustomers.map((customer, index) => {
+                                                                    const customerId = String(customer?._id || customer?.id || '');
+                                                                    return (
+                                                                        <button
+                                                                            id={`credit-customer-option-${index}`}
+                                                                            data-customer-index={index}
+                                                                            key={customerId}
+                                                                            type="button"
+                                                                            role="option"
+                                                                            aria-selected={customerId === selectedCreditCustomerId}
+                                                                            onMouseDown={(event) => event.preventDefault()}
+                                                                            onMouseEnter={() => setHighlightedCreditCustomerIndex(index)}
+                                                                            onClick={() => selectCreditCustomer(customer)}
+                                                                            className={`block w-full px-3 py-2 text-left text-sm font-medium transition-colors ${index === highlightedCreditCustomerIndex || customerId === selectedCreditCustomerId ? 'bg-amber-50 text-amber-800' : 'text-slate-700 hover:bg-slate-50'}`}
+                                                                        >
+                                                                            {customer.name}
+                                                                        </button>
+                                                                    );
+                                                                })}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                    {canQuickAddCreditCustomer && (
+                                                        <ViewportTooltip content="Add Regular Customer" triggerClassName="shrink-0" placementPreference="above" openDelay={250} closeDelay={80}>
+                                                            <button
+                                                                type="button"
+                                                                onClick={openQuickAddCreditCustomer}
+                                                                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-slate-900 bg-slate-900 text-white shadow-sm transition-colors hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 focus-visible:ring-offset-2"
+                                                                aria-label="Add Regular Customer"
+                                                            >
+                                                                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 5v14m7-7H5" /></svg>
+                                                            </button>
+                                                        </ViewportTooltip>
                                                     )}
                                                 </div>
-                                                {isCreditCustomerComboboxOpen && (
-                                                    <div id="credit-customer-options" className="absolute z-30 mt-1 max-h-44 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white py-1 shadow-lg" role="listbox">
-                                                        {creditCustomers.length === 0 ? (
-                                                            <p className="px-3 py-2 text-xs text-slate-500">No eligible regular customers available.</p>
-                                                        ) : filteredCreditCustomers.length === 0 ? (
-                                                            <p className="px-3 py-2 text-xs text-slate-500">No matching customers found.</p>
-                                                        ) : filteredCreditCustomers.map((customer, index) => {
-                                                            const customerId = String(customer?._id || customer?.id || '');
-                                                            return (
-                                                                <button
-                                                                    id={`credit-customer-option-${index}`}
-                                                                    data-customer-index={index}
-                                                                    key={customerId}
-                                                                    type="button"
-                                                                    role="option"
-                                                                    aria-selected={customerId === selectedCreditCustomerId}
-                                                                    onMouseDown={(event) => event.preventDefault()}
-                                                                    onMouseEnter={() => setHighlightedCreditCustomerIndex(index)}
-                                                                    onClick={() => selectCreditCustomer(customer)}
-                                                                    className={`block w-full px-3 py-2 text-left text-sm font-medium transition-colors ${index === highlightedCreditCustomerIndex || customerId === selectedCreditCustomerId ? 'bg-amber-50 text-amber-800' : 'text-slate-700 hover:bg-slate-50'}`}
-                                                                >
-                                                                    {customer.name}
-                                                                </button>
-                                                            );
-                                                        })}
-                                                    </div>
-                                                )}
-                                                {canQuickAddCreditCustomer && (
-                                                    <button
-                                                        type="button"
-                                                        onClick={openQuickAddCreditCustomer}
-                                                        className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition-colors hover:border-slate-400 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-300"
-                                                    >
-                                                        <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 5v14m7-7H5" /></svg>
-                                                        Add Regular Customer
-                                                    </button>
-                                                )}
                                             </div>
                                             <div className="grid gap-3 sm:grid-cols-2">
-                                                <label className="block text-xs font-medium text-slate-600">Payment Method<select value={selectedCreditPaymentMode} onChange={(event) => { setSelectedCreditPaymentMode(event.target.value); if (event.target.value !== 'other') setCustomCreditPaymentMode(''); }} className="mt-1.5 h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-900"><option value="">Select payment method</option>{CREDIT_PAYMENT_MODES.map((mode) => <option key={mode} value={mode}>{formatCreditPaymentModeLabel(mode)}</option>)}</select></label>
+                                                <label className="block text-xs font-medium text-slate-600">Down Payment Method<select name="creditPaymentMode" data-validation-key="creditPaymentMode" value={selectedCreditPaymentMode} onChange={(event) => { setSelectedCreditPaymentMode(event.target.value); if (event.target.value !== 'other') setCustomCreditPaymentMode(''); }} className="mt-1.5 h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-900"><option value="">Select payment method</option>{CREDIT_PAYMENT_MODES.map((mode) => <option key={mode} value={mode}>{formatCreditPaymentModeLabel(mode)}</option>)}</select></label>
                                                 <label className="block text-xs font-medium text-slate-600">VAT Mode<select value={selectedVatMode} onChange={(event) => setSelectedVatMode(event.target.value)} className="mt-1.5 h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-900">{VAT_MODE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
                                             </div>
-                                            {selectedCreditPaymentMode === 'other' && <label className="block text-xs font-medium text-slate-600">Other Payment Method<input type="text" value={customCreditPaymentMode} onChange={(event) => setCustomCreditPaymentMode(event.target.value)} className="mt-1.5 h-10 w-full rounded-lg border border-slate-300 px-3 text-sm text-slate-900" /></label>}
+                                            {selectedCreditPaymentMode === 'other' && <label className="block text-xs font-medium text-slate-600">Other Payment Method<input type="text" name="customCreditPaymentMode" data-validation-key="customCreditPaymentMode" data-validation-aliases="creditPaymentModeOther" value={customCreditPaymentMode} onChange={(event) => setCustomCreditPaymentMode(event.target.value)} className="mt-1.5 h-10 w-full rounded-lg border border-slate-300 px-3 text-sm text-slate-900" /></label>}
+                                            <label className="block text-xs font-medium text-slate-600" htmlFor="credit-down-payment">
+                                                Down Payment (₱)
+                                                <input
+                                                    id="credit-down-payment"
+                                                    name="downPayment"
+                                                    data-validation-key="downPayment"
+                                                    data-validation-aliases="downPaymentAmount amountPaid"
+                                                    type="text"
+                                                    inputMode="decimal"
+                                                    value={downPaymentAmount}
+                                                    onKeyDown={preventInvalidMoneyKeyDown}
+                                                    onPaste={preventInvalidMoneyPaste}
+                                                    onChange={(event) => setDownPaymentAmount(sanitizeCashTenderedInput(event.target.value))}
+                                                    onBlur={() => setDownPaymentAmount((value) => formatMoneyInput(value))}
+                                                    aria-invalid={Boolean(downPaymentInputError)}
+                                                    aria-describedby={downPaymentInputError ? 'credit-down-payment-error' : 'credit-down-payment-help'}
+                                                    placeholder="0.00"
+                                                    className={`mt-1.5 h-10 w-full rounded-lg border bg-white px-3 text-right text-sm text-slate-900 focus:outline-none ${downPaymentInputError ? 'border-rose-400 focus:border-rose-500' : 'border-slate-300 focus:border-slate-500'}`}
+                                                />
+                                            </label>
+                                            {downPaymentInputError ? <p id="credit-down-payment-error" role="alert" className="-mt-1 text-xs font-medium text-rose-600">{downPaymentInputError}</p> : <p id="credit-down-payment-help" className="-mt-1 text-xs text-slate-500">Required. Enter an amount greater than ₱0.00 and less than the total.</p>}
+                                            <EvidenceUploadField id="credit-down-payment-proof-modal" label="Down Payment Proof" files={downPaymentProofFiles} onChange={setDownPaymentProofFiles} minFiles={1} maxFiles={3} disabled={isCheckoutProcessing} uploadPresentation="dashed" uploadLabel="Add Payment Proof" validationKey="proofFiles" validationAliases="downPaymentProofFiles" />
                                             <div>
                                                 <label htmlFor="credit-term-days" className="block text-xs font-medium text-slate-600">Credit Term (Days)</label>
-                                                <div className="mt-1.5 grid grid-cols-[2.5rem_minmax(5rem,1fr)_2.5rem] gap-2 sm:max-w-xs">
+                                                <div className="mt-1.5 grid w-full grid-cols-[2.5rem_minmax(0,1fr)_2.5rem] gap-2">
                                                     <button
                                                         type="button"
                                                         onClick={decrementCreditTerm}
                                                         disabled={parsedCreditTermDays === null || parsedCreditTermDays <= MIN_CREDIT_TERM_DAYS}
-                                                        className="flex h-10 items-center justify-center rounded-lg border border-slate-300 bg-white text-lg font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                                        className="flex h-10 w-full items-center justify-center rounded-lg border border-slate-300 bg-white text-lg font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
                                                         aria-label="Decrease credit term by one day"
                                                     >
                                                         &minus;
                                                     </button>
                                                     <input
                                                         id="credit-term-days"
+                                                        name="termDays"
+                                                        data-validation-key="termDays"
                                                         type="text"
                                                         inputMode="numeric"
                                                         pattern="[0-9]*"
@@ -1658,7 +2555,7 @@ const PointOfSale = () => {
                                                         type="button"
                                                         onClick={incrementCreditTerm}
                                                         disabled={(selectedCreditTermDays !== '' && parsedCreditTermDays === null) || parsedCreditTermDays >= MAX_CREDIT_TERM_DAYS}
-                                                        className="flex h-10 items-center justify-center rounded-lg border border-slate-300 bg-white text-lg font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                                        className="flex h-10 w-full items-center justify-center rounded-lg border border-slate-900 bg-slate-900 text-lg font-medium text-white transition-colors hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40"
                                                         aria-label="Increase credit term by one day"
                                                     >
                                                         +
@@ -1672,17 +2569,21 @@ const PointOfSale = () => {
                                                     <dd className="text-right font-semibold text-slate-900">{creditDueDateLabel}</dd>
                                                 </dl>
                                             </div>
-                                            <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/70 p-3.5"><span className="font-medium text-slate-500">Total Due</span><span className="text-lg font-semibold text-slate-900">{formatCurrency(confirmationTotal)}</span></div>
+                                            <div className="space-y-2 rounded-xl border border-slate-300 bg-slate-50 p-3.5">
+                                                <div className="flex items-center justify-between"><span className="font-medium text-slate-500">Total Due</span><span className="text-lg font-semibold text-slate-900">{formatCurrency(confirmationTotal)}</span></div>
+                                                <div className="flex items-center justify-between border-t border-slate-200 pt-2"><span className="font-medium text-slate-500">Down Payment</span><span className="font-semibold text-slate-900">{downPaymentCentavos === null ? '—' : formatCurrency(moneyFromCentavos(downPaymentCentavos))}</span></div>
+                                                <div className="flex items-center justify-between"><span className="font-medium text-slate-500">Remaining Balance</span><span className="font-semibold text-slate-900">{creditRemainingBalance === null ? '—' : formatCurrency(creditRemainingBalance)}</span></div>
+                                            </div>
                                         </div>
                                     )}
                                 </section>
                             )}
                             {lastTransaction && (<>
                             {lastTransaction && <div className="flex justify-between border-b border-slate-100 pb-2"><span>Transaction ID</span><span className="font-mono font-semibold text-slate-900">{lastTransaction.id}</span></div>}<div className="grid grid-cols-2 gap-x-5 gap-y-1.5 border-b border-slate-100 pb-3"><span>Date &amp; Time</span><span className="text-right text-slate-900">{confirmationDate}</span><span>Cashier</span><span className="text-right text-slate-900">{lastTransaction?.cashier || currentUserFullName || currentUserName}</span><span>Payment Type</span><span className="text-right text-slate-900">{lastTransaction?.paymentMethod || (paymentType === 'credit' ? 'Credit' : 'Cash')}</span></div>
-                            <section className="space-y-3"><p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Order Summary</p><table className="w-full table-fixed"><colgroup><col className="w-[40%]"/><col className="w-[10%]"/><col className="w-[12%]"/><col className="w-[18%]"/><col className="w-[20%]"/></colgroup><thead><tr className="border-b border-slate-100"><th className="py-1.5 text-left font-semibold text-slate-700">Item</th><th className="py-1.5 text-center font-semibold text-slate-700">Qty</th><th className="py-1.5 text-center font-semibold text-slate-700">Unit</th><th className="py-1.5 text-right font-semibold text-slate-700">Unit Price</th><th className="py-1.5 text-right font-semibold text-slate-700">Amount</th></tr></thead><tbody>{confirmationItems.map((item, index) => <tr key={`${item.code}-${index}`} className="border-b border-slate-50"><td className="py-2"><div className="font-semibold text-slate-900">{item.name}</div><div className="text-[11px] text-slate-500">{item.code}</div></td><td className="py-2 text-center">{item.qty}</td><td className="py-2 text-center">{getSellingUnit(item) || '—'}</td><td className="py-2 text-right whitespace-nowrap">{formatCurrency(item.price)}</td><td className="py-2 text-right whitespace-nowrap">{formatCurrency(item.price * item.qty)}</td></tr>)}</tbody></table><div className="space-y-1.5 border-t border-slate-200 pt-3"><div className="flex justify-between"><span>Net Amount</span><span>{formatCurrency(confirmationVat?.netAmount || 0)}</span></div><div className="flex justify-between"><span>{formatVatModeLabel(lastTransaction?.vatMode || selectedVatMode)}</span><span>{formatCurrency(confirmationVat?.vatAmount || 0)}</span></div><div className="mt-2 flex justify-between border-t border-slate-900 pt-2 text-lg font-semibold text-slate-900"><span>TOTAL</span><span>{formatCurrency(confirmationTotal)}</span></div>{lastTransaction && <><div className="flex justify-between pt-1 font-semibold uppercase"><span>Payment Status</span><span>{lastTransaction.paymentStatus}</span></div><div className="flex justify-between"><span>Cash Received</span><span>{lastTransaction.paymentMethod === 'Cash' ? formatCurrency(confirmationCash) : '—'}</span></div><div className="flex justify-between"><span>Change</span><span>{lastTransaction.paymentMethod === 'Cash' ? formatCurrency(confirmationChange) : '—'}</span></div></>}</div></section>
+                            <section className="space-y-3"><p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Order Summary</p><table className="w-full table-fixed"><colgroup><col className="w-[40%]"/><col className="w-[10%]"/><col className="w-[12%]"/><col className="w-[18%]"/><col className="w-[20%]"/></colgroup><thead><tr className="border-b border-slate-100"><th className="py-1.5 text-left font-semibold text-slate-700">Item</th><th className="py-1.5 text-center font-semibold text-slate-700">Qty</th><th className="py-1.5 text-center font-semibold text-slate-700">Unit</th><th className="py-1.5 text-right font-semibold text-slate-700">Unit Price</th><th className="py-1.5 text-right font-semibold text-slate-700">Amount</th></tr></thead><tbody>{confirmationItems.map((item, index) => <tr key={`${item.code}-${index}`} className="border-b border-slate-50"><td className="py-2"><div className="font-semibold text-slate-900">{getProductDisplayName(item, categoryDefinitions)}</div><div className="text-[11px] text-slate-500">{item.code}</div></td><td className="py-2 text-center">{item.qty}</td><td className="py-2 text-center">{getSellingUnit(item) || '—'}</td><td className="py-2 text-right whitespace-nowrap">{formatCurrency(item.price)}</td><td className="py-2 text-right whitespace-nowrap">{formatCurrency(item.price * item.qty)}</td></tr>)}</tbody></table><div className="space-y-1.5 border-t border-slate-200 pt-3"><div className="flex justify-between"><span>Net Amount</span><span>{formatCurrency(confirmationVat?.netAmount || 0)}</span></div><div className="flex justify-between"><span>{formatVatModeLabel(lastTransaction?.vatMode || selectedVatMode)}</span><span>{formatCurrency(confirmationVat?.vatAmount || 0)}</span></div><div className="mt-2 flex justify-between border-t border-slate-900 pt-2 text-lg font-semibold text-slate-900"><span>TOTAL</span><span>{formatCurrency(confirmationTotal)}</span></div>{lastTransaction && <><div className="flex justify-between pt-1 font-semibold uppercase"><span>Payment Status</span><span>{lastTransaction.paymentStatus}</span></div><div className="flex justify-between"><span>Cash Received</span><span>{lastTransaction.paymentMethod === 'Cash' ? formatCurrency(confirmationCash) : '—'}</span></div><div className="flex justify-between"><span>Change</span><span>{lastTransaction.paymentMethod === 'Cash' ? formatCurrency(confirmationChange) : '—'}</span></div></>}</div></section>
                             </>)}
                         </div></div>
-                        <footer className="grid grid-cols-2 gap-2 border-t border-slate-100 bg-slate-50 p-3 sm:p-4">{lastTransaction ? <button type="button" onClick={completeOrderConfirmationPreview} className="col-span-2 rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-semibold text-white hover:bg-slate-800">Continue to Reference</button> : <><button type="button" onClick={() => setCheckoutPhase('order-list')} disabled={isCheckoutProcessing} className="rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-xs font-semibold text-slate-700">Back to Order List</button><button type="button" onClick={handleCheckout} disabled={isConfirmationPaymentDisabled} className="rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-semibold text-white disabled:opacity-50">{isCheckoutProcessing ? 'Processing…' : 'Confirm & Process Payment'}</button></>}</footer>
+                        <footer className={`${lastTransaction ? 'grid grid-cols-2' : 'flex justify-end'} gap-2 border-t border-slate-100 bg-slate-50 p-3 sm:p-4`}>{lastTransaction ? <button type="button" onClick={completeOrderConfirmationPreview} className="col-span-2 rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-semibold text-white hover:bg-slate-800">Continue to Reference</button> : <button type="button" data-validation-submit onClick={handleCheckout} disabled={isConfirmationPaymentDisabled} className="rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-semibold text-white disabled:opacity-50">{isCheckoutProcessing ? 'Processing…' : 'Confirm & Process Payment'}</button>}</footer>
                     </div>
                 </div>
             )}
@@ -1739,7 +2640,7 @@ const PointOfSale = () => {
                                     {lastTransaction.items.map((item, i) => (
                                         <tr key={i} className="border-b border-gray-50">
                                             <td className="py-2 pr-2">
-                                                <div className="font-semibold text-gray-800 leading-tight">{item.brand ? `${item.brand} ` : ''}{item.name}{item.color ? ` — ${item.color}` : ''}</div>
+                                                <div className="font-semibold text-gray-800 leading-tight">{item.brand && !item.displayNameIsFallback ? `${item.brand} ` : ''}{getProductDisplayName(item, categoryDefinitions)}{item.color && !item.displayNameIsFallback ? ` — ${item.color}` : ''}</div>
                                                 <div className="text-[11px] leading-tight text-gray-500">{item.code}</div>
                                             </td>
                                             <td className="py-2 text-center">{item.qty}</td>
@@ -1793,70 +2694,92 @@ const PointOfSale = () => {
             )}
 
             {/* Left Side: Product Grid */}
-            <div className="min-h-[400px] md:min-h-0 flex-1 bg-slate-200/50 rounded-2xl shadow-inner border border-slate-300 flex flex-col overflow-hidden">
+            <div className="min-h-[400px] md:min-h-0 min-w-0 flex-1 bg-slate-200/50 rounded-2xl shadow-inner border border-slate-300 flex flex-col overflow-hidden">
                 {/* Header */}
-                <div className="p-5 pb-0 shrink-0">
-                    <p className="text-3xl md:text-4xl font-semibold tracking-tight text-gray-900 leading-tight">Point of Sale</p>
-                    <p className="text-gray-500 font-medium text-[11px] md:text-xs mt-1">Process transactions and manage orders</p>
+                <div className="flex shrink-0 items-start justify-between gap-2 p-5 pb-0">
+                    <div className="min-w-0">
+                        <p className="text-3xl md:text-4xl font-semibold tracking-tight text-gray-900 leading-tight">Point of Sale</p>
+                        <p className="text-gray-500 font-medium text-[11px] md:text-xs mt-1">Process transactions and manage orders</p>
+                    </div>
+                    <button
+                        ref={cartToggleButtonRef}
+                        type="button"
+                        onClick={openCartDrawer}
+                        aria-haspopup="dialog"
+                        aria-expanded={isCartDrawerOpen}
+                        aria-controls="pos-current-order-panel"
+                        aria-label={`Open cart, ${cartItemCount} item${cartItemCount === 1 ? '' : 's'}`}
+                        className="inline-flex min-h-9 shrink-0 items-center gap-2 rounded-lg border border-slate-300 bg-white px-2.5 text-xs font-semibold text-slate-800 shadow-sm transition-colors hover:border-slate-400 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 focus-visible:ring-offset-1 md:hidden"
+                    >
+                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M3 3h2l2.2 11.1a2 2 0 0 0 2 1.6h7.9a2 2 0 0 0 1.9-1.4L21 8H6m4 12h.01M17 20h.01" />
+                        </svg>
+                        <span>Cart</span>
+                        <span aria-live="polite" className={`inline-flex min-w-5 items-center justify-center rounded-full px-1.5 py-0.5 text-[10px] font-bold text-white transition-colors duration-200 motion-reduce:transition-none ${cartCountFeedback ? 'bg-slate-600' : 'bg-slate-900'}`}>
+                            {cartItemCount}
+                        </span>
+                    </button>
                 </div>
                 
                 {/* Search and Filter Header */}
-                <div className="px-5 pb-5 pt-5 border-b border-gray-200 bg-transparent z-10 shrink-0">
-                    <div className="flex flex-col md:flex-row gap-4 mb-0">
-                        <div className="relative w-full md:max-w-xs group">
+                <div className="px-3 pb-5 pt-5 border-b border-gray-200 bg-transparent z-10 shrink-0 md:px-5">
+                    <div className="flex flex-col gap-2 md:flex-row md:items-center">
+                        <div className="main-toolbar-search group w-full max-w-none md:max-w-[27.5rem] md:flex-1">
                             <input
                                 type="text"
                                 placeholder="Search products..."
                                 value={searchQuery}
                                 list="pos-search-suggestions"
                                 onChange={(e) => setSearchQuery(e.target.value)}
-                                className="w-full pl-10 pr-3 py-2 bg-gray-50 border-2 border-gray-100 rounded-xl text-sm focus:bg-white focus:border-gray-900 focus:ring-4 focus:ring-gray-100 transition-all shadow-sm placeholder:text-gray-400 font-semibold text-gray-800"
+                                className="main-toolbar-search-input"
                             />
                             <datalist id="pos-search-suggestions">
                                 {posSearchSuggestions.map((term) => (
                                     <option key={term} value={term} />
                                 ))}
                             </datalist>
-                             <div className="absolute left-3 top-1/2 -translate-y-1/2 p-1 bg-gray-900 rounded-lg shadow-sm border border-gray-900 transition-all duration-300">
-                                <svg className="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                            <div className="main-toolbar-search-icon" aria-hidden="true">
+                                <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                                 </svg>
                             </div>
                         </div>
-                        <select
+                        <ToolbarDropdown
                             value={selectedCategory}
-                            onChange={(e) => setSelectedCategory(e.target.value)}
-                            className="appearance-none w-full md:w-48 px-3 py-1.5 rounded-xl text-sm font-semibold inline-flex items-center transition-all border-2 bg-gray-900 dark:bg-gray-600 text-white border-gray-900 dark:border-gray-500 hover:opacity-90"
-                        >
-                            {categoryNames.map(cat => (
-                                <option key={cat} value={cat}>{cat}</option>
-                            ))}
-                        </select>
+                            options={categoryNames.map((category) => ({
+                                value: category,
+                                label: category === 'All' ? 'All Categories' : category,
+                            }))}
+                            onChange={setSelectedCategory}
+                            ariaLabel="Filter POS products by category"
+                            className="w-fit max-w-full self-start md:self-auto"
+                            menuClassName="w-max min-w-[min(16rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] max-h-[min(50vh,20rem)] overflow-y-auto pr-3 [scrollbar-gutter:stable]"
+                            compact
+                            portalMenu
+                            fitSelectedValue
+                            softForeground
+                            focusVisibleRing
+                        />
                     </div>
                 </div>
 
                 {/* Product List */}
-                <div ref={productListRef} className="flex-1 overflow-y-auto p-4 bg-transparent">
-                    {filteredProducts.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center h-full">
-                            <div className="flex flex-col items-center justify-center text-gray-500 border-2 border-dashed border-gray-300 rounded-xl p-8 bg-transparent">
-                                <div className="bg-white p-4 rounded-full mb-4 shadow-sm ring-1 ring-gray-200">
-                                    <svg className="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293H9.414a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 005.586 13H4"></path>
-                                    </svg>
-                                </div>
-                                <h3 className="text-lg font-semibold text-gray-900 mb-1">No products found</h3>
-                                <p className="text-gray-500 text-sm max-w-xs mx-auto text-center">
-                                    {searchQuery 
-                                        ? `We couldn't find any items matching "${searchQuery}".`
-                                        : 'Select a category to view products.'
-                                    }
-                                </p>
+                <div ref={productListRef} className="pos-product-list min-w-0 flex-1 overflow-y-auto p-2 bg-transparent md:p-4">
+                    {isInitialInventoryPending ? (
+                        <>
+                            <DesktopProductGridSkeleton />
+                            <div className="grid grid-cols-2 gap-3 pb-4 sm:grid-cols-3 lg:hidden" role="status" aria-label="Loading products" aria-busy="true">
+                                {[0, 1, 2, 3].map((index) => <div key={`pos-mobile-product-skeleton-${index}`} className="h-56 animate-pulse rounded-xl border border-slate-200 bg-white p-3 motion-reduce:animate-none"><div className="h-28 rounded-lg bg-slate-100" /><div className="mt-3 h-3 w-3/4 rounded bg-slate-200" /><div className="mt-2 h-3 w-1/2 rounded bg-slate-100" /><div className="mt-5 h-8 rounded-lg bg-slate-100" /></div>)}
+                                <span className="sr-only">Loading products</span>
                             </div>
+                        </>
+                    ) : filteredProducts.length === 0 ? (
+                        <div className="flex min-h-full items-center justify-center p-3">
+                            <ContextualEmptyState {...posEmptyState} className="w-full max-w-md rounded-xl border border-slate-200 bg-white" />
                         </div>
                     ) : (
                         <>
-                            <div className="grid grid-cols-2 gap-3 pb-4 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5">
+                            <div className={`pos-product-grid grid grid-cols-2 gap-3 pb-4 sm:grid-cols-3 ${isInlineCartPanelCollapsed ? 'pos-product-grid-collapsed' : 'lg:grid-cols-4'}`}>
                                 {currentItems.map(item => (
                                     (() => {
                                         if (item.isGroup) {
@@ -1870,22 +2793,22 @@ const PointOfSale = () => {
                                                         if (e.target?.closest?.('[data-pos-image-preview="true"]')) {
                                                             return;
                                                         }
-                                                        setVariantModal(createOpenVariantModalState(item));
+                                                        openVariantGroup(item);
                                                     }}
                                                     onKeyDown={(e) => {
                                                         if (e.key === 'Enter' || e.key === ' ') {
                                                             e.preventDefault();
-                                                            setVariantModal(createOpenVariantModalState(item));
+                                                            openVariantGroup(item);
                                                         }
                                                     }}
                                                     role="button"
                                                     tabIndex={0}
-                                                    className={`group relative flex min-h-[318px] flex-col overflow-hidden rounded-xl border bg-white text-left transition-colors duration-200
+                                                    className={`group relative flex min-h-[318px] flex-col overflow-hidden rounded-xl border border-slate-100 bg-white text-left shadow-sm transition-all duration-300 motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500/40 focus-visible:ring-offset-2
                                                         ${isOutOfStock
-                                                            ? 'border-slate-200 hover:border-red-300 hover:bg-red-50/20'
+                                                    ? 'border-slate-100 hover:border-red-400 hover:bg-red-50/20 hover:shadow-md'
                                                             : isLowStock
-                                                                ? 'border-slate-200 hover:border-amber-300 hover:bg-amber-50/20'
-                                                                : 'border-slate-200 hover:border-emerald-200 hover:bg-emerald-50/20'
+                                                                ? 'transform hover:-translate-y-1 hover:border-amber-400 hover:bg-amber-50/20 hover:shadow-lg motion-reduce:hover:translate-y-0'
+                                                                : 'transform hover:-translate-y-1 hover:border-emerald-300 hover:bg-emerald-50/20 hover:shadow-lg motion-reduce:hover:translate-y-0'
                                                         }`}
                                                 >
                                                     <div className="flex flex-1 flex-col p-3">
@@ -1934,11 +2857,11 @@ const PointOfSale = () => {
                                                         </h3>
             
                                                         <div className="mb-2 flex min-h-[18px] items-center gap-1.5 overflow-hidden text-[10px] text-slate-500">
-                                                            {item.brand && (
+                                                            {item.brand && !item.displayNameIsFallback && (
                                                                 <span className="truncate font-medium">{item.brand}</span>
                                                             )}
-                                                            {item.brand && item.color && <span className="text-slate-300">•</span>}
-                                                            {item.color && (
+                                                            {item.brand && !item.displayNameIsFallback && item.color && <span className="text-slate-300">•</span>}
+                                                            {item.color && !item.displayNameIsFallback && (
                                                                 <span className="truncate">{item.color}</span>
                                                             )}
                                                         </div>
@@ -1965,7 +2888,7 @@ const PointOfSale = () => {
                                                                     type="button"
                                                                     onClick={(e) => {
                                                                         e.stopPropagation();
-                                                                        setVariantModal(createOpenVariantModalState(item));
+                                                                        openVariantGroup(item);
                                                                     }}
                                                                     className="flex h-7 w-full items-center justify-center rounded-md bg-slate-900 text-[10px] font-medium tracking-wide text-white transition-colors hover:bg-slate-800"
                                                                 >
@@ -1994,12 +2917,13 @@ const PointOfSale = () => {
                                         const status = getStockStatus(item, settings);
                                         const isOutOfStock = status === 'Out of Stock';
                                         const isLowStock = status === 'Low Stock';
-                                        const recommendationAvailability = getRecommendationAvailability(item, inventory, settings, {
+                                        const recommendationAvailability = getPosRecommendationAvailability(item, inventory, settings, {
+                                            categories: categoryDefinitions, cart,
                                             alternativeLimit: 1,
                                             limitPerTier: 1,
                                             budgetLimit: 9,
                                         });
-                                        const hasAlternatives = recommendationAvailability.hasAlternatives;
+                                        const hasAlternatives = recommendationAvailability.hasAny;
                                         const recommendationAction = getPosRecommendationAction(recommendationAvailability);
                                         const recommendationLabel = 'Recommendations';
 
@@ -2022,12 +2946,12 @@ const PointOfSale = () => {
                                         }}
                                         role="button"
                                         tabIndex={0}
-                                        className={`group relative flex min-h-[318px] flex-col overflow-hidden rounded-xl border bg-white text-left transition-colors duration-200
+                                        className={`group relative flex min-h-[318px] flex-col overflow-hidden rounded-xl border border-slate-100 bg-white text-left shadow-sm transition-all duration-300 motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500/40 focus-visible:ring-offset-2
                                             ${isOutOfStock
-                                                ? 'border-slate-200 hover:border-red-300 hover:bg-red-50/20'
+                                                ? 'border-slate-100 hover:border-red-400 hover:bg-red-50/20 hover:shadow-md'
                                                 : isLowStock
-                                                    ? 'border-slate-200 hover:border-amber-300 hover:bg-amber-50/20'
-                                                    : 'border-slate-200 hover:border-emerald-200 hover:bg-emerald-50/20'
+                                                    ? 'transform hover:-translate-y-1 hover:border-amber-400 hover:bg-amber-50/20 hover:shadow-lg motion-reduce:hover:translate-y-0'
+                                                    : 'transform hover:-translate-y-1 hover:border-emerald-300 hover:bg-emerald-50/20 hover:shadow-lg motion-reduce:hover:translate-y-0'
                                             }`}
                                     >
                                         <div className="flex flex-1 flex-col p-3">
@@ -2076,15 +3000,15 @@ const PointOfSale = () => {
                                             </h3>
 
                                             <div className="mb-2 flex min-h-[18px] items-center gap-1 overflow-hidden text-[10px] text-slate-500">
-                                                {item.brand && (
+                                                {item.brand && !item.displayNameIsFallback && (
                                                     <span className="truncate font-medium">{item.brand}</span>
                                                 )}
-                                                {item.brand && (item.color || item.size) && <span className="text-slate-300">•</span>}
-                                                {item.color && (
+                                                {item.brand && !item.displayNameIsFallback && (item.color || item.size) && <span className="text-slate-300">•</span>}
+                                                {item.color && !item.displayNameIsFallback && (
                                                     <span className="truncate">{item.color}</span>
                                                 )}
-                                                {item.color && item.size && <span className="text-slate-300">•</span>}
-                                                {item.size && (
+                                                {item.color && !item.displayNameIsFallback && item.size && <span className="text-slate-300">•</span>}
+                                                {item.size && !item.displayNameIsFallback && (
                                                     <span className="truncate">{item.size}</span>
                                                 )}
                                             </div>
@@ -2177,21 +3101,46 @@ const PointOfSale = () => {
             </div>
 
             {/* Right Side: Cart / Order Summary */}
-            <div className="pos-current-order w-full md:w-80 overflow-hidden rounded-2xl border border-slate-200 bg-slate-50/80 shadow-sm flex flex-col min-h-[300px] md:h-full z-20">
+            {(() => {
+                const currentOrderPanel = (
+                    <div
+                id="pos-current-order-panel"
+                ref={cartDrawerRef}
+                role={isCartDrawerOpen && isMobilePosLayout ? 'dialog' : undefined}
+                aria-modal={isCartDrawerOpen && isMobilePosLayout ? 'true' : undefined}
+                aria-labelledby="pos-current-order-title"
+                onKeyDown={isCartDrawerOpen && isMobilePosLayout ? handleCartDrawerKeyDown : undefined}
+                className={`pos-current-order overflow-hidden border border-slate-200 bg-white shadow-sm flex-col md:w-96 md:min-h-[300px] md:h-full md:rounded-2xl md:z-20 ${isCartDrawerOpen && isMobilePosLayout ? 'pos-current-order-mobile-drawer fixed inset-0 z-[80] flex min-h-0 w-full rounded-none pt-[env(safe-area-inset-top,0px)] pb-[env(safe-area-inset-bottom,0px)] pl-[env(safe-area-inset-left,0px)] pr-[env(safe-area-inset-right,0px)] md:relative md:inset-auto md:flex md:h-full md:min-h-0 md:rounded-2xl md:pt-0 md:pb-0 md:pl-0 md:pr-0' : 'hidden md:flex md:bg-slate-50/80'}`}
+                inert={isInlineCartPanelCollapsed || Boolean(isCartDrawerOpen && isMobilePosLayout && isBulkRemoveConfirmationOpen)}
+                aria-hidden={isInlineCartPanelCollapsed || Boolean(isCartDrawerOpen && isMobilePosLayout && isBulkRemoveConfirmationOpen) || undefined}
+            >
                 {/* Current Order Header */}
                 <div className="pos-current-order-header flex shrink-0 items-center justify-between gap-2 border-b border-slate-200/80 bg-white px-3 py-3">
-                    <h3 className="shrink-0 text-base font-semibold text-slate-900">Current Order</h3>
+                    <div className="flex min-w-0 items-center gap-2">
+                        <span className="shrink-0 text-slate-600"><PosNavigationCartIcon /></span>
+                        <h3 id="pos-current-order-title" tabIndex="-1" className="shrink-0 text-base font-semibold text-slate-900">Current Order</h3>
+                        <span className="pos-current-order-count rounded-full bg-slate-900 px-2 py-0.5 text-[10px] font-medium text-slate-200">{cartItemCount} items</span>
+                    </div>
                     <div className="flex items-center justify-end gap-1.5">
-                        <span className="rounded-full border border-slate-200 bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-700">
-                            {paymentType === 'credit' ? 'Credit Mode' : 'Cash Mode'}
-                        </span>
-                        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600">{cart.reduce((acc, item) => acc + item.qty, 0)} items</span>
+                        {isCartDrawerOpen && isMobilePosLayout && (
+                            <button
+                                ref={cartDrawerCloseButtonRef}
+                                type="button"
+                                onClick={() => closeCartDrawer()}
+                                aria-label="Close Current Order"
+                                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 md:hidden"
+                            >
+                                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 6l12 12M18 6L6 18" />
+                                </svg>
+                            </button>
+                        )}
                     </div>
                 </div>
 
                 {/* Cart List Management */}
                 {cart.length > 0 && (
-                    <div className={`pos-cart-management shrink-0 border-b border-slate-200/80 bg-slate-50/80 px-3 py-2 text-[11px] ${isCartSelectionMode ? 'pos-cart-selection-toolbar' : ''}`}>
+                    <div className={`pos-cart-management shrink-0 border-b border-slate-200/80 bg-white px-3 py-2 text-[11px] md:bg-slate-50/80 ${isCartSelectionMode ? 'pos-cart-selection-toolbar' : ''}`}>
                         {isCartSelectionMode ? (
                             <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
                                 <button type="button" onClick={toggleAllCartSelections} className="pos-cart-selection-toggle inline-flex items-center gap-1.5 rounded font-medium text-slate-700 transition-colors hover:text-slate-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400" aria-label={areAllCartItemsSelected ? 'Deselect all order items' : 'Select all order items'}>
@@ -2224,13 +3173,16 @@ const PointOfSale = () => {
                 )}
 
                 {/* Cart Item List */}
-                <div className="pos-cart-list flex-1 min-h-0 overflow-y-auto bg-slate-100/70 p-3 space-y-2">
+                <div className="pos-cart-list min-h-0 flex-1 overflow-y-auto overscroll-contain bg-white p-3 space-y-2 md:bg-slate-100/70">
                     {cart.length === 0 ? (
-                        <div className="pos-cart-empty flex flex-col items-center justify-center h-full text-slate-400 space-y-2">
-                            <div className="pos-cart-empty-icon w-11 h-11 rounded-full bg-white border border-slate-100 flex items-center justify-center">
-                                <svg className="w-5 h-5 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"></path></svg>
+                        <div className="pos-cart-empty flex h-full flex-col items-center justify-center gap-2 px-4 text-center">
+                            <div className="pos-cart-empty-icon flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-slate-500">
+                                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.75" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"></path></svg>
                             </div>
-                            <p className="text-sm font-medium">Cart is empty</p>
+                            <div className="space-y-0.5">
+                                <h4 className="text-sm font-semibold text-slate-700">Your cart is empty</h4>
+                                <p className="text-xs leading-5 text-slate-500">Add products from the list to start an order.</p>
+                            </div>
                         </div>
                     ) : (
                         cart.map(item => {
@@ -2239,71 +3191,89 @@ const PointOfSale = () => {
                             return (
                             <div
                                 key={item.code}
-                                onClick={() => {
-                                    if (isCartSelectionMode) toggleCartSelection(item.code);
-                                }}
+                                data-pos-cart-item-card
+                                tabIndex={0}
+                                role="group"
+                                aria-label={isCartSelectionMode
+                                    ? `${item.name}, SKU ${item.code}. Press Enter or Space to toggle selection for removal.`
+                                    : `View product details for ${item.name}, SKU ${item.code}. Press Enter or Space to open.`}
+                                aria-keyshortcuts="Enter Space"
+                                onClick={(event) => handleCartItemClick(event, item.code)}
+                                onKeyDown={(event) => handleCartItemKeyDown(event, item)}
+                                onTouchStart={(event) => handleCartItemTouchStart(event, item.code)}
+                                onTouchMove={(event) => handleCartItemTouchMove(event, item.code)}
+                                onTouchEnd={handleCartItemTouchEnd}
+                                onTouchCancel={handleCartItemTouchEnd}
+                                onContextMenu={preventMobileCartCardSelection}
+                                onSelectStart={preventMobileCartCardSelection}
                                 data-selected={isCartSelectionMode ? isSelected : undefined}
-                                className={`pos-cart-item group rounded-xl border p-2.5 transition-colors ${isCartSelectionMode ? isSelected ? 'cursor-pointer border-slate-400 bg-slate-50/80 hover:border-slate-500' : 'cursor-pointer border-slate-200 bg-white hover:border-slate-400 hover:bg-slate-50/60' : 'border-slate-200 bg-white hover:border-slate-300'}`}
+                                className={`pos-cart-item pos-current-order-item-card group rounded-xl border p-2.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-slate-500 ${isCartSelectionMode ? isSelected ? 'cursor-pointer border-slate-400 bg-slate-50/80 hover:border-slate-500' : 'cursor-pointer border-slate-200 bg-white hover:border-slate-400 hover:bg-slate-50/60' : 'cursor-pointer border-slate-200 bg-white hover:border-slate-400 hover:bg-slate-50/60'}`}
                             >
-                                <div className="flex justify-between mb-1.5 gap-2">
-                                    <div className="flex min-w-0 items-start gap-2">
-                                        {isCartSelectionMode && (
-                                            <input
-                                                type="checkbox"
-                                                checked={isSelected}
-                                                onChange={() => toggleCartSelection(item.code)}
-                                                onClick={(event) => event.stopPropagation()}
-                                                className="pos-cart-item-checkbox mt-0.5 h-3.5 w-3.5 shrink-0 rounded border-slate-300 text-slate-800 focus:ring-slate-500"
-                                                aria-label={`Select ${item.name} for removal`}
-                                            />
-                                        )}
-                                    <h4 className="min-w-0 font-semibold text-slate-800 text-xs leading-4 line-clamp-2">
-                                        {item.brand && <span className="text-slate-400 font-medium">{item.brand} </span>}
-                                        {item.name}
-                                        {item.color && <span className="text-gray-400 font-normal text-xs"> — {item.color}</span>}
-                                    </h4>
+                                <div className="grid grid-cols-[3rem_minmax(0,1fr)] items-center gap-2.5">
+                                    <ProductThumbnail item={item} className="h-12 w-12 rounded-lg" fit="contain" interactive={false} />
+                                    <div className="min-w-0 space-y-1.5">
+                                        <div className="flex min-w-0 items-start gap-1.5">
+                                            {isCartSelectionMode && (
+                                                <input
+                                                    type="checkbox"
+                                                    checked={isSelected}
+                                                    onChange={() => toggleCartSelection(item.code)}
+                                                    onClick={(event) => event.stopPropagation()}
+                                                    className="pos-cart-item-checkbox mt-0.5 h-3.5 w-3.5 shrink-0 rounded border-slate-300 text-slate-800 focus:ring-slate-500"
+                                                    aria-label={`Select ${item.name} for removal`}
+                                                />
+                                            )}
+                                            <div className="min-w-0 flex-1">
+                                                <h4 className="line-clamp-2 font-semibold text-xs leading-4 text-slate-800">
+                                                    {item.brand && !item.displayNameIsFallback && <span className="font-medium text-slate-400">{item.brand} </span>}
+                                                    {item.name}
+                                                    {item.color && !item.displayNameIsFallback && <span className="text-gray-400 font-normal text-xs"> — {item.color}</span>}
+                                                </h4>
+                                                <p className="mt-0.5 truncate text-[10px] leading-3 text-slate-500" title={item.code}>{item.code}</p>
+                                            </div>
+                                            {!isCartSelectionMode && <button type="button" data-pos-cart-item-remove onClick={(event) => { event.stopPropagation(); requestSingleCartRemoval(item, event); }} className="pos-cart-item-remove inline-flex shrink-0 items-center gap-1 rounded-md p-1 text-xs font-semibold text-rose-600 transition-colors hover:bg-rose-50 hover:text-rose-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300 md:gap-0 md:p-0.5 md:text-slate-400 md:hover:bg-slate-100 md:hover:text-rose-500" aria-label={`Remove ${item.name} from order`}>
+                                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                                                <span className="md:hidden">Remove</span>
+                                            </button>}
+                                        </div>
+                                        <div className="flex items-center justify-between gap-2">
+                                            <div onClick={(event) => event.stopPropagation()} className="pos-cart-item-controls flex shrink-0 items-center gap-1 rounded-md border border-slate-200 bg-slate-50 p-0.5">
+                                                <button
+                                                    onClick={(event) => item.qty <= 1 ? requestSingleCartRemoval(item, event) : updateQuantity(item.code, item.qty - 1)}
+                                                    className="flex h-6 w-6 items-center justify-center rounded bg-white pb-0.5 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-100 disabled:opacity-50"
+                                                >
+                                                    -
+                                                </button>
+                                                <input
+                                                    type="text"
+                                                    inputMode="numeric"
+                                                    pattern="[0-9]*"
+                                                    min="1"
+                                                    onFocus={(e) => e.target.select()}
+                                                    value={item.qty}
+                                                    onKeyDown={preventInvalidWholeNumberKeyDown}
+                                                    onPaste={preventInvalidWholeNumberPaste}
+                                                    onChange={(e) => {
+                                                        const value = sanitizeWholeNumberInput(e.target.value);
+                                                        if (isWholeNumberInput(value, { min: 1 })) {
+                                                            updateQuantity(item.code, Number(value));
+                                                        }
+                                                    }}
+                                                    className="w-9 bg-transparent text-center text-xs font-semibold outline-none"
+                                                />
+                                                <button
+                                                    onClick={() => updateQuantity(item.code, item.qty + 1)}
+                                                    className="flex h-6 w-6 items-center justify-center rounded bg-slate-900 pb-0.5 text-sm font-semibold text-white transition-colors hover:bg-slate-700"
+                                                >
+                                                    +
+                                                </button>
+                                            </div>
+                                            <div className="min-w-0 flex-1 text-right tabular-nums">
+                                                <span className="block whitespace-nowrap text-sm font-semibold text-slate-900">{formatCurrency(item.price * item.qty)}</span>
+                                                <p className="whitespace-nowrap text-[10px] leading-3 text-slate-500">@ {formatCurrency(item.price)}</p>
+                                            </div>
+                                        </div>
                                     </div>
-                                    {!isCartSelectionMode && <button onClick={() => removeFromCart(item.code)} className="shrink-0 rounded-md p-0.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-rose-500" aria-label={`Remove ${item.name} from order`}>
-                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-                                    </button>}
-                                </div>
-                                <div className="flex justify-between items-center mt-2">
-                                    <div onClick={(event) => event.stopPropagation()} className="flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 p-0.5">
-                                        <button 
-                                            onClick={() => updateQuantity(item.code, item.qty - 1)}
-                                            className="w-6 h-6 rounded flex items-center justify-center bg-white text-slate-700 transition-colors hover:bg-slate-100 disabled:opacity-50 text-sm font-semibold pb-0.5"
-                                        >
-                                            -
-                                        </button>
-                                        <input
-                                            type="text"
-                                            inputMode="numeric"
-                                            pattern="[0-9]*"
-                                            min="1"
-                                            onFocus={(e) => e.target.select()}
-                                            value={item.qty}
-                                            onKeyDown={preventInvalidWholeNumberKeyDown}
-                                            onPaste={preventInvalidWholeNumberPaste}
-                                            onChange={(e) => {
-                                                const value = sanitizeWholeNumberInput(e.target.value);
-                                                if (isWholeNumberInput(value, { min: 1 })) {
-                                                    updateQuantity(item.code, Number(value));
-                                                }
-                                            }}
-                                            className="w-9 text-center text-xs font-semibold bg-transparent outline-none"
-                                        />
-                                        <button 
-                                            onClick={() => updateQuantity(item.code, item.qty + 1)}
-                                            className="w-6 h-6 rounded flex items-center justify-center bg-slate-900 text-white transition-colors hover:bg-slate-700 text-sm font-semibold pb-0.5"
-                                        >
-                                            +
-                                        </button>
-                                    </div>
-                                    <span className="font-semibold text-sm text-slate-900">{formatCurrency(item.price * item.qty)}</span>
-                                </div>
-                                <div className="mt-1.5 text-[10px] text-slate-500 flex justify-between">
-                                    <span>{item.code}</span>
-                                    <span>@ {formatCurrency(item.price)}</span>
                                 </div>
                             </div>
                             );
@@ -2311,383 +3281,11 @@ const PointOfSale = () => {
                     )}
                 </div>
 
-                <div className="pos-checkout-panel relative shrink-0 border-t border-slate-200/80 bg-slate-50/80 p-3 z-30">
-                    <div className="absolute right-3 top-0 z-10 -translate-y-1/2">
-                        <MotionButton
-                            type="button"
-                            onClick={() => setIsOrderSummaryDetailsCollapsed((prev) => !prev)}
-                            initial={false}
-                            whileHover={{ width: 96 }}
-                            transition={{ type: 'spring', stiffness: 260, damping: 24 }}
-                            className="pos-summary-collapse group inline-flex h-7 w-7 items-center justify-start overflow-hidden whitespace-nowrap rounded-md border border-gray-300 bg-white px-1.5 text-[9px] font-semibold uppercase tracking-wider text-gray-700 shadow-sm hover:bg-gray-100"
-                            aria-label={isOrderSummaryDetailsCollapsed ? 'Show details' : 'Hide details'}
-                            title={isOrderSummaryDetailsCollapsed ? 'Show details' : 'Hide details'}
-                        >
-                            <svg className={`h-3 w-3 shrink-0 transition-transform ${isOrderSummaryDetailsCollapsed ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
-                            </svg>
-                            <span className="ml-0 max-w-0 overflow-hidden opacity-0 transition-all duration-200 group-hover:ml-1 group-hover:max-w-[72px] group-hover:opacity-100">
-                                {isOrderSummaryDetailsCollapsed ? 'Show Details' : 'Hide Details'}
-                            </span>
-                        </MotionButton>
-                    </div>
-
-                    <AnimatePresence initial={false}>
-                    {isOrderSummaryDetailsCollapsed && !isOrderSummaryDetailsCollapsed && (
-                    <MotionDiv
-                        key="order-summary-details"
-                        initial={{ height: 0, opacity: 0, y: -6 }}
-                        animate={{ height: 'auto', opacity: 1, y: 0 }}
-                        exit={{ height: 0, opacity: 0, y: -6 }}
-                        transition={{ duration: 0.22, ease: 'easeInOut' }}
-                        className="overflow-hidden"
-                    >
-                    <div className="pos-checkout-form mb-3 space-y-2.5 rounded-xl border border-slate-200 bg-white p-2.5">
-                        <div className="pos-payment-switch inline-flex w-full rounded-lg bg-slate-100 p-1 border border-slate-200">
-                            <button
-                                type="button"
-                                onClick={() => handlePaymentTypeChange('cash')}
-                                className={`pos-payment-option ${paymentType === 'cash' ? 'pos-payment-option-active' : ''} flex-1 py-1.5 rounded-md text-[11px] transition-all ${paymentType === 'cash' ? 'bg-white font-semibold text-slate-900 shadow-sm ring-1 ring-slate-200' : 'font-medium text-slate-500 hover:bg-white/70'}`}
-                            >
-                                Cash
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => handlePaymentTypeChange('credit')}
-                                className={`pos-payment-option ${paymentType === 'credit' ? 'pos-payment-option-active' : ''} flex-1 py-1.5 rounded-md text-[11px] transition-all ${paymentType === 'credit' ? 'bg-white font-semibold text-slate-900 shadow-sm ring-1 ring-slate-200' : 'font-medium text-slate-500 hover:bg-white/70'}`}
-                            >
-                                Credit
-                            </button>
-                        </div>
-
-                        {paymentType === 'cash' ? (
-                            <>
-                                <div className="group/pos-field-tooltip relative flex justify-between items-center text-sm font-medium text-slate-600">
-                                    <span>Cash Received</span>
-                                    <div className="relative">
-                                    <div className={`flex items-center gap-1 border-b transition-colors ${isCashAmountTooLarge ? 'border-red-500 focus-within:border-red-600' : 'border-gray-300'} ${cart.length > 0 && !isCashAmountTooLarge ? 'focus-within:border-gray-900' : ''}`}>
-                                        <span>₱</span>
-                                        <input 
-                                            type="text"
-                                            inputMode="decimal"
-                                            disabled={cart.length === 0}
-                                            value={cashAmount}
-                                            onKeyDown={preventInvalidMoneyKeyDown}
-                                            onPaste={preventInvalidMoneyPaste}
-                                            onChange={(e) => setCashAmount(sanitizeCashTenderedInput(e.target.value))}
-                                            onBlur={() => setCashAmount((value) => formatMoneyInput(value))}
-                                            aria-label="Cash tendered"
-                                            aria-invalid={isCashAmountTooLarge}
-                                            aria-describedby={isCashAmountTooLarge ? 'cash-tendered-size-error' : undefined}
-                                            placeholder="0.00"
-                                            className={`w-20 bg-transparent text-right text-sm font-medium text-gray-900 outline-none ${cart.length === 0 ? 'cursor-not-allowed' : ''}`}
-                                        />
-                                    </div>
-                                    </div>
-                                    {cart.length === 0 && (
-                                        <PosFieldTooltip id="cash-received-disabled-help">
-                                            Add an item first to enter cash received.
-                                        </PosFieldTooltip>
-                                    )}
-                                </div>
-                                {isCashAmountTooLarge && (
-                                    <p id="cash-tendered-size-error" role="alert" className="-mt-1 text-right text-[10px] font-medium text-red-600">
-                                        Amount is too large. Please enter a smaller value.
-                                    </p>
-                                )}
-                                <div className="flex justify-between items-center text-sm font-medium text-slate-600">
-                                    <span>Change</span>
-                                    <span className="text-gray-900 font-semibold">
-                                        {isCashAmountTooLarge ? '—' : formatCurrencyFromCentavos(changeCentavosForDisplay ?? 0)}
-                                    </span>
-                                </div>
-                                <div className="flex flex-col gap-1">
-                                    <label className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">VAT Mode</label>
-                                    <div className="group/pos-field-tooltip relative">
-                                        <select
-                                            value={selectedVatMode}
-                                            onChange={(e) => setSelectedVatMode(e.target.value)}
-                                            disabled={cart.length === 0}
-                                            className="w-full px-2.5 py-2 rounded-lg border border-slate-300 text-xs font-medium bg-white focus:border-slate-500 focus:outline-none"
-                                        >
-                                            {VAT_MODE_OPTIONS.map((option) => (
-                                                <option key={option.value} value={option.value}>{option.label}</option>
-                                            ))}
-                                        </select>
-                                        {cart.length === 0 && (
-                                            <PosFieldTooltip id="cash-vat-mode-help">
-                                                Add an item first to configure the VAT mode.
-                                            </PosFieldTooltip>
-                                        )}
-                                    </div>
-                                </div>
-                            </>
-                        ) : (
-                            <>
-                                <div
-                                    className="group/pos-field-tooltip relative flex flex-col gap-1"
-                                    ref={creditCustomerComboboxRef}
-                                >
-                                    <label className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">Regular Customer</label>
-                                    <div className="relative">
-                                        <input
-                                            type="text"
-                                            value={creditCustomerSearchQuery}
-                                            onFocus={() => setIsCreditCustomerComboboxOpen(true)}
-                                            onChange={(e) => {
-                                                setCreditCustomerSearchQuery(e.target.value);
-                                                if (selectedCreditCustomerId) {
-                                                    setSelectedCreditCustomerId('');
-                                                }
-                                                setIsCreditCustomerComboboxOpen(true);
-                                            }}
-                                            onBlur={() => window.setTimeout(() => setIsCreditCustomerComboboxOpen(false), 150)}
-                                            disabled={cart.length === 0}
-                                            placeholder="Select an eligible regular customer"
-                                            role="combobox"
-                                            aria-expanded={isCreditCustomerComboboxOpen}
-                                            aria-autocomplete="list"
-                                            className="w-full px-2.5 py-2 pr-8 rounded-lg border border-slate-300 text-sm font-medium bg-white focus:border-slate-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-gray-50"
-                                        />
-                                        {(creditCustomerSearchQuery || selectedCreditCustomerId) && cart.length > 0 && (
-                                            <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={clearCreditCustomerSelection} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 transition-colors hover:text-gray-700" aria-label="Clear regular customer">
-                                                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18 18 6M6 6l12 12" /></svg>
-                                            </button>
-                                        )}
-                                        {cart.length === 0 && (
-                                            <PosFieldTooltip id="credit-customer-disabled-help">
-                                                Add an item first to select a regular customer.
-                                            </PosFieldTooltip>
-                                        )}
-                                    </div>
-                                    {isCreditCustomerComboboxOpen && cart.length > 0 && (
-                                        <div className="absolute z-20 top-full mt-1 max-h-40 w-full overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg" role="listbox">
-                                            {creditCustomers.length === 0 ? (
-                                                <p className="px-3 py-2 text-xs text-gray-500">No eligible regular customers available</p>
-                                            ) : filteredCreditCustomers.length === 0 ? (
-                                                <p className="px-3 py-2 text-xs text-gray-500">No customers found</p>
-                                            ) : filteredCreditCustomers.map((customer) => {
-                                                const customerId = String(customer?._id || customer?.id || '');
-                                                const customerName = String(customer?.name || '').trim();
-                                                return (
-                                                    <button
-                                                        key={customerId}
-                                                        type="button"
-                                                        role="option"
-                                                        aria-selected={customerId === selectedCreditCustomerId}
-                                                        onMouseDown={(event) => event.preventDefault()}
-                                                        onClick={() => selectCreditCustomer(customer)}
-                                                        className={`block w-full px-3 py-2 text-left text-sm font-semibold transition-colors hover:bg-amber-50 focus:bg-amber-50 focus:outline-none ${customerId === selectedCreditCustomerId ? 'bg-amber-50 text-amber-800' : 'text-gray-700'}`}
-                                                    >
-                                                        {customerName}
-                                                    </button>
-                                                );
-                                            })}
-                                            {canQuickAddCreditCustomer && (
-                                                <div className="mt-1 border-t border-gray-200 px-1 pt-1">
-                                                    <button
-                                                        type="button"
-                                                        onMouseDown={(event) => event.preventDefault()}
-                                                        onClick={openQuickAddCreditCustomer}
-                                                        className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs font-semibold text-amber-800 transition-colors hover:bg-amber-50 focus:bg-amber-50 focus:outline-none"
-                                                    >
-                                                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4" /></svg>
-                                                        Add New Regular Customer
-                                                    </button>
-                                                </div>
-                                            )}
-                                        </div>
-                                    )}
-                                </div>
-                                <div
-                                    className="group/pos-field-tooltip relative flex flex-col gap-1"
-                                    ref={creditPaymentModeRef}
-                                >
-                                    <label className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">Payment Method</label>
-                                    <div className="relative">
-                                        <button
-                                            type="button"
-                                            onClick={() => {
-                                                setIsCreditCustomerComboboxOpen(false);
-                                                setIsCreditPaymentModeOpen((prev) => !prev);
-                                            }}
-                                            disabled={cart.length === 0}
-                                            aria-haspopup="listbox"
-                                            aria-expanded={isCreditPaymentModeOpen}
-                                            className="flex w-full items-center justify-between px-2.5 py-2 rounded-lg border border-slate-300 text-sm font-medium bg-white text-slate-800 text-left transition-colors hover:border-slate-400 focus:border-slate-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-gray-50"
-                                        >
-                                            <span>{selectedCreditPaymentMode
-                                                ? formatCreditPaymentModeLabel(selectedCreditPaymentMode)
-                                                : 'Select payment method'}</span>
-                                            <svg className={`h-4 w-4 text-gray-400 transition-transform ${isCreditPaymentModeOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="m6 9 6 6 6-6" /></svg>
-                                        </button>
-                                        {cart.length === 0 && (
-                                            <PosFieldTooltip id="credit-payment-method-disabled-help">
-                                                Add an item first to select a payment method.
-                                            </PosFieldTooltip>
-                                        )}
-                                    </div>
-                                    {isCreditPaymentModeOpen && cart.length > 0 && (
-                                        <div className="absolute z-20 top-full mt-1 w-full rounded-lg border border-gray-200 bg-white shadow-lg" role="listbox">
-                                            <div className="max-h-40 overflow-y-auto py-1">
-                                                {CREDIT_PAYMENT_MODES.map((mode) => (
-                                                    <button
-                                                        key={mode}
-                                                        type="button"
-                                                        role="option"
-                                                        aria-selected={selectedCreditPaymentMode === mode}
-                                                        onClick={() => {
-                                                            setSelectedCreditPaymentMode(mode);
-                                                            setIsCreditPaymentModeOpen(false);
-                                                            if (mode === 'other') {
-                                                                focusCustomCreditPaymentModeInput();
-                                                            } else {
-                                                                setCustomCreditPaymentMode('');
-                                                            }
-                                                        }}
-                                                        className={`w-full px-3 py-2 text-left text-sm font-semibold transition-colors hover:bg-amber-50 focus:bg-amber-50 focus:outline-none ${selectedCreditPaymentMode === mode ? 'bg-amber-50 text-amber-700' : 'text-gray-700'}`}
-                                                    >
-                                                        {formatCreditPaymentModeLabel(mode)}
-                                                    </button>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    )}
-                                    {selectedCreditPaymentMode === 'other' && cart.length > 0 && (
-                                        <input
-                                            ref={customCreditPaymentModeInputRef}
-                                            type="text"
-                                            value={customCreditPaymentMode}
-                                            onChange={(e) => setCustomCreditPaymentMode(e.target.value)}
-                                            onBlur={(e) => setCustomCreditPaymentMode(normalizeHumanReadable(e.target.value))}
-                                            onKeyDown={(e) => {
-                                                if (e.key === 'Enter') {
-                                                    e.preventDefault();
-                                                }
-                                                if (e.key === 'Escape') {
-                                                    e.preventDefault();
-                                                    creditPaymentModeRef.current?.querySelector('button')?.focus();
-                                                }
-                                            }}
-                                            placeholder="Type other payment mode"
-                                            className="w-full px-2.5 py-2 rounded-lg border border-slate-300 text-sm font-medium bg-white text-slate-800 focus:border-slate-500 focus:outline-none"
-                                        />
-                                    )}
-                                </div>
-                                <div
-                                    className="group/pos-field-tooltip relative flex flex-col gap-1"
-                                >
-                                    <label className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">Credit Term</label>
-                                    <div className="relative flex items-center gap-1.5">
-                                        <button
-                                            type="button"
-                                            onClick={decrementCreditTerm}
-                                            disabled={cart.length === 0 || Number(selectedCreditTermDays || MIN_CREDIT_TERM_DAYS) <= MIN_CREDIT_TERM_DAYS}
-                                            aria-label="Decrease credit term"
-                                            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-300 text-lg font-medium leading-none transition-colors active:scale-[0.98] dark:border-slate-600 ${cart.length === 0 ? 'cursor-not-allowed bg-slate-50 text-slate-300 dark:bg-slate-800 dark:text-slate-600' : 'bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-100 active:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:border-slate-500 dark:hover:bg-slate-700 dark:active:bg-slate-600'}`}
-                                        >
-                                            -
-                                        </button>
-                                        <input
-                                            type="text"
-                                            inputMode="numeric"
-                                            pattern="[0-9]*"
-                                            min={MIN_CREDIT_TERM_DAYS}
-                                            max={MAX_CREDIT_TERM_DAYS}
-                                            value={selectedCreditTermDays}
-                                            onKeyDown={preventInvalidWholeNumberKeyDown}
-                                            onPaste={preventInvalidWholeNumberPaste}
-                                            onChange={(e) => handleCreditTermInputChange(e.target.value)}
-                                            disabled={cart.length === 0}
-                                            className="h-9 min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-2.5 text-center text-sm font-medium text-slate-900 focus:border-amber-500 focus:outline-none dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
-                                        />
-                                        <button
-                                            type="button"
-                                            onClick={incrementCreditTerm}
-                                            disabled={cart.length === 0 || Number(selectedCreditTermDays || MIN_CREDIT_TERM_DAYS) >= MAX_CREDIT_TERM_DAYS}
-                                            aria-label="Increase credit term"
-                                            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-300 text-lg font-medium leading-none transition-colors active:scale-[0.98] dark:border-slate-600 ${cart.length === 0 ? 'cursor-not-allowed bg-slate-50 text-slate-300 dark:bg-slate-800 dark:text-slate-600' : 'bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-100 active:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:border-slate-500 dark:hover:bg-slate-700 dark:active:bg-slate-600'}`}
-                                        >
-                                            +
-                                        </button>
-                                        <span className="text-xs font-medium text-gray-500 whitespace-nowrap">days</span>
-                                        {cart.length === 0 && (
-                                            <PosFieldTooltip id="credit-term-disabled-help">
-                                                Add an item first to set the credit term.
-                                            </PosFieldTooltip>
-                                        )}
-                                    </div>
-                                </div>
-                                <div
-                                    className="group/pos-field-tooltip relative flex justify-between items-center text-sm font-medium text-gray-600"
-                                >
-                                    <span className="font-medium text-slate-600">Due Date</span>
-                                    <span className="text-gray-900 font-semibold">
-                                        {computedCreditDueDate.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
-                                    </span>
-                                    {cart.length === 0 && (
-                                        <PosFieldTooltip id="credit-due-date-disabled-help">
-                                            The due date will be calculated after setting the credit term.
-                                        </PosFieldTooltip>
-                                    )}
-                                </div>
-                                <div
-                                    className="group/pos-field-tooltip relative flex flex-col gap-1"
-                                >
-                                    <label className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">VAT Mode</label>
-                                    <div className="relative">
-                                        <select
-                                            value={selectedVatMode}
-                                            onChange={(e) => setSelectedVatMode(e.target.value)}
-                                            disabled={cart.length === 0}
-                                            className="w-full px-2.5 py-2 rounded-lg border border-slate-300 text-xs font-medium bg-white focus:border-slate-500 focus:outline-none"
-                                        >
-                                            {VAT_MODE_OPTIONS.map((option) => (
-                                                <option key={option.value} value={option.value}>{option.label}</option>
-                                            ))}
-                                        </select>
-                                        {cart.length === 0 && (
-                                            <PosFieldTooltip id="credit-vat-mode-disabled-help">
-                                                Add an item first to configure the VAT mode.
-                                            </PosFieldTooltip>
-                                        )}
-                                    </div>
-                                </div>
-                            </>
-                        )}
-
-                        <div className="pos-totals flex justify-between items-end rounded-lg bg-slate-100/80 px-2.5 py-2.5 font-semibold text-xl text-slate-900">
-                            <span>Total</span>
-                            <span>{formatCurrency(calculateTotal())}</span>
-                        </div>
-                        {(() => {
-                            const vat = calculateVatBreakdown();
-                            if (!vat) return null;
-                            return (
-                                vat.netAmount > 0 ? (
-                                    <div className="space-y-1 text-xs px-1 pt-1">
-                                        <div className="flex justify-between text-gray-600 font-medium">
-                                            <span>Net Amount</span>
-                                            <span className="text-gray-900 font-semibold">{formatCurrency(vat.netAmount)}</span>
-                                        </div>
-                                        {vat.vatAmount > 0 && (
-                                            <div className="flex justify-between text-amber-600 font-medium">
-                                                <span>{formatVatModeLabel(selectedVatMode)}</span>
-                                                <span className="text-amber-800 font-semibold">{formatCurrency(vat.vatAmount)}</span>
-                                            </div>
-                                        )}
-                                    </div>
-                                ) : null
-                            );
-                        })()}
-                    </div>
-                    </MotionDiv>
-                    )}
-                    </AnimatePresence>
+                <div className="pos-checkout-panel relative z-30 shrink-0 border-t border-slate-200/80 bg-white p-3 md:bg-slate-50/80">
                     <div className="flex gap-2 border-t border-slate-100 pt-2.5">
                         <div className={`relative group w-[34%] shrink-0 ${cart.length === 0 ? 'cursor-not-allowed' : ''}`}>
                             <button 
-                                onClick={handleGenerateQuotation}
+                                onClick={() => runCartAction(handleGenerateQuotation)}
                                 disabled={cart.length === 0}
                                 className={`w-full py-2.5 rounded-lg border border-slate-300 bg-white text-[10px] font-semibold uppercase tracking-wider text-slate-700 flex items-center justify-center transition-colors duration-150 ${cart.length === 0 ? 'pointer-events-none opacity-50' : 'hover:bg-slate-50 hover:border-slate-400'}`}
                             >
@@ -2704,7 +3302,7 @@ const PointOfSale = () => {
                         </div>
                         <div className={`relative group flex-1 ${isCheckoutDisabled ? 'cursor-not-allowed' : ''}`}>
                             <button 
-                                onClick={openOrderList}
+                                onClick={() => runCartAction(openOrderList)}
                                 disabled={isCheckoutDisabled}
                                 className={`w-full py-2.5 rounded-lg border border-slate-900 bg-slate-900 text-[10px] font-semibold uppercase tracking-wider text-white flex items-center justify-center shadow-sm transition-colors duration-150 ${isCheckoutDisabled ? 'pointer-events-none opacity-50' : 'hover:bg-slate-800'}`}
                             >
@@ -2722,111 +3320,198 @@ const PointOfSale = () => {
                     </div>
                 </div>
             </div>
+                );
+
+                if (isCartDrawerOpen && isMobilePosLayout && typeof document !== 'undefined') {
+                    return createPortal(
+                        <>
+                            <div
+                                className="fixed inset-0 z-[79] bg-slate-950/40 backdrop-blur-[2px] md:hidden"
+                                aria-hidden="true"
+                                onClick={() => closeCartDrawer()}
+                            />
+                            {currentOrderPanel}
+                        </>,
+                        document.body,
+                    );
+                }
+
+                return (
+                    <div
+                        id="pos-current-order-shell"
+                        className={`pos-current-order-shell relative hidden h-full min-h-[300px] shrink-0 overflow-hidden rounded-2xl md:block md:transform-gpu md:transition-[width,transform] md:duration-420 md:ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none ${isInlineCartPanelCollapsed ? 'md:w-11' : 'md:w-96'}`}
+                    >
+                        <div className={`absolute inset-y-0 left-0 z-20 w-96 md:transform-gpu md:transition-transform md:duration-420 md:ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none ${isInlineCartPanelCollapsed ? 'md:translate-x-full' : 'md:translate-x-0'}`}>
+                            {currentOrderPanel}
+                        </div>
+                        {isInlineCartPanelCollapsed ? (
+                            <div
+                                role="group"
+                                aria-label="Current Order actions"
+                                onClick={(event) => {
+                                    if (!event.target.closest?.('[data-current-order-rail-action]')) setIsCurrentOrderCollapsed(false);
+                                }}
+                                className="absolute inset-y-0 right-0 z-30 flex h-full w-full cursor-pointer flex-col items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-0.5 py-2 text-slate-700 shadow-sm transition-colors hover:bg-white"
+                            >
+                                <ViewportTooltip content="Current Order" maxWidth={180} placementPreference="left" triggerGap={10} openDelay={140} closeDelay={80} animateAppearance>
+                                    <button
+                                        type="button"
+                                        data-current-order-rail-action
+                                        onClick={() => setIsCurrentOrderCollapsed(false)}
+                                        aria-controls="pos-current-order-panel"
+                                        aria-expanded="false"
+                                        aria-label={`Current Order, ${cartItemCount} items`}
+                                        className="inline-flex min-h-12 w-9 shrink-0 flex-col items-center justify-center gap-1 rounded-lg border border-transparent text-slate-700 transition-colors hover:border-slate-200 hover:bg-white active:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 focus-visible:ring-offset-1"
+                                    >
+                                        <PosNavigationCartIcon />
+                                        <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-slate-900 px-1 text-[10px] font-semibold leading-none tabular-nums text-white" aria-live="polite">{cartItemCount}</span>
+                                    </button>
+                                </ViewportTooltip>
+                                <ViewportTooltip content="Prepare Quotation" maxWidth={180} placementPreference="left" triggerGap={10} openDelay={140} closeDelay={80} animateAppearance>
+                                    <button
+                                        type="button"
+                                        data-current-order-rail-action
+                                        onClick={(event) => { event.stopPropagation(); runCartAction(handleGenerateQuotation); }}
+                                        disabled={cart.length === 0}
+                                        aria-label="Prepare Quotation"
+                                        title={cart.length === 0 ? 'Add item first' : undefined}
+                                        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-transparent text-slate-700 transition-colors hover:border-slate-200 hover:bg-white hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 focus-visible:ring-offset-1 active:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+                                    >
+                                        <RecordActionIcon name="file-plus" className="h-5 w-5 shrink-0" />
+                                    </button>
+                                </ViewportTooltip>
+                                <ViewportTooltip content="Review Order" maxWidth={180} placementPreference="left" triggerGap={10} openDelay={140} closeDelay={80} animateAppearance>
+                                    <button
+                                        type="button"
+                                        data-current-order-rail-action
+                                        onClick={(event) => { event.stopPropagation(); runCartAction(openOrderList); }}
+                                        disabled={isCheckoutDisabled}
+                                        aria-label="Review Order"
+                                        title={isCheckoutDisabled ? checkoutDisabledMessage : undefined}
+                                        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-transparent text-slate-700 transition-colors hover:border-slate-200 hover:bg-white hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 focus-visible:ring-offset-1 active:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+                                    >
+                                        <RecordActionIcon name="clipboard-check" className="h-5 w-5 shrink-0" />
+                                    </button>
+                                </ViewportTooltip>
+                                <ViewportTooltip content="Show Current Order" maxWidth={180} placementPreference="left" triggerGap={10} openDelay={140} closeDelay={80} animateAppearance>
+                                    <button
+                                        type="button"
+                                        data-current-order-rail-action
+                                        onClick={() => setIsCurrentOrderCollapsed(false)}
+                                        aria-controls="pos-current-order-panel"
+                                        aria-expanded="false"
+                                        aria-label={`Show Current Order, ${cartItemCount} items`}
+                                        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-transparent text-slate-600 transition-colors hover:border-slate-200 hover:bg-white hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 focus-visible:ring-offset-1 active:bg-slate-100"
+                                    >
+                                        <svg className="h-5 w-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="m15 18-6-6 6-6" /></svg>
+                                    </button>
+                                </ViewportTooltip>
+                            </div>
+                        ) : (
+                            <ViewportTooltip
+                                content="Hide Current Order"
+                                maxWidth={180}
+                                placementPreference="left"
+                                positionAnchorId="pos-current-order-toggle-anchor"
+                                triggerGap={10}
+                                openDelay={140}
+                                closeDelay={80}
+                                animateAppearance
+                                triggerClassName="absolute right-2 top-2 z-30 h-8 w-8"
+                            >
+                                <button
+                                    type="button"
+                                    onClick={() => setIsCurrentOrderCollapsed(true)}
+                                    aria-controls="pos-current-order-panel"
+                                    aria-expanded="true"
+                                    aria-label="Hide Current Order"
+                                    className="relative inline-flex h-full w-full shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 focus-visible:ring-offset-1"
+                                >
+                                    <span id="pos-current-order-toggle-anchor" aria-hidden="true" className="pointer-events-none absolute -left-px top-1/2 h-px w-px -translate-y-1/2" />
+                                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="m9 18 6-6-6-6" /></svg>
+                                </button>
+                            </ViewportTooltip>
+                        )}
+                    </div>
+                );
+            })()}
         </div>
         
         {productDetailsItem && !enlargedProductImage && (
-            <div
-                className="app-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
-                onClick={() => setProductDetailsItem(null)}
+            <ProductDetailsModalShell
+                dialogRef={productDetailsDialogRef}
+                closeButtonRef={productDetailsCloseButtonRef}
+                onClose={() => setProductDetailsItem(null)}
+                backdropZIndexClassName={isCartDrawerOpen && isMobilePosLayout ? 'z-[90]' : 'z-50'}
+                aria-labelledby="pos-product-details-title"
             >
-                <div
-                    className="w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
-                    onClick={(event) => event.stopPropagation()}
-                >
-                    <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
-                        <div className="flex items-center gap-2.5">
-                            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-900 text-white">
-                                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                            </div>
-                            <div>
-                                <h3 className="text-sm font-semibold text-slate-900">Product Details</h3>
-                                <p className="text-[10px] text-slate-500">Reference information only</p>
-                            </div>
-                        </div>
-                        <button type="button" onClick={() => setProductDetailsItem(null)} className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700" aria-label="Close product details">
-                            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>
-                        </button>
+                <div className="flex gap-4">
+                    <ProductThumbnail item={productDetailsItem} className="h-28 w-28 shrink-0 rounded-xl" onPreview={handleProductImagePreviewClick} fit="contain" />
+                    <div className="min-w-0 py-1">
+                        <p className="text-[9px] font-semibold uppercase tracking-widest text-slate-400">
+                            {productDetailsItem.category ? `Product Type · ${productDetailsItem.category}` : 'Product'}
+                        </p>
+                        <h4 className="mt-1 text-base font-semibold leading-snug text-slate-900">{productDetailsItem.name}</h4>
+                        <p className="mt-2 text-lg font-semibold tracking-tight text-slate-900">
+                            {productDetailsItem.isGroup
+                                ? (productDetailsItem.minPrice === productDetailsItem.maxPrice ? formatCurrency(productDetailsItem.minPrice) : `${formatCurrency(productDetailsItem.minPrice)} - ${formatCurrency(productDetailsItem.maxPrice)}`)
+                                : formatCurrency(productDetailsItem.price)}
+                        </p>
                     </div>
-                    <div className="max-h-[min(560px,calc(100vh-8rem))] overflow-y-auto p-4">
-                        <div className="flex gap-4">
-                            <ProductThumbnail item={productDetailsItem} className="h-28 w-28 shrink-0 rounded-xl" onPreview={handleProductImagePreviewClick} fit="contain" />
-                            <div className="min-w-0 py-1">
-                                <p className="text-[9px] font-semibold uppercase tracking-widest text-slate-400">{productDetailsItem.category || 'Product'}</p>
-                                <h4 className="mt-1 text-base font-semibold leading-snug text-slate-900">{productDetailsItem.name}</h4>
-                                <p className="mt-1 text-xs text-slate-500">
-                                    {[productDetailsItem.brand, productDetailsItem.size, productDetailsItem.color].filter(Boolean).join(' · ') || 'No variant details available'}
-                                </p>
-                                <p className="mt-2 text-lg font-semibold tracking-tight text-slate-900">
-                                    {productDetailsItem.isGroup
-                                        ? (productDetailsItem.minPrice === productDetailsItem.maxPrice ? formatCurrency(productDetailsItem.minPrice) : `${formatCurrency(productDetailsItem.minPrice)} - ${formatCurrency(productDetailsItem.maxPrice)}`)
-                                        : formatCurrency(productDetailsItem.price)}
-                                </p>
-                            </div>
+                </div>
+                <dl className="mt-5 grid grid-cols-2 gap-x-5 gap-y-4 border-t border-slate-100 pt-4 text-xs">
+                    <div>
+                        <dt className="text-[9px] font-semibold uppercase tracking-widest text-slate-400">{productDetailsItem.isGroup ? 'Options' : 'SKU'}</dt>
+                        <dd className="mt-1 break-words font-medium text-slate-800">{productDetailsItem.isGroup ? productDetailsItem.variants.length : productDetailsItem.code}</dd>
+                    </div>
+                    <div>
+                        <dt className="text-[9px] font-semibold uppercase tracking-widest text-slate-400">Stock</dt>
+                        <dd className="mt-1 break-words font-medium text-slate-800">{productDetailsItem.stock}{getSellingUnit(productDetailsItem) ? ` ${getSellingUnit(productDetailsItem)}` : ''} available</dd>
+                    </div>
+                    {!productDetailsItem.isGroup && productDetailsItem.supplierName && (
+                        <div className="min-w-0">
+                            <dt className="text-[9px] font-semibold uppercase tracking-widest text-slate-400">Supplier</dt>
+                            <dd className="mt-1 break-words font-medium text-slate-800">{productDetailsItem.supplierName}</dd>
                         </div>
-                        <dl className="mt-5 grid grid-cols-2 gap-x-5 gap-y-4 border-t border-slate-100 pt-4 text-xs">
-                            <div>
-                                <dt className="text-[9px] font-semibold uppercase tracking-widest text-slate-400">{productDetailsItem.isGroup ? 'Options' : 'SKU'}</dt>
-                                <dd className="mt-1 font-medium text-slate-800">{productDetailsItem.isGroup ? productDetailsItem.variants.length : productDetailsItem.code}</dd>
-                            </div>
-                            <div>
-                                <dt className="text-[9px] font-semibold uppercase tracking-widest text-slate-400">Stock</dt>
-                                <dd className="mt-1 font-medium text-slate-800">{productDetailsItem.stock} available</dd>
-                            </div>
-                            <div>
-                                <dt className="text-[9px] font-semibold uppercase tracking-widest text-slate-400">Product Type</dt>
-                                <dd className="mt-1 font-medium text-slate-800">{productDetailsItem.category || 'General'}</dd>
-                            </div>
-                            {productDetailsItem.isGroup ? (
-                                <div>
-                                    <dt className="text-[9px] font-semibold uppercase tracking-widest text-slate-400">Brands</dt>
-                                    <dd className="mt-1 font-medium text-slate-800">{productDetailsItem.availableBrands?.join(', ') || 'Not specified'}</dd>
+                    )}
+                </dl>
+                {productDetailsSpecifications.length > 0 && (
+                    <section className="mt-4 border-t border-slate-100 pt-4" aria-label="Product specifications">
+                        <h5 className="text-[9px] font-semibold uppercase tracking-widest text-slate-400">Specifications</h5>
+                        <dl className="mt-2 grid grid-cols-1 gap-x-5 gap-y-3 text-xs min-[380px]:grid-cols-2">
+                            {productDetailsSpecifications.map(({ name, value }) => (
+                                <div key={name} className="min-w-0">
+                                    <dt className="text-[10px] font-medium text-slate-500">{name}</dt>
+                                    <dd className="mt-0.5 break-words font-medium leading-relaxed text-slate-800 [overflow-wrap:anywhere]">{value}</dd>
                                 </div>
-                            ) : (
-                                productDetailsItem.supplierName && <div>
-                                    <dt className="text-[9px] font-semibold uppercase tracking-widest text-slate-400">Supplier</dt>
-                                    <dd className="mt-1 font-medium text-slate-800">{productDetailsItem.supplierName}</dd>
-                                </div>
-                            )}
+                            ))}
                         </dl>
-                    </div>
-                </div>
-            </div>
-        )}
-
-        {recommendationChooserItem && (
-            <div className="app-modal-backdrop recommendation-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm" onClick={() => setRecommendationChooserItem(null)}>
-                <div role="dialog" aria-modal="true" aria-labelledby="recommendation-type-title" className="recommendation-modal recommendation-chooser-modal w-full max-w-sm overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
-                    <div className="recommendation-modal-header flex items-start justify-between border-b border-slate-100 px-4 py-3">
-                        <div className="min-w-0 pr-3">
-                            <h3 id="recommendation-type-title" className="text-sm font-semibold text-slate-900">Choose Recommendation Type</h3>
-                            <p className="mt-0.5 truncate text-[10px] text-slate-500">{recommendationChooserItem.name} ({recommendationChooserItem.code})</p>
-                        </div>
-                        <button type="button" onClick={() => setRecommendationChooserItem(null)} aria-label="Close recommendation choices" className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700">
-                            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18 18 6M6 6l12 12" /></svg>
-                        </button>
-                    </div>
-                    <div className="recommendation-modal-body space-y-2 bg-slate-50/60 p-4">
-                        <button type="button" onClick={() => { const item = recommendationChooserItem; setRecommendationChooserItem(null); openRecommendationResults(item, 'alternative', { returnToChooser: true }); }} className="recommendation-choice-card flex w-full items-center gap-3 rounded-xl border border-slate-200 bg-white p-3 text-left transition-colors hover:border-slate-300 hover:bg-slate-50">
-                            <span className="recommendation-choice-icon flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-700">
-                                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 7h11m0 0-3-3m3 3-3 3M17 17H6m0 0 3 3m-3-3 3-3" /></svg>
-                            </span>
-                            <span><span className="block text-xs font-semibold text-slate-900">Alternative Products</span><span className="mt-0.5 block text-[10px] text-slate-500">Similar or compatible replacement products.</span></span>
-                        </button>
-                        <button type="button" onClick={() => { const item = recommendationChooserItem; setRecommendationChooserItem(null); openRecommendationResults(item, 'budget', { returnToChooser: true }); }} className="recommendation-choice-card recommendation-choice-card-budget flex w-full items-center gap-3 rounded-xl border border-emerald-100 bg-white p-3 text-left transition-colors hover:border-emerald-200 hover:bg-emerald-50/40">
-                            <span className="recommendation-choice-icon recommendation-choice-icon-budget flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700">
-                                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2v-2m2-6h-6a2 2 0 000 4h6V9z" /></svg>
-                            </span>
-                            <span><span className="block text-xs font-semibold text-slate-900">Budget Options</span><span className="mt-0.5 block text-[10px] text-slate-500">Compare Value, Standard, and Premium price options.</span></span>
-                        </button>
-                    </div>
-                </div>
-            </div>
+                    </section>
+                )}
+            </ProductDetailsModalShell>
         )}
 
         {/* Recommendation Modal */}
         {recommendationModal.isOpen && (
-            <div className="app-modal-backdrop recommendation-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm" onClick={() => setRecommendationModal({ isOpen: false, item: null, alternatives: [] })}>
-                <div className="recommendation-modal recommendation-results-modal w-full max-w-2xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl animate-in fade-in zoom-in duration-200" onClick={(event) => event.stopPropagation()}>
+            <div className="app-modal-backdrop recommendation-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+                <div ref={recommendationDialogRef} tabIndex={-1} className="recommendation-modal recommendation-results-modal w-full max-w-2xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl animate-in fade-in zoom-in duration-200" role="dialog" aria-modal="true" aria-labelledby="pos-recommendation-title" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => {
+                    if (event.key === 'Escape') {
+                        event.preventDefault();
+                        closeRecommendationModal();
+                        return;
+                    }
+                    if (event.key !== 'Tab') return;
+                    const controls = [...(recommendationDialogRef.current?.querySelectorAll('button:not(:disabled), input:not(:disabled), summary, [tabindex]:not([tabindex="-1"])') || [])].filter((control) => control.getClientRects().length > 0);
+                    const first = controls[0];
+                    const last = controls.at(-1);
+                    if (event.shiftKey && document.activeElement === first) {
+                        event.preventDefault();
+                        last?.focus();
+                    } else if (!event.shiftKey && document.activeElement === last) {
+                        event.preventDefault();
+                        first?.focus();
+                    }
+                }}>
                     <div className="recommendation-modal-header border-b border-slate-100 bg-white px-4 py-3">
                         <div className="flex items-center justify-between">
                             <div className="flex items-center gap-3">
@@ -2836,16 +3521,18 @@ const PointOfSale = () => {
                                     </svg>
                                 </div>
                                 <div>
-                                    <h3 className="text-sm font-semibold tracking-tight text-slate-900">
-                                        {recommendationModal.kind === 'budget' ? 'Budget Options' : 'Alternative Products'}
+                                    <h3 id="pos-recommendation-title" className="text-sm font-semibold tracking-tight text-slate-900">
+                                        Alternative Products
                                     </h3>
                                     <p className="mt-0.5 text-[10px] font-medium text-slate-500">
-                                        {recommendationModal.item.brand ? `${recommendationModal.item.brand} ` : ''}{recommendationModal.item.name}{recommendationModal.item.color ? ` — ${recommendationModal.item.color}` : ''} ({recommendationModal.item.code})
+                                        {recommendationModal.item.brand && !recommendationModal.item.displayNameIsFallback ? `${recommendationModal.item.brand} ` : ''}{recommendationModal.item.name}{recommendationModal.item.color && !recommendationModal.item.displayNameIsFallback ? ` — ${recommendationModal.item.color}` : ''} ({recommendationModal.item.code})
                                     </p>
                                 </div>
                             </div>
                             <button
-                                onClick={() => setRecommendationModal({ isOpen: false, item: null, alternatives: [] })}
+                                ref={recommendationCloseButtonRef}
+                                type="button"
+                                onClick={closeRecommendationModal}
                                 className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
                                 aria-label="Close recommendations"
                             >
@@ -2855,130 +3542,85 @@ const PointOfSale = () => {
                     </div>
 
                     <div className="recommendation-modal-body bg-slate-50/60 p-4">
-                        <p className="mb-2 text-[11px] text-slate-500">
-                            {recommendationModal.kind === 'budget'
-                                ? 'Compare price-relative options for the selected product.'
-                                : recommendationModal.type === 'out-of-stock'
-                                    ? 'Choose a suitable in-stock replacement. Nothing is substituted automatically.'
-                                    : 'Choose a similar or compatible replacement product.'}
-                        </p>
-                        {recommendationModal.returnToChooser && (
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    const item = recommendationModal.item;
-                                    setRecommendationModal({ isOpen: false, item: null, alternatives: [] });
-                                    setRecommendationChooserItem(item);
-                                }}
-                                className="recommendation-back-link mb-3 inline-flex items-center gap-1 text-[10px] font-medium text-slate-500 transition-colors hover:text-slate-800"
-                            >
-                                <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 18l-6-6 6-6" />
-                                </svg>
-                                Back to Recommendation Type
-                            </button>
-                        )}
-                        
-                        {recommendationModal.alternatives.length > 0 ? (
+                        {liveRecommendationOptions.hasAny ? (
                             <div className="recommendation-results-scroll -mr-2 max-h-[430px] overflow-y-auto pr-2">
-                                <div className="grid grid-cols-1 gap-3 pb-2 sm:grid-cols-2">
-                                    {recommendationModal.alternatives.map(alt => {
-                                        const originalPrice = Number(recommendationModal.item?.price || 0);
-                                        const alternativePrice = Number(alt.price || 0);
-                                        const savings = Math.max(0, originalPrice - alternativePrice);
-                                        const priceDifference = alternativePrice - originalPrice;
-                                        const priceTier = getRelativePriceTier(recommendationModal.item?.price, alt.price);
-                                        const tierPresentation = {
-                                            value: { label: 'Value', className: 'border-emerald-100 bg-emerald-50 text-emerald-700' },
-                                            standard: { label: 'Standard', className: 'border-slate-200 bg-slate-50 text-slate-600' },
-                                            premium: { label: 'Premium', className: 'border-indigo-100 bg-indigo-50 text-indigo-700' },
-                                        }[priceTier];
-
+                                {[
+                                    { title: 'Matching Alternatives', items: liveRecommendationOptions.alternatives },
+                                    { title: 'Other Available Options', items: liveRecommendationOptions.otherOptions },
+                                ].filter((section) => section.items.length > 0).map((section) => (
+                                    <section key={section.title} aria-label={section.title} className="mb-4 last:mb-0">
+                                        <h4 className="mb-2 text-xs font-semibold text-slate-700">{section.title}</h4>
+                                        <div className="grid grid-cols-1 items-start gap-3 pb-2 sm:grid-cols-2">
+                                    {section.items.map((alt) => {
+                                        const maxAddable = getPosRemainingAddableQuantity(alt, cart);
+                                        const storedQuantity = Number(recommendationQuantities[alt.code]) || 1;
+                                        const selectedQuantity = Math.min(Math.max(1, storedQuantity), Math.max(1, maxAddable));
+                                        const specifications = getProductDetailsSpecifications(alt, categoryDefinitions);
                                         return (
-                                            <div
-                                                key={alt.code}
-                                                className={`recommendation-result-card cursor-pointer rounded-xl border p-3 transition-colors hover:border-slate-400 ${recommendationModal.type === 'out-of-stock' ? 'border-red-200 bg-red-50/30' : 'border-slate-200 bg-white'}`}
-                                                onClick={() => selectRecommendedAlternative(alt)}
-                                            >
+                                            <div key={alt.code} className="recommendation-result-card rounded-xl border border-slate-200 bg-white p-3">
                                                 <div className="flex gap-3">
-                                                    <ProductThumbnail item={alt} className="h-20 w-20 shrink-0 rounded-lg" onPreview={handleProductImagePreviewClick} fit="contain" />
+                                                    <ProductThumbnail item={alt} className="h-14 w-14 shrink-0 rounded-lg" onPreview={handleProductImagePreviewClick} fit="contain" />
                                                     <div className="min-w-0 flex-1">
-                                                        <div className="mb-1 flex flex-wrap items-center gap-1">
-                                                            {recommendationModal.kind === 'budget' && (
-                                                                <span className={`recommendation-tier-badge recommendation-tier-${priceTier} rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] ${tierPresentation.className}`}>
-                                                                    {tierPresentation.label}
-                                                                </span>
-                                                            )}
-                                                            {recommendationModal.kind === 'alternative' && (
-                                                                <span className="text-[9px] font-medium text-slate-400">Alternative Product</span>
-                                                            )}
-                                                        </div>
                                                         <h5 className="line-clamp-2 text-[13px] font-semibold leading-snug text-slate-900">
                                                             {alt.brand && <span className="text-slate-500">{alt.brand} </span>}
                                                             {alt.name}
                                                         </h5>
-                                                        <p className="mt-1 truncate text-[10px] text-slate-500">
-                                                            {[alt.size, alt.color].filter(Boolean).join(' · ') || 'Standard option'}
+                                                        <p className="mt-1 break-words text-[10px] leading-snug text-slate-500">
+                                                            {getPosVariantOptionLabel(alt, getEffectiveProductAttributes(categoryDefinitions.find((category) => category.name === alt.category) || {}))}
                                                         </p>
-                                                        <p className="mt-0.5 truncate font-mono text-[9px] text-slate-400">{alt.code}</p>
                                                     </div>
                                                 </div>
-                                                <div className="mt-3 flex items-end justify-between gap-3 border-t border-slate-100 pt-3">
-                                                    <div>
-                                                        <p className="text-[15px] font-semibold tracking-tight text-slate-900">{formatCurrency(alt.price)}</p>
-                                                        {recommendationModal.kind === 'budget' && priceTier === 'value' && savings > 0 && (
-                                                            <p className="text-[10px] font-medium text-emerald-700">Save {formatCurrency(savings)}</p>
-                                                        )}
-                                                        {recommendationModal.kind === 'budget' && priceTier === 'standard' && Math.abs(priceDifference) > 0 && (
-                                                            <p className="text-[10px] font-medium text-slate-500">
-                                                                {priceDifference < 0 ? `${formatCurrency(Math.abs(priceDifference))} cheaper` : `${formatCurrency(priceDifference)} higher`}
-                                                            </p>
-                                                        )}
-                                                        {recommendationModal.kind === 'budget' && priceTier === 'premium' && priceDifference > 0 && (
-                                                            <p className="text-[10px] font-medium text-indigo-700">{formatCurrency(priceDifference)} higher</p>
-                                                        )}
+                                                <div className="mt-2 flex flex-wrap items-center justify-between gap-1.5">
+                                                    <p className="text-[15px] font-semibold tracking-tight text-slate-900">{formatCurrency(alt.price)}</p>
+                                                    <span className="recommendation-stock-badge text-[11px] text-slate-600">Available: {maxAddable} {alt.sellingUnit}</span>
+                                                </div>
+                                                <PosRecommendationReasons recommendation={alt.recommendation} />
+                                                {specifications.length > 0 && (
+                                                    <details className="mt-2 border-t border-slate-100 pt-2 text-[10px] text-slate-600">
+                                                        <summary className="w-fit cursor-pointer rounded-sm font-medium text-slate-600 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-700">View Details</summary>
+                                                        <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5">
+                                                            {specifications.map(({ name, value }) => <div key={name} className="min-w-0"><dt className="text-[9px] text-slate-400">{name}</dt><dd className="break-words font-medium text-slate-700">{value}</dd></div>)}
+                                                        </dl>
+                                                    </details>
+                                                )}
+                                                <div className="mt-3 flex items-center justify-between gap-2">
+                                                    <div role="group" className="inline-flex shrink-0 items-center overflow-hidden rounded-lg border border-slate-200 bg-white" aria-label={`Quantity for ${alt.name}`}>
+                                                        <button type="button" disabled={selectedQuantity <= 1} onClick={() => updateRecommendationQuantity(alt, selectedQuantity - 1)} className="flex h-8 w-8 items-center justify-center text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-slate-800" aria-label={`Decrease quantity for ${alt.name}`}>−</button>
+                                                        <input type="text" inputMode="numeric" pattern="[0-9]*" min="1" max={maxAddable} value={selectedQuantity} onKeyDown={preventInvalidWholeNumberKeyDown} onPaste={preventInvalidWholeNumberPaste} onChange={(event) => updateRecommendationQuantity(alt, event.target.value)} className="h-8 w-10 border-x border-slate-200 text-center text-xs font-semibold text-slate-900 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-slate-800" aria-label={`Quantity to add for ${alt.name}`} />
+                                                        <button type="button" disabled={selectedQuantity >= maxAddable} onClick={() => updateRecommendationQuantity(alt, selectedQuantity + 1)} className="flex h-8 w-8 items-center justify-center text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-slate-800" aria-label={`Increase quantity for ${alt.name}`}>+</button>
                                                     </div>
-                                                    <div className="flex items-center gap-2">
-                                                        <span data-stock-state={alt.stock < 20 ? 'low' : 'in-stock'} className={`recommendation-stock-badge rounded-full px-2 py-1 text-[9px] font-semibold ${alt.stock < 20 ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>
-                                                            {alt.stock} in stock
-                                                        </span>
-                                                        <button
-                                                            type="button"
-                                                            onClick={(event) => {
-                                                                event.stopPropagation();
-                                                                selectRecommendedAlternative(alt);
-                                                            }}
-                                                            className="rounded-lg bg-slate-900 px-3 py-1.5 text-[10px] font-semibold text-white transition-colors hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-900 focus:ring-offset-2"
-                                                        >
-                                                            Add
-                                                        </button>
-                                                    </div>
+                                                    <button type="button" disabled={maxAddable < 1 || recommendationAddInProgressRef.current} onClick={(event) => { event.stopPropagation(); addRecommendedAlternativeToCart(alt, selectedQuantity); }} className="min-h-8 whitespace-nowrap rounded-lg border border-slate-900 bg-slate-900 px-3 py-1.5 text-[11px] font-semibold text-white transition-colors hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:border-slate-300 disabled:bg-slate-200 disabled:text-slate-500">
+                                                        Add to Cart
+                                                    </button>
                                                 </div>
                                             </div>
                                         );
                                     })}
-                            </div>
+                                        </div>
+                                    </section>
+                                ))}
                         </div>
                         ) : (
                             <div className="p-8 text-center bg-gray-50 rounded-xl border border-dashed border-gray-300">
                                 <svg className="w-12 h-12 text-gray-300 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                 </svg>
-                                <h3 className="text-sm font-semibold text-gray-900">No alternatives found</h3>
-                                <p className="text-gray-500 italic mt-0.5 text-xs">We couldn't find similar items in stock for this product.</p>
+                                <h3 className="text-sm font-semibold text-gray-900">Alternatives are no longer available.</h3>
+                                <p className="mt-0.5 text-xs text-gray-500">Recheck stock and recommendations, then try again.</p>
                             </div>
                         )}
                     </div>
 
                     <div className="recommendation-modal-footer flex justify-end gap-3 border-t border-slate-100 bg-white px-4 py-3">
                         <button 
-                            onClick={() => setRecommendationModal({ isOpen: false, item: null, alternatives: [] })}
+                            onClick={closeRecommendationModal}
                             className="recommendation-modal-cancel rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50"
                         >
                             Cancel
                         </button>
-                        {recommendationModal.type === 'low-stock' && (
-                            <button 
+                            {recommendationModal.type === 'low-stock' && (
+                            <button
+                                type="button"
                                 onClick={() => addToCart(recommendationModal.item, true)}
                                 className="recommendation-modal-continue rounded-lg bg-slate-900 px-5 py-2 text-xs font-semibold text-white transition-colors hover:bg-slate-700"
                             >
@@ -3017,7 +3659,7 @@ const PointOfSale = () => {
             </div>
         )}
         {/* Variant Picker Modal */}
-        {variantModal.isOpen && variantModal.group && !enlargedProductImage && !recommendationModal.isOpen && !recommendationChooserItem && (
+        {variantModal.isOpen && variantModal.group && !enlargedProductImage && !recommendationModal.isOpen && !productDetailsItem && (
             <div className="app-modal-backdrop fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-md transition-all">
                 <div className="flex w-full max-w-lg flex-col overflow-hidden rounded-2xl bg-slate-50 shadow-[0_16px_44px_-20px_rgba(15,23,42,0.28)] ring-1 ring-slate-900/10 max-h-[82vh] animate-in fade-in zoom-in-95 duration-300">
                     <div className="relative z-10 border-b border-slate-200 bg-white/95 px-4 py-3">
@@ -3029,7 +3671,7 @@ const PointOfSale = () => {
                                 {variantModal.step === 'variants' && variantModal.group.brandOptions?.length > 1 && (
                                     <button
                                         type="button"
-                                        onClick={() => setVariantModal(prev => ({ ...prev, step: 'brand', selectedBrand: null, selectedSize: null, selectedColor: null, selectedVariantCode: null, quantity: 1 }))}
+                                        onClick={() => setVariantModal(prev => ({ ...prev, step: 'brand', selectedBrand: null, selectedAttributes: {}, selectedVariantCode: null, selectedVariantId: null, quantity: 1 }))}
                                         className="mb-1 inline-flex items-center gap-1 text-[10px] font-semibold text-slate-500 transition-colors hover:text-slate-900"
                                     >
                                         <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7" /></svg>
@@ -3045,7 +3687,7 @@ const PointOfSale = () => {
                                         : [
                                             variantModal.group.brandOptions?.find((option) => option.key === variantModal.selectedBrand)?.label
                                                 || (variantModal.group.brand !== 'Multiple Brands' ? variantModal.group.brand : ''),
-                                            variantModalSelectedVariant?.code,
+                                            variantModalSelectedVariant?.code ? `Item Code: ${variantModalSelectedVariant.code}` : '',
                                         ].filter(Boolean).join(' · ') || 'Select product options'}
                                 </p>
                             </div>
@@ -3060,7 +3702,7 @@ const PointOfSale = () => {
                         </button>
                     </div>
 
-                    <div className="flex-1 overflow-y-auto w-full max-h-full no-scrollbar">
+                    <div className="flex-1 overflow-y-auto w-full max-h-full">
                         {variantModal.step === 'brand' ? (
                             <div className="p-6 grid grid-cols-2 sm:grid-cols-3 gap-3 pb-12">
                                  {variantModal.group.brandOptions.map((brandOption) => {
@@ -3077,15 +3719,21 @@ const PointOfSale = () => {
                                     return (
                                         <div 
                                             key={brandOption.key}
-                                            className={`group relative flex min-h-[120px] flex-col items-center justify-center rounded-xl border p-3 text-center transition-colors duration-200
+                                            role="button"
+                                            tabIndex={0}
+                                            aria-label={`${brandOption.label}${isBrandOutOfStock ? ', sold out' : ''}`}
+                                            className={`group relative flex min-h-[120px] flex-col items-center justify-center rounded-xl border p-3 text-center transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-700 focus-visible:ring-offset-1
                                                 ${isBrandOutOfStock 
-                                                    ? 'cursor-not-allowed border-rose-100 bg-rose-50/30 opacity-70 grayscale-[0.5]'
+                                                    ? 'cursor-pointer border-rose-200 bg-rose-50/30'
                                                     : 'cursor-pointer border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
                                                 }`}
                                             onClick={() => {
-                                                if (!isBrandOutOfStock) {
-                                                    setVariantModal(prev => ({ ...prev, step: 'variants', selectedBrand: brandOption.key, selectedSize: null, selectedColor: null, selectedVariantCode: null, quantity: 1 }));
-                                                }
+                                                setVariantModal(prev => ({ ...prev, step: 'variants', selectedBrand: brandOption.key, selectedAttributes: {}, selectedVariantCode: null, selectedVariantId: null, quantity: 1 }));
+                                            }}
+                                            onKeyDown={(event) => {
+                                                if (event.target !== event.currentTarget || !['Enter', ' '].includes(event.key)) return;
+                                                event.preventDefault();
+                                                setVariantModal(prev => ({ ...prev, step: 'variants', selectedBrand: brandOption.key, selectedAttributes: {}, selectedVariantCode: null, selectedVariantId: null, quantity: 1 }));
                                             }}
                                         >
                                             <ProductThumbnail item={brandImageItem} className="mb-2 h-12 w-12" onPreview={handleProductImagePreviewClick} fit="contain" />
@@ -3109,29 +3757,24 @@ const PointOfSale = () => {
                                     const filteredVariants = variantModal.group.variants.filter((variant) => (
                                         !variantModal.selectedBrand || getPosVariantValueKey(variant, 'brand') === variantModal.selectedBrand
                                     ));
-                                    const selectionModel = getPosVariantSelectionModel(filteredVariants, {
-                                        size: variantModal.selectedSize,
-                                        color: variantModal.selectedColor,
-                                    }, variantModal.selectedVariantCode, variantModal.group.variantDimensions?.filter((dimension) => dimension !== 'brand'));
-                                    const uniqueSizes = selectionModel.optionGroups.size || [];
-                                    const uniqueColors = selectionModel.optionGroups.color || [];
-                                    const needsSize = selectionModel.dimensions.includes('size');
-                                    const needsColor = selectionModel.dimensions.includes('color');
-                                    const resolvedSelectedSize = selectionModel.resolvedSelections.size ?? null;
-                                    const resolvedSelectedColor = selectionModel.resolvedSelections.color ?? null;
-                                    const isAllSelected = selectionModel.isComplete
-                                        && (!selectionModel.needsSkuSelection || Boolean(selectionModel.resolvedCode));
+                                    const selectionModel = getPosAttributeSelectionModel(
+                                        filteredVariants, variantModal.group.attributeDefinitions, variantModal.selectedAttributes,
+                                        variantModal.selectedVariantCode ? { code: variantModal.selectedVariantCode, id: variantModal.selectedVariantId } : null
+                                    );
                                     const matchedVariant = selectionModel.matchedVariant;
-                                    const canAddSelectedVariant = Boolean(matchedVariant && Number(matchedVariant.stock) > 0);
+                                    const remainingAddable = getPosRemainingAddableQuantity(matchedVariant, cart);
+                                    const reservedQuantity = matchedVariant
+                                        ? Math.max(0, Number(matchedVariant.stock || 0) - remainingAddable) : 0;
+                                    const canAddSelectedVariant = Boolean(matchedVariant && remainingAddable > 0);
+                                    const maxSelectableQty = Math.max(1, remainingAddable);
+                                    const selectedQuantity = Math.min(Math.max(1, Number(variantModal.quantity) || 1), maxSelectableQty);
                                     const selectedRecommendationAvailability = matchedVariant
-                                        ? getRecommendationAvailability(matchedVariant, inventory, settings)
+                                        ? getPosRecommendationAvailability(matchedVariant, inventory, settings, { categories: categoryDefinitions, cart, requestedQuantity: selectedQuantity })
                                         : null;
-                                    const canOpenAlternatives = Boolean(matchedVariant && selectedRecommendationAvailability?.hasAlternatives);
+                                    const canOpenAlternatives = Boolean(matchedVariant && selectedRecommendationAvailability?.hasAny);
                                     const selectedRecommendationAction = getPosRecommendationAction(selectedRecommendationAvailability);
                                     const selectedRecommendationLabel = 'Recommendations';
-                                    const isPrimaryDisabled = !isAllSelected || (!canAddSelectedVariant && !canOpenAlternatives);
-                                    const maxSelectableQty = Math.max(1, Number(matchedVariant?.stock) || 1);
-                                    const selectedQuantity = Math.min(Math.max(1, Number(variantModal.quantity) || 1), maxSelectableQty);
+                                    const isPrimaryDisabled = !matchedVariant || (!canAddSelectedVariant && !canOpenAlternatives);
                                     const selectedUnitPrice = Number(matchedVariant?.price || 0);
                                     const selectedSellingUnit = matchedVariant ? getSellingUnit(matchedVariant) : '';
                                     const selectedStockStatus = matchedVariant ? getStockStatus(matchedVariant, settings) : '';
@@ -3156,44 +3799,25 @@ const PointOfSale = () => {
                                             && rawValue !== null
                                             && String(rawValue).trim() !== ''
                                         ));
-                                    const selectorDimensions = variantModal.group.variantDimensions?.filter((dimension) => dimension !== 'brand');
-                                    const handleUnavailableVariantOption = (dimension, optionKey) => {
-                                        const nextSelections = updatePosVariantSelection(filteredVariants, {
-                                            size: resolvedSelectedSize,
-                                            color: resolvedSelectedColor,
-                                        }, dimension, optionKey, selectorDimensions);
-                                        const nextModel = getPosVariantSelectionModel(
-                                            filteredVariants,
-                                            nextSelections,
-                                            null,
-                                            selectorDimensions
+                                    const selectAttribute = (key, optionKey) => {
+                                        const next = getPosAttributeSelectionModel(
+                                            filteredVariants, variantModal.group.attributeDefinitions,
+                                            { ...selectionModel.selections, [key]: optionKey },
+                                            variantModal.selectedVariantCode ? { code: variantModal.selectedVariantCode, id: variantModal.selectedVariantId } : null
                                         );
-                                        const exactUnavailableVariant = nextModel.matchingVariants.length === 1
-                                            && Number(nextModel.matchingVariants[0]?.stock) <= 0
-                                            ? nextModel.matchingVariants[0]
-                                            : null;
-
-                                        if (exactUnavailableVariant) {
-                                            openRecommendationResults(exactUnavailableVariant, 'alternative', { type: 'out-of-stock' });
-                                            setVariantModal(createClosedVariantModalState());
-                                            return;
-                                        }
-
-                                        // More than one legacy SKU can share the same visible option.
-                                        // Keep narrowing through the existing selectors/SKU fallback
-                                        // without treating the unavailable option as purchasable.
-                                        setVariantModal((previous) => ({
-                                            ...previous,
-                                            selectedSize: nextSelections.size ?? null,
-                                            selectedColor: nextSelections.color ?? null,
-                                            selectedVariantCode: null,
+                                        const keepExplicitSku = next.matchedVariant?.code === variantModal.selectedVariantCode
+                                            && String(next.matchedVariant?.id) === String(variantModal.selectedVariantId);
+                                        setVariantModal((previous) => ({ ...previous,
+                                            selectedAttributes: next.selections,
+                                            selectedVariantCode: keepExplicitSku ? previous.selectedVariantCode : null,
+                                            selectedVariantId: keepExplicitSku ? previous.selectedVariantId : null,
                                             quantity: 1,
                                         }));
                                     };
 
                                     return (
                                         <div className="flex h-full min-h-0 flex-col overflow-hidden bg-slate-50/70">
-                                            <div className="flex-1 overflow-y-auto p-4 no-scrollbar">
+                                            <div className="flex-1 overflow-y-auto p-4">
                                                 <div className="mb-4 border-b border-slate-200 pb-3">
                                                     {matchedVariant ? (
                                                         <>
@@ -3215,6 +3839,7 @@ const PointOfSale = () => {
                                                                     }`}>
                                                                         {matchedVariant.stock}{selectedSellingUnit ? ` ${selectedSellingUnit}` : ''}
                                                                     </p>
+                                                                    {reservedQuantity > 0 && <p className="text-[10px] text-slate-500">Available to add: {remainingAddable}</p>}
                                                                 </div>
                                                             </div>
                                                             {selectedAttributes.length > 0 && (
@@ -3235,147 +3860,74 @@ const PointOfSale = () => {
                                                                     ? formatCurrency(Math.min(...filteredVariants.map(v => v.price)))
                                                                     : `${formatCurrency(Math.min(...filteredVariants.map(v => v.price)))} - ${formatCurrency(Math.max(...filteredVariants.map(v => v.price)))}`}
                                                             </h4>
-                                                            <p className={`text-[10px] font-semibold ${isAllSelected ? 'text-rose-600' : 'text-slate-500'}`}>
-                                                                {isAllSelected ? 'Combination not found' : 'Select options'}
-                                                            </p>
+                                                            <p className="text-[10px] font-semibold text-slate-500">Select options</p>
                                                         </div>
                                                     )}
+                                                    <button
+                                                        ref={productDetailsTriggerRef}
+                                                        type="button"
+                                                        disabled={!matchedVariant}
+                                                        aria-label={matchedVariant ? `View details for ${matchedVariant.name}, SKU ${matchedVariant.code}` : 'View product details after selecting all available options'}
+                                                        title={matchedVariant ? `View details for ${matchedVariant.code}` : 'Select all product options to view variant details'}
+                                                        onClick={() => {
+                                                            if (!matchedVariant) return;
+                                                            returnFocusToProductDetailsTriggerRef.current = true;
+                                                            setProductDetailsItem(matchedVariant);
+                                                        }}
+                                                        className="mt-3 inline-flex min-h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 transition-colors hover:border-slate-300 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-slate-200 disabled:hover:bg-white"
+                                                    >
+                                                        <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" strokeWidth="2" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 16v-4m0-4h.01" /></svg>
+                                                        View Details
+                                                    </button>
                                                 </div>
 
-                                                {needsSize && (
-                                                    <div className="mb-4">
-                                                        <div className="mb-2 flex items-center">
-                                                            <h5 className="text-[11px] font-semibold text-slate-800 uppercase tracking-widest">Select Size/Variant</h5>
-                                                        </div>
+                                                {selectionModel.groups.map((group) => (
+                                                    <div key={group.key} className="mb-4">
+                                                        <h5 className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-slate-800">{group.label}</h5>
                                                         <div className="flex flex-wrap gap-2">
-                                                            {uniqueSizes.map((sizeOption) => {
-                                                                const isSelected = resolvedSelectedSize === sizeOption.key;
-                                                                const hasMatchingCombination = sizeOption.exists;
-                                                                const hasStock = sizeOption.hasStock;
-
+                                                            {group.options.map((option) => {
+                                                                const isSelected = selectionModel.selections[group.key] === option.key;
                                                                 return (
-                                                                    <ViewportTooltip
-                                                                        key={sizeOption.key}
-                                                                        content={!hasMatchingCombination
-                                                                            ? 'Not available for selected color'
-                                                                            : (!hasStock ? 'Sold out — click to view alternatives' : null)}
-                                                                    >
-                                                                        <button
-                                                                            disabled={!hasMatchingCombination}
-                                                                            aria-disabled={!hasMatchingCombination || !hasStock}
-                                                                            aria-label={!hasStock && hasMatchingCombination ? `${sizeOption.label}. Out of stock. View recommendations.` : undefined}
-                                                                            onClick={() => {
-                                                                                if (!hasMatchingCombination) return;
-                                                                                if (!hasStock) {
-                                                                                    handleUnavailableVariantOption('size', sizeOption.key);
-                                                                                    return;
-                                                                                }
-                                                                                const nextSelections = updatePosVariantSelection(filteredVariants, {
-                                                                                    size: resolvedSelectedSize,
-                                                                                    color: resolvedSelectedColor,
-                                                                                }, 'size', isSelected ? null : sizeOption.key, variantModal.group.variantDimensions?.filter((dimension) => dimension !== 'brand'));
-                                                                                setVariantModal(prev => ({
-                                                                                    ...prev,
-                                                                                    selectedSize: nextSelections.size ?? null,
-                                                                                    selectedColor: nextSelections.color ?? null,
-                                                                                    selectedVariantCode: null,
-                                                                                    quantity: 1,
-                                                                                }));
-                                                                            }}
-                                                                            className={`min-h-9 min-w-[52px] rounded-lg border px-3 py-2 text-[13px] font-semibold transition-colors ${isSelected ? 'border-slate-900 bg-slate-900 text-white' : !hasMatchingCombination ? 'cursor-not-allowed border-slate-200 bg-slate-50 text-slate-300 opacity-70' : !hasStock ? 'cursor-pointer border-rose-200 bg-rose-50 text-rose-500 opacity-75 hover:border-rose-300 hover:bg-rose-100/70' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-50'}`}
-                                                                        >
-                                                                            {sizeOption.label}
-                                                                        </button>
-                                                                    </ViewportTooltip>
-                                                                )
-                                                            })}
-                                                        </div>
-                                                    </div>
-                                                )}
-
-                                                {needsColor && (
-                                                    <div className="mb-4">
-                                                        <div className="mb-2 flex items-center">
-                                                            <h5 className="text-[11px] font-semibold text-slate-800 uppercase tracking-widest">Select Color</h5>
-                                                        </div>
-                                                        <div className="flex flex-wrap gap-2">
-                                                            {uniqueColors.map((colorOption) => {
-                                                                const isSelected = resolvedSelectedColor === colorOption.key;
-                                                                const hasMatchingCombination = colorOption.exists;
-                                                                const hasStock = colorOption.hasStock;
-
-                                                                return (
-                                                                    <ViewportTooltip
-                                                                        key={colorOption.key}
-                                                                        content={!hasMatchingCombination
-                                                                            ? 'Not available for selected size'
-                                                                            : (!hasStock ? 'Sold out — click to view alternatives' : null)}
-                                                                    >
-                                                                        <button
-                                                                            disabled={!hasMatchingCombination}
-                                                                            aria-disabled={!hasMatchingCombination || !hasStock}
-                                                                            aria-label={!hasStock && hasMatchingCombination ? `${colorOption.label}. Out of stock. View recommendations.` : undefined}
-                                                                            onClick={() => {
-                                                                                if (!hasMatchingCombination) return;
-                                                                                if (!hasStock) {
-                                                                                    handleUnavailableVariantOption('color', colorOption.key);
-                                                                                    return;
-                                                                                }
-                                                                                const nextSelections = updatePosVariantSelection(filteredVariants, {
-                                                                                    size: resolvedSelectedSize,
-                                                                                    color: resolvedSelectedColor,
-                                                                                }, 'color', isSelected ? null : colorOption.key, variantModal.group.variantDimensions?.filter((dimension) => dimension !== 'brand'));
-                                                                                setVariantModal(prev => ({
-                                                                                    ...prev,
-                                                                                    selectedSize: nextSelections.size ?? null,
-                                                                                    selectedColor: nextSelections.color ?? null,
-                                                                                    selectedVariantCode: null,
-                                                                                    quantity: 1,
-                                                                                }));
-                                                                            }}
-                                                                            className={`flex min-h-9 items-center justify-center rounded-lg border px-4 py-2 text-[13px] font-semibold transition-colors ${isSelected ? 'border-slate-900 bg-slate-900 text-white' : !hasMatchingCombination ? 'cursor-not-allowed border-slate-200 bg-slate-50 text-slate-300 opacity-70' : !hasStock ? 'cursor-pointer border-rose-200 bg-rose-50 text-rose-500 opacity-75 hover:border-rose-300 hover:bg-rose-100/70' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-50'}`}
-                                                                        >
-                                                                            {colorOption.label}
-                                                                        </button>
-                                                                    </ViewportTooltip>
-                                                                )
-                                                            })}
-                                                        </div>
-                                                    </div>
-                                                )}
-
-                                                {selectionModel.needsSkuSelection && (
-                                                    <div className="mb-4">
-                                                        <div className="mb-2 flex items-center">
-                                                            <h5 className="text-[11px] font-semibold uppercase tracking-widest text-slate-800">Select SKU</h5>
-                                                        </div>
-                                                        <div className="flex flex-wrap gap-2">
-                                                            {selectionModel.matchingVariants.map((variant) => {
-                                                                const hasStock = Number(variant.stock) > 0;
-                                                                const isSelected = selectionModel.resolvedCode === variant.code;
-
-                                                                return (
-                                                                    <ViewportTooltip
-                                                                        key={variant.code}
-                                                                        content={!hasStock ? 'Sold out — click to view alternatives' : null}
-                                                                    >
+                                                                    <ViewportTooltip key={option.key} content={!option.exists ? 'Not available with the selected options' : !option.hasStock ? 'Sold out' : null}>
                                                                         <button
                                                                             type="button"
-                                                                            aria-disabled={!hasStock}
-                                                                            aria-label={!hasStock ? `${variant.code}. Out of stock. View recommendations.` : undefined}
-                                                                            onClick={() => {
-                                                                                if (!hasStock) {
-                                                                                    openRecommendationResults(variant, 'alternative', { type: 'out-of-stock' });
-                                                                                    setVariantModal(createClosedVariantModalState());
-                                                                                    return;
-                                                                                }
-                                                                                setVariantModal((previous) => ({
-                                                                                    ...previous,
-                                                                                    selectedVariantCode: variant.code,
-                                                                                    quantity: 1,
-                                                                                }));
-                                                                            }}
-                                                                            className={`min-h-9 rounded-lg border px-3 py-2 text-[12px] font-semibold transition-colors ${isSelected ? 'border-slate-900 bg-slate-900 text-white' : !hasStock ? 'cursor-pointer border-rose-200 bg-rose-50 text-rose-500 opacity-75 hover:border-rose-300 hover:bg-rose-100/70' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-50'}`}
+                                                                            disabled={!option.exists}
+                                                                            aria-pressed={isSelected}
+                                                                            aria-label={!option.hasStock && option.exists ? option.label + '. Sold out.' : undefined}
+                                                                            onClick={() => selectAttribute(group.key, isSelected ? null : option.key)}
+                                                                            className={['min-h-9 min-w-[52px] max-w-full rounded-lg border px-3 py-2 text-[12px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-700 focus-visible:ring-offset-1',
+                                                                                isSelected ? 'border-slate-900 bg-slate-900 text-white' : !option.exists ? 'cursor-not-allowed border-slate-200 bg-slate-50 text-slate-300' : !option.hasStock ? 'border-rose-200 bg-rose-50 text-rose-600 hover:border-rose-300' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-50',
+                                                                            ].join(' ')}
+                                                                        >
+                                                                            {option.label}
+                                                                        </button>
+                                                                    </ViewportTooltip>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    </div>
+                                                ))}
+
+                                                {selectionModel.codeOptions.length > 0 && (
+                                                    <div className="mb-4">
+                                                        <h5 className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-slate-800">Item Code</h5>
+                                                        <div className="flex flex-wrap gap-2">
+                                                            {selectionModel.codeOptions.map((variant) => {
+                                                                const isSelected = matchedVariant?.code === variant.code && matchedVariant?.id === variant.id;
+                                                                const hasStock = Number(variant.stock) > 0;
+                                                                return (
+                                                                    <ViewportTooltip key={variant.id || variant.code} content={!hasStock ? 'Sold out' : null}>
+                                                                        <button
+                                                                            type="button"
+                                                                            aria-pressed={isSelected}
+                                                                            aria-label={!hasStock ? variant.code + '. Sold out.' : undefined}
+                                                                            onClick={() => setVariantModal((previous) => ({
+                                                                                ...previous, selectedVariantCode: variant.code,
+                                                                                selectedVariantId: variant.id, quantity: 1,
+                                                                            }))}
+                                                                            className={['min-h-9 max-w-full rounded-lg border px-3 py-2 text-left text-[12px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-700 focus-visible:ring-offset-1',
+                                                                                isSelected ? 'border-slate-900 bg-slate-900 text-white' : !hasStock ? 'border-rose-200 bg-rose-50 text-rose-600 hover:border-rose-300' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-50',
+                                                                            ].join(' ')}
                                                                         >
                                                                             {variant.code}
                                                                         </button>
@@ -3438,11 +3990,27 @@ const PointOfSale = () => {
                                                     </div>
                                                 )}
                                                 <button
-                                                    disabled={isPrimaryDisabled}
+                                                    disabled={isPrimaryDisabled || isVariantAddProcessing}
+                                                    aria-busy={isVariantAddProcessing || undefined}
                                                     onClick={() => {
                                                         if (canAddSelectedVariant && matchedVariant) {
-                                                            addToCart(matchedVariant, true, { quantity: selectedQuantity });
-                                                            setVariantModal(createClosedVariantModalState());
+                                                            if (variantAddInProgressRef.current) return;
+                                                            variantAddInProgressRef.current = true;
+                                                            setIsVariantAddProcessing(true);
+                                                            const existingItem = cart.find((item) => item.code === matchedVariant.code);
+                                                            variantAddPendingRef.current = {
+                                                                code: matchedVariant.code,
+                                                                expectedQuantity: Number(existingItem?.qty || 0) + selectedQuantity,
+                                                            };
+                                                            const added = addToCart(matchedVariant, true, {
+                                                                quantity: selectedQuantity,
+                                                                fromVariantModal: true,
+                                                            });
+                                                            if (!added) {
+                                                                variantAddPendingRef.current = null;
+                                                                variantAddInProgressRef.current = false;
+                                                                setIsVariantAddProcessing(false);
+                                                            }
                                                             return;
                                                         }
 
@@ -3455,15 +4023,15 @@ const PointOfSale = () => {
                                                             setVariantModal(createClosedVariantModalState());
                                                         }
                                                     }}
-                                                    className={`flex h-10 w-full items-center justify-center gap-2 rounded-xl text-xs font-semibold uppercase tracking-widest transition-colors ${isPrimaryDisabled ? 'cursor-not-allowed bg-slate-100 text-slate-400' : 'bg-slate-900 text-white hover:bg-slate-800'}`}
+                                                    className={`flex h-10 w-full items-center justify-center gap-2 rounded-xl text-xs font-semibold uppercase tracking-widest transition-colors ${isPrimaryDisabled || isVariantAddProcessing ? 'cursor-not-allowed bg-slate-100 text-slate-400' : 'bg-slate-900 text-white hover:bg-slate-800'}`}
                                                 >
-                                                    {!isAllSelected ? "Select Options Required" : (canAddSelectedVariant ? "Add to Cart" : canOpenAlternatives ? "View Recommendations" : "Unavailable")}
+                                                    {!matchedVariant ? "Select Options Required" : (canAddSelectedVariant ? "Add to Cart" : canOpenAlternatives ? "View Recommendations" : "Unavailable")}
                                                 </button>
                                                 {canAddSelectedVariant && matchedVariant && selectedRecommendationAction && (
                                                     <button
                                                         type="button"
                                                         onClick={() => {
-                                                            openAvailableRecommendations(matchedVariant, selectedRecommendationAvailability);
+                                                            openAvailableRecommendations(matchedVariant, selectedRecommendationAvailability, { requestedQuantity: selectedQuantity });
                                                             setVariantModal(createClosedVariantModalState());
                                                         }}
                                                         className="mt-2 flex h-9 w-full items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 text-[10px] font-semibold text-slate-700 transition-colors hover:border-slate-300 hover:bg-slate-50"
@@ -3508,7 +4076,10 @@ const PointOfSale = () => {
                             <label htmlFor="quick-add-credit-customer-name" className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">Customer Name</label>
                             <input
                                 id="quick-add-credit-customer-name"
+                                name="customerName"
+                                data-validation-key="customerName"
                                 type="text"
+                                required
                                 value={quickAddCreditCustomerName}
                                 onChange={(event) => setQuickAddCreditCustomerName(event.target.value)}
                                 onBlur={(event) => setQuickAddCreditCustomerName(normalizeHumanReadable(event.target.value))}
@@ -3568,39 +4139,6 @@ const PointOfSale = () => {
             </div>
         )}
 
-        {/* Quotation Type Chooser */}
-        {showQuotationTypeChooser && (
-            <div className="app-modal-backdrop fixed inset-0 z-70 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="quotation-type-title">
-                <div className="w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
-                    <header className="flex items-center justify-between border-b border-slate-200 bg-white px-5 py-4 dark:border-slate-700 dark:bg-slate-800">
-                        <div>
-                            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Create Quotation</p>
-                            <h2 id="quotation-type-title" className="mt-0.5 text-base font-semibold text-slate-900 dark:text-white">Choose customer type</h2>
-                        </div>
-                        <button type="button" onClick={() => setShowQuotationTypeChooser(false)} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:hover:bg-slate-700 dark:hover:text-white" aria-label="Close quotation type chooser">
-                            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="m6 6 12 12M18 6 6 18" /></svg>
-                        </button>
-                    </header>
-                    <div className="space-y-2 p-4">
-                        <button type="button" onClick={openWalkInQuotation} className="flex w-full items-center justify-between rounded-xl border border-slate-200 bg-white px-4 py-3 text-left transition-colors hover:border-slate-400 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:hover:border-slate-500 dark:hover:bg-slate-700">
-                            <span>
-                                <span className="block text-sm font-semibold text-slate-900 dark:text-white">Walk-in Customer</span>
-                                <span className="mt-0.5 block text-[11px] text-slate-500 dark:text-slate-400">Quick quotation</span>
-                            </span>
-                            <svg className="h-4 w-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="m9 18 6-6-6-6" /></svg>
-                        </button>
-                        <button type="button" onClick={openRegularCustomerSelector} className="flex w-full items-center justify-between rounded-xl border border-slate-200 bg-white px-4 py-3 text-left transition-colors hover:border-slate-400 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:hover:border-slate-500 dark:hover:bg-slate-700">
-                            <span>
-                                <span className="block text-sm font-semibold text-slate-900 dark:text-white">Regular Customer</span>
-                                <span className="mt-0.5 block text-[11px] text-slate-500 dark:text-slate-400">Formal A4 quotation</span>
-                            </span>
-                            <svg className="h-4 w-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="m9 18 6-6-6-6" /></svg>
-                        </button>
-                    </div>
-                </div>
-            </div>
-        )}
-
         {/* Regular Customer Quotation Selector */}
         {showQuotationCustomerSelector && (
             <div className="app-modal-backdrop fixed inset-0 z-70 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="quotation-customer-title">
@@ -3640,8 +4178,7 @@ const PointOfSale = () => {
                         )}
                     </div>
                     <footer className="flex justify-between border-t border-slate-200 bg-white px-4 py-3 dark:border-slate-700 dark:bg-slate-800">
-                        <button type="button" onClick={() => { setShowQuotationCustomerSelector(false); setShowQuotationTypeChooser(true); }} className="h-9 rounded-lg border border-slate-300 bg-white px-4 text-xs font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700">Back</button>
-                        <button type="button" onClick={() => setShowQuotationCustomerSelector(false)} className="h-9 rounded-lg bg-slate-900 px-4 text-xs font-semibold text-white hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:bg-slate-100 dark:text-slate-900">Cancel</button>
+                        <button type="button" onClick={() => setShowQuotationCustomerSelector(false)} className="h-9 rounded-lg border border-slate-300 bg-white px-4 text-xs font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700">Back</button>
                     </footer>
                 </div>
             </div>
@@ -3727,7 +4264,7 @@ const PointOfSale = () => {
                                 onClick={returnToQuotationCustomerSelector}
                                 className="h-10 rounded-lg border border-slate-300 bg-white px-4 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
                             >
-                                Cancel
+                                Back to Customers
                             </button>
                             <button type="submit" disabled={!hasQuotationSignatoryName} className="h-10 rounded-lg bg-slate-900 px-4 text-xs font-semibold text-white transition-colors hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white">
                                 Preview Quotation
@@ -3755,12 +4292,12 @@ const PointOfSale = () => {
 
                             return (
                                 <div className={`${ORDER_CONFIRMATION_PREVIEW_SIZE.content} px-1 text-xs leading-relaxed text-gray-600 sm:text-[13px]`}>
-                                    <div className="mb-5 text-center">
-                                        <p className="mb-1 text-lg font-semibold leading-tight text-gray-900">{quotationReceipt.storeName}</p>
-                                        <div className="mt-1.5 space-y-0.5 text-[11px] leading-relaxed text-gray-400 sm:text-xs">
-                                            {quotationReceipt.storeAddress && <p>{quotationReceipt.storeAddress}</p>}
-                                            {quotationReceipt.contactPhone && <p>Contact: {quotationReceipt.contactPhone}</p>}
-                                        </div>
+                                            <div className="mb-5 text-center">
+                                                {buildQuotationThermalHeaderLines(quotationReceipt).map((line, index) => (
+                                                    <p key={`${line}-${index}`} className={index === 0
+                                                        ? 'mb-1 text-lg font-semibold leading-tight text-gray-900'
+                                                        : 'mt-1.5 text-[11px] leading-relaxed text-gray-400 sm:text-xs'}>{line}</p>
+                                                ))}
                                         <p className="mt-3 text-xs font-semibold tracking-wider text-gray-900">{quotationReceipt.title}</p>
                                     </div>
 
@@ -3775,7 +4312,7 @@ const PointOfSale = () => {
                                         {quotationReceipt.items.map((item, index) => (
                                             <div key={`${item.code || item.name}-${index}`} className="grid grid-cols-[minmax(0,1.95fr)_2rem_minmax(0,1fr)_minmax(0,1.1fr)] gap-x-2 py-2">
                                                 <div className="min-w-0">
-                                                    <p className="break-words font-semibold leading-tight text-gray-800">{item.name}</p>
+                                                    <p className="break-words font-semibold leading-tight text-gray-800">{getProductDisplayName(item, categoryDefinitions)}</p>
                                                 </div>
                                                 <span className="text-center text-gray-600">{item.quantity}</span>
                                                 <span className="text-right font-medium text-gray-600 whitespace-nowrap">{formatCurrency(item.unitPrice)}</span>
@@ -3799,13 +4336,15 @@ const PointOfSale = () => {
 
                     <div className="border-t border-gray-100 bg-gray-50 p-3 sm:p-4">
                         <p className="mb-2 text-center text-[9px] font-medium text-gray-400">Printing is optional.</p>
-                        <div className="grid grid-cols-2 gap-2">
-                        <button 
-                            onClick={() => setShowQuotationPreview(false)}
-                            className="flex items-center justify-center gap-2 rounded-xl bg-white px-4 py-2.5 text-xs font-semibold uppercase tracking-widest text-gray-600 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:bg-gray-100"
-                            style={{ border: '2px solid #e5e7eb' }}
+                        <div className="flex justify-end gap-2">
+                        <button
+                            type="button"
+                            onClick={handleDownloadQuotationPdf}
+                            disabled={quotationPdfStatus === 'downloading'}
+                            className={`flex items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-xs font-semibold uppercase tracking-widest text-white shadow-sm transition-all duration-300 ${quotationPdfStatus === 'downloading' ? 'cursor-wait opacity-80' : 'hover:-translate-y-0.5 hover:opacity-90'}`}
+                            style={{ backgroundColor: quotationPdfStatus === 'success' ? '#10B981' : '#374151', border: quotationPdfStatus === 'success' ? '2px solid #10B981' : '2px solid #374151' }}
                         >
-                            Close
+                            {quotationPdfStatus === 'downloading' ? 'Downloading' : quotationPdfStatus === 'success' ? 'Downloaded' : 'Download PDF'}
                         </button>
                         <div className="min-w-0">
                             <button
@@ -3845,27 +4384,91 @@ const PointOfSale = () => {
                 }}
             />
         )}
-        {isBulkRemoveConfirmationOpen && (
-            <div
-                className="app-modal-backdrop fixed inset-0 z-70 flex items-center justify-center bg-slate-900/35 p-4 backdrop-blur-sm"
-                onClick={() => setIsBulkRemoveConfirmationOpen(false)}
-            >
-                <div
-                    role="dialog"
-                    aria-modal="true"
-                    aria-labelledby="bulk-remove-order-items-title"
-                    className="w-full max-w-xs rounded-2xl border border-slate-200 bg-white p-4 shadow-2xl"
-                    onClick={(event) => event.stopPropagation()}
-                >
-                    <h3 id="bulk-remove-order-items-title" className="text-sm font-semibold text-slate-900">Remove {selectedCartItemCount} items?</h3>
-                    <p className="mt-1.5 text-xs leading-5 text-slate-500">This will remove the selected items from the current order.</p>
-                    <div className="mt-4 flex justify-end gap-2">
-                        <button type="button" onClick={() => setIsBulkRemoveConfirmationOpen(false)} className="rounded-lg px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400">Cancel</button>
-                        <button type="button" onClick={removeSelectedCartLines} className="rounded-lg px-3 py-1.5 text-xs font-medium text-rose-700 transition-colors hover:bg-rose-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-300">Remove</button>
-                    </div>
-                </div>
-            </div>
-        )}
+        {pendingCartRemoval && (() => {
+            const item = pendingCartRemoval.item;
+            const itemName = String(item?.name || 'this product').trim();
+            const brand = String(item?.brand || '').trim();
+            const productName = brand && !item?.displayNameIsFallback && !itemName.toLowerCase().startsWith(brand.toLowerCase())
+                ? `${brand} ${itemName}`
+                : itemName;
+            const variantDetails = getOrderListVariationDetails(item, categoryDefinitions);
+            const confirmation = (
+                <CartRemovalConfirmation
+                    title="Remove this item?"
+                    items={[{
+                        key: item?.code || 'cart-item',
+                        name: productName,
+                        sku: item?.code,
+                        variantDetails,
+                        quantity: item?.qty,
+                        unit: item?.sellingUnit || item?.unit,
+                    }]}
+                    cancelButtonRef={singleCartRemovalCancelButtonRef}
+                    onCancel={closeSingleCartRemoval}
+                    onConfirm={confirmSingleCartRemoval}
+                    onKeyDown={handleSingleCartRemovalDialogKeyDown}
+                    closeOnBackdrop
+                    layerClassName={isCartDrawerOpen && isMobilePosLayout ? 'z-[100]' : 'z-[70]'}
+                />
+            );
+
+            return isCartDrawerOpen && isMobilePosLayout && typeof document !== 'undefined'
+                ? createPortal(confirmation, document.body)
+                : confirmation;
+        })()}
+        {isBulkRemoveConfirmationOpen && (() => {
+            const items = selectedCartItems.map((item, index) => {
+                const itemName = String(item?.name || 'Unnamed product').trim();
+                const brand = String(item?.brand || '').trim();
+                return {
+                    key: `${item.code || 'cart-item'}-${index}`,
+                    name: brand && !item.displayNameIsFallback && !itemName.toLowerCase().startsWith(brand.toLowerCase()) ? `${brand} ${itemName}` : itemName,
+                    sku: item?.code,
+                    variantDetails: getOrderListVariationDetails(item, categoryDefinitions),
+                    quantity: item?.qty,
+                    unit: item?.sellingUnit || item?.unit,
+                };
+            });
+            const confirmation = (
+                <CartRemovalConfirmation
+                    title={`Remove ${selectedCartItemCount} ${selectedCartItemCount === 1 ? 'item' : 'items'}?`}
+                    items={items}
+                    cancelButtonRef={bulkRemoveCancelButtonRef}
+                    onCancel={() => setIsBulkRemoveConfirmationOpen(false)}
+                    onConfirm={removeSelectedCartLines}
+                    confirmDisabled={selectedCartItemCount === 0}
+                    layerClassName={isCartDrawerOpen && isMobilePosLayout ? 'z-[90]' : 'z-70'}
+                />
+            );
+
+            return isCartDrawerOpen && isMobilePosLayout && typeof document !== 'undefined'
+                ? createPortal(confirmation, document.body)
+                : confirmation;
+        })()}
+        <button
+            ref={floatingCartButtonRef}
+            type="button"
+            onClick={openCartDrawer}
+            aria-haspopup="dialog"
+            aria-expanded={isCartDrawerOpen}
+            aria-controls="pos-current-order-panel"
+            aria-label={`Open cart, ${cartItemCount} item${cartItemCount === 1 ? '' : 's'}`}
+            aria-hidden={!isFloatingCartVisible}
+            tabIndex={isFloatingCartVisible ? 0 : -1}
+            disabled={!isFloatingCartVisible}
+            style={{
+                bottom: 'calc(env(safe-area-inset-bottom, 0px) + 1rem)',
+                right: 'calc(env(safe-area-inset-right, 0px) + 1rem)',
+            }}
+            className={`fixed z-40 inline-flex h-12 w-12 items-center justify-center rounded-full bg-slate-900 text-white shadow-lg transition-[opacity,transform] duration-200 ease-out hover:bg-slate-800 active:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2 motion-reduce:transition-none md:hidden ${isFloatingCartVisible ? 'translate-y-0 opacity-100' : 'pointer-events-none translate-y-2 opacity-0'}`}
+        >
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M3 3h2l2.2 11.1a2 2 0 0 0 2 1.6h7.9a2 2 0 0 0 1.9-1.4L21 8H6m4 12h.01M17 20h.01" />
+            </svg>
+            <span aria-live="polite" className={`absolute -right-1 -top-1 inline-flex min-h-5 min-w-5 items-center justify-center rounded-full border-2 border-white px-1 text-[10px] font-bold text-white transition-colors duration-200 motion-reduce:transition-none ${cartCountFeedback ? 'bg-slate-600' : 'bg-slate-900'}`}>
+                {cartItemCount}
+            </span>
+        </button>
         </div>
     );
 };

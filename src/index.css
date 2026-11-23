@@ -1,10 +1,115 @@
 @import "tailwindcss";
 @custom-variant dark (&:where(.dark, .dark *));
 
+/*
+ * Action controls that already carry action, hover, or transition classes use
+ * Add Product's 150ms cubic-bezier transition. Tabs and selected controls are
+ * deliberately excluded from the shared motion/hover treatment.
+ */
+button:is(.table-action-button, .archive-toggle-button, [class*="-action"], [type="submit"], [class*="transition-"], [class*="hover:"]):not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]):not([class~="cursor-wait"]):not([class~="cursor-not-allowed"]):not([role="tab"]):not([aria-pressed="true"]):not([aria-selected="true"]) {
+  transition-property: color, background-color, border-color, box-shadow, opacity, transform, translate;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Keep solid-navy action labels and icons on the existing Add Product token. */
+button:is([class~="app-primary-action"], [class~="product-list-add-action"], [class~="product-list-manage-variants-action"], [class~="credit-record-payment-action"], [class~="history-labeled-action--primary"], [class~="bg-gray-900"], [class~="bg-slate-900"], [class~="bg-[#111827]"]):not([class~="expiry-correction-primary"]):not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]):not([class~="cursor-wait"]):not([class~="cursor-not-allowed"]):not([role="tab"]):not([aria-pressed="true"]):not([aria-selected="true"]):not([class~="dark:bg-slate-100"]):not([class~="dark:bg-gray-100"]):not([class~="dark:bg-white"]):not([class~="dark:bg-slate-50"]):not([class~="dark:bg-gray-50"]) {
+  color: var(--color-white);
+}
+
+button:is([class~="app-primary-action"], [class~="product-list-add-action"], [class~="product-list-manage-variants-action"], [class~="credit-record-payment-action"], [class~="history-labeled-action--primary"], [class~="bg-gray-900"], [class~="bg-slate-900"], [class~="bg-[#111827]"]):not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]):not([class~="cursor-wait"]):not([class~="cursor-not-allowed"]):not([role="tab"]):not([aria-pressed="true"]):not([aria-selected="true"]):not([class~="dark:bg-slate-100"]):not([class~="dark:bg-gray-100"]):not([class~="dark:bg-white"]):not([class~="dark:bg-slate-50"]):not([class~="dark:bg-gray-50"]) :where(svg, span) {
+  color: inherit;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  /* The Add Product foreground remains the reference for solid navy actions. */
+  button:is([class~="app-primary-action"], [class~="product-list-add-action"], [class~="product-list-manage-variants-action"], [class~="credit-record-payment-action"], [class~="history-labeled-action--primary"], [class~="bg-gray-900"], [class~="bg-slate-900"], [class~="bg-[#111827]"]):not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]):not([class~="cursor-wait"]):not([class~="cursor-not-allowed"]):not([role="tab"]):not([aria-pressed="true"]):not([aria-selected="true"]):not([aria-current="page"]):not([aria-expanded="true"]):not([class~="dark:bg-slate-100"]):not([class~="dark:bg-gray-100"]):not([class~="dark:bg-white"]):not([class~="dark:bg-slate-50"]):not([class~="dark:bg-gray-50"]):hover {
+    opacity: 0.9;
+    translate: 0 -0.125rem;
+  }
+
+  /* Keep the primary surface stable: Add Product's hover changes opacity and elevation only. */
+  html:not(.dark) button:is(.app-primary-action, .product-list-add-action, .product-list-manage-variants-action, .credit-record-payment-action, .history-labeled-action--primary, [class~="bg-gray-900"], [class~="bg-[#111827]"]):not([class~="expiry-correction-primary"]):not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]):not([class~="cursor-wait"]):not([class~="cursor-not-allowed"]):not([role="tab"]):not([aria-pressed="true"]):not([aria-selected="true"]):not([aria-current="page"]):not([aria-expanded="true"]):hover {
+    background-color: #111827 !important;
+    border-color: #111827 !important;
+  }
+
+  html:not(.dark) button:is([class~="bg-slate-900"]):not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]):not([class~="cursor-wait"]):not([class~="cursor-not-allowed"]):not([role="tab"]):not([aria-pressed="true"]):not([aria-selected="true"]):not([aria-current="page"]):not([aria-expanded="true"]):hover {
+    background-color: #0f172a !important;
+    border-color: #0f172a !important;
+  }
+
+  /* Neutral outlined actions gain a restrained slate edge/surface on hover. */
+  button:is(.table-action-button, .archive-toggle-button, [class*="-action"], [type="submit"], [class*="transition-"], [class*="hover:"])[class~="bg-white"][class*="border"]:not([class*="rose-"]):not([class*="red-"]):not([class*="amber-"]):not([class*="emerald-"]):not([class*="blue-"]):not([class*="sky-"]):not([class*="indigo-"]):not([class*="violet-"]):not([class*="purple-"]):not([class*="teal-"]):not([class*="orange-"]):not([class*="yellow-"]):not([class*="green-"]):not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]):not([class~="cursor-wait"]):not([class~="cursor-not-allowed"]):not([role="tab"]):not([aria-pressed="true"]):not([aria-selected="true"]):not([aria-expanded="true"]):hover {
+    border-color: #94a3b8;
+    background-color: #f8fafc;
+  }
+
+  /* CSS-authored outlined archive controls use the same restrained slate hover. */
+  button.archive-toggle-button:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]):not([class~="cursor-wait"]):not([class~="cursor-not-allowed"]):not([aria-expanded="true"]):hover {
+    border-color: #94a3b8;
+    background-color: #f8fafc;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button:is(.table-action-button, .archive-toggle-button, [class*="-action"], [type="submit"], [class*="transition-"], [class*="hover:"]):not(:disabled) {
+    transition-duration: 0.01ms !important;
+  }
+
+  button:is(.table-action-button, .archive-toggle-button, [class*="-action"], [type="submit"], [class*="transition-"], [class*="hover:"]):hover {
+    translate: none !important;
+  }
+}
+
+/* Scoped navy styling for the expiry correction submit action. */
+button.expiry-correction-primary:not(:disabled) {
+  background-color: #111827;
+  border-color: #111827;
+  color: #f1f5f9;
+}
+
+button.expiry-correction-primary:disabled {
+  background-color: #cbd5e1;
+  border-color: #cbd5e1;
+  color: #475569;
+  opacity: 1;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  button.expiry-correction-primary:not(:disabled):hover {
+    background-color: #1f2937;
+    border-color: #1f2937;
+    box-shadow: 0 2px 6px rgb(15 23 42 / 18%);
+    color: #f1f5f9;
+  }
+}
+
 :root {
   font-family: 'Inter', system-ui, Helvetica, Arial, sans-serif;
   line-height: 1.5;
   font-weight: 400;
+
+  --app-field-bg: #f5f7fa;
+  --app-field-hover-bg: #f8fafc;
+  --app-field-focus-bg: #ffffff;
+  --app-field-border: #d7dee8;
+  --app-field-border-hover: #aeb9c7;
+  --app-field-border-focus: #334155;
+  --app-field-text: #1f2937;
+  --app-field-placeholder: #778397;
+  --app-field-disabled-bg: #edf0f4;
+  --app-field-disabled-text: #667085;
+  --app-field-readonly-bg: #eef2f6;
+  --app-field-readonly-text: #526071;
+  --app-field-error-bg: #fffafa;
+  --app-field-error-border: #dc2626;
+  --app-field-error-ring: rgb(220 38 38 / 0.14);
+  --app-field-focus-ring: rgb(51 65 85 / 0.16);
+  --app-field-file-button-bg: #e9eef5;
+
+  --app-scrollbar-thumb: #cbd5e1;
+  --app-scrollbar-thumb-hover: #94a3b8;
 
   color-scheme: light;
   color: #213547;
@@ -104,16 +209,18 @@ body {
   padding: 0 !important;
   color: #475569 !important;
   box-shadow: none !important;
-  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease !important;
+  transition: all 150ms cubic-bezier(0.4, 0, 0.2, 1) !important;
 }
 
-.main-data-table button.group\/btn:hover:not(:disabled),
-.main-data-table button.group\/action:hover:not(:disabled),
-.main-data-table .table-action-button:hover:not(:disabled) {
-  border-color: #aeb8c5 !important;
-  background: #f8fafc !important;
-  color: #1e293b !important;
-  transform: none !important;
+@media (hover: hover) and (pointer: fine) {
+  .main-data-table button.group\/btn:hover:not(:disabled),
+  .main-data-table button.group\/action:hover:not(:disabled),
+  .main-data-table .table-action-button:hover:not(:disabled) {
+    border-color: #94a3b8 !important;
+    background: #f8fafc !important;
+    color: #1e293b !important;
+    transform: none !important;
+  }
 }
 
 .main-data-table button.group\/btn:active:not(:disabled),
@@ -153,13 +260,24 @@ body {
   padding: 0;
   color: #475569;
   box-shadow: none;
-  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+  transition: all 150ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.archive-toggle-button:hover {
-  border-color: #aeb8c5;
-  background: #f8fafc;
-  color: #1e293b;
+/* Keep the Partners archive control comfortably sized when its label is visible. */
+.archive-toggle-button.partners-archive-toggle {
+  min-width: 2.25rem;
+  height: 2.25rem;
+  gap: 0.5rem;
+  padding-inline: 0.625rem;
+  white-space: nowrap;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .archive-toggle-button:hover:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]) {
+    border-color: #94a3b8;
+    background: #f8fafc;
+    color: #1e293b;
+  }
 }
 
 .archive-toggle-button:active {
@@ -195,6 +313,117 @@ body {
   animation: table-action-tooltip-in 140ms ease-out;
 }
 
+.variant-selection-checkbox {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  place-content: center;
+  padding: 0;
+  border: 1px solid #cbd5e1;
+  border-radius: 3px;
+  background-color: #fff;
+  color: #f8fafc;
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.variant-selection-checkbox::before {
+  width: 7px;
+  height: 4px;
+  border-bottom: 1.5px solid currentColor;
+  border-left: 1.5px solid currentColor;
+  content: '';
+  transform: translateY(-1px) rotate(-45deg) scale(0);
+  transform-origin: center;
+}
+
+.variant-selection-checkbox:checked,
+.variant-selection-checkbox:indeterminate {
+  border-color: #111827;
+  background-color: #111827;
+}
+
+.variant-selection-checkbox:checked::before {
+  transform: translateY(-1px) rotate(-45deg) scale(1);
+}
+
+.variant-selection-checkbox:indeterminate::before {
+  width: 8px;
+  height: 0;
+  border: 0;
+  border-bottom: 1.5px solid currentColor;
+  transform: none;
+}
+
+.variant-selection-checkbox:not(:disabled):hover {
+  border-color: #64748b;
+  background-color: #f8fafc;
+}
+
+.variant-selection-checkbox:checked:not(:disabled):hover,
+.variant-selection-checkbox:indeterminate:not(:disabled):hover {
+  border-color: #0f172a;
+  background-color: #0f172a;
+}
+
+.variant-selection-checkbox:disabled {
+  border-color: #cbd5e1;
+  background-color: #f1f5f9;
+  cursor: not-allowed;
+  opacity: 0.8;
+}
+
+.variant-selection-checkbox:disabled:checked,
+.variant-selection-checkbox:disabled:indeterminate {
+  border-color: #94a3b8;
+  background-color: #94a3b8;
+}
+
+.variant-selection-checkbox:focus-visible {
+  outline: 2px solid #64748b;
+  outline-offset: 2px;
+}
+
+html.dark .variant-selection-checkbox:not(:checked):not(:indeterminate) {
+  border-color: #64748b;
+  background-color: #1e293b;
+}
+
+html.dark .variant-selection-checkbox:disabled:not(:checked):not(:indeterminate) {
+  border-color: #475569;
+  background-color: #334155;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .variant-selection-checkbox {
+    transition: none;
+  }
+}
+
+@media (max-width: 767px) {
+  [role="dialog"][aria-labelledby="order-list-title"] button[aria-label^="Remove "] {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    color: #b4233b;
+    white-space: nowrap;
+  }
+
+  [role="dialog"][aria-labelledby="order-list-title"] button[aria-label^="Remove "]::after {
+    content: "Remove";
+    font-size: 0.6875rem;
+    font-weight: 600;
+  }
+
+  [role="dialog"][aria-labelledby="order-list-title"] button[aria-label^="Remove "]:focus-visible {
+    outline: 2px solid #94a3b8;
+    outline-offset: 2px;
+  }
+}
+
 html.dark .table-action-tooltip {
   border-color: #475569;
   background: #30343a;
@@ -211,19 +440,21 @@ html.dark .table-action-tooltip {
   display: none !important;
 }
 
-.main-data-table button.group\/btn[aria-label^="Archive"]:hover:not(:disabled),
-.main-data-table button.group\/btn[aria-label^="Delete"]:hover:not(:disabled),
-.main-data-table .table-action-button--destructive:hover:not(:disabled) {
-  border-color: #f0b5bd !important;
-  background: #fff5f6 !important;
-  color: #b4233b !important;
-}
+@media (hover: hover) and (pointer: fine) {
+  .main-data-table button.group\/btn[aria-label^="Archive"]:hover:not(:disabled),
+  .main-data-table button.group\/btn[aria-label^="Delete"]:hover:not(:disabled),
+  .main-data-table .table-action-button--destructive:hover:not(:disabled) {
+    border-color: #f0b5bd !important;
+    background: #fff5f6 !important;
+    color: #b4233b !important;
+  }
 
-.main-data-table button.group\/btn[aria-label^="Restore"]:hover:not(:disabled),
-.main-data-table .table-action-button--positive:hover:not(:disabled) {
-  border-color: #a7d8bc !important;
-  background: #f0fdf5 !important;
-  color: #167244 !important;
+  .main-data-table button.group\/btn[aria-label^="Restore"]:hover:not(:disabled),
+  .main-data-table .table-action-button--positive:hover:not(:disabled) {
+    border-color: #a7d8bc !important;
+    background: #f0fdf5 !important;
+    color: #167244 !important;
+  }
 }
 
 html.dark .main-data-table button.group\/btn,
@@ -234,12 +465,14 @@ html.dark .main-data-table .table-action-button {
   color: #cbd5e1 !important;
 }
 
-html.dark .main-data-table button.group\/btn:hover:not(:disabled),
-html.dark .main-data-table button.group\/action:hover:not(:disabled),
-html.dark .main-data-table .table-action-button:hover:not(:disabled) {
-  border-color: #64748b !important;
-  background: #30343a !important;
-  color: #f1f5f9 !important;
+@media (hover: hover) and (pointer: fine) {
+  html.dark .main-data-table button.group\/btn:hover:not(:disabled),
+  html.dark .main-data-table button.group\/action:hover:not(:disabled),
+  html.dark .main-data-table .table-action-button:hover:not(:disabled) {
+    border-color: #64748b !important;
+    background: #30343a !important;
+    color: #f1f5f9 !important;
+  }
 }
 
 html.dark .main-data-table button.group\/btn:disabled,
@@ -250,17 +483,167 @@ html.dark .main-data-table .table-action-button:disabled {
   color: #64748b !important;
 }
 
+/* History actions retain table-button tokens while making their labels visible. */
+.main-data-table .table-action-button.history-labeled-action {
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  height: auto !important;
+  min-height: 2rem !important;
+  flex: 0 1 auto !important;
+  gap: 0.375rem !important;
+  padding: 0.375rem 0.5rem !important;
+  font-size: 0.6875rem !important;
+  line-height: 1.15 !important;
+  white-space: normal !important;
+}
+
+.main-data-table .history-action-label {
+  display: inline !important;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.main-data-table .history-action-group > .history-action-cell > span {
+  display: flex;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.main-data-table .table-action-button.history-labeled-action--primary {
+  border-color: #111827 !important;
+  background: #111827 !important;
+  color: var(--color-white) !important;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .main-data-table .table-action-button.history-labeled-action--primary:hover:not(:disabled) {
+    border-color: #111827 !important;
+    background: #111827 !important;
+    color: var(--color-white) !important;
+    opacity: 0.9;
+    translate: 0 -0.125rem;
+  }
+}
+
+.main-data-table .table-action-button.history-labeled-action--primary:disabled {
+  border-color: #cbd5e1 !important;
+  background: #e2e8f0 !important;
+  color: #64748b !important;
+}
+
+@media (min-width: 768px) {
+  /* Keep History table action labels on one line without changing mobile cards. */
+  .main-data-table .history-action-label {
+    white-space: nowrap;
+    overflow-wrap: normal;
+  }
+
+  .main-data-table .history-action-group {
+    width: max-content !important;
+  }
+
+  .main-data-table .history-action-group.history-sales-action-group {
+    grid-template-columns: repeat(2, max-content);
+    align-items: center;
+    column-gap: 0.375rem;
+  }
+
+  .main-data-table .history-action-group > .history-action-cell > span {
+    display: inline-flex;
+    width: max-content !important;
+    max-width: 100%;
+    min-width: 0;
+  }
+}
+
+/* Labeled Product Master actions and the primary Credit Payment icon action. */
+.main-data-table .table-action-button.product-list-manage-variants-action {
+  border-color: #111827 !important;
+  background: #111827 !important;
+  color: var(--color-white) !important;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .main-data-table .table-action-button.product-list-manage-variants-action:hover:not(:disabled) {
+    border-color: #111827 !important;
+    background: #111827 !important;
+    color: var(--color-white) !important;
+    opacity: 0.9;
+    translate: 0 -0.125rem;
+    transform: none !important;
+  }
+}
+
+.main-data-table .table-action-button.product-list-manage-variants-action:focus-visible {
+  box-shadow: 0 0 0 2px rgb(71 85 105 / 0.45) !important;
+}
+
+.main-data-table .table-action-button.credit-record-payment-action:not(:disabled) {
+  border-color: #111827 !important;
+  background: #111827 !important;
+  color: var(--color-white) !important;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .main-data-table .table-action-button.credit-record-payment-action:hover:not(:disabled) {
+    border-color: #111827 !important;
+    background: #111827 !important;
+    color: var(--color-white) !important;
+    opacity: 0.9;
+    translate: 0 -0.125rem;
+    transform: none !important;
+  }
+}
+
+.main-data-table .table-action-button.credit-record-payment-action:active:not(:disabled) {
+  background: #0f172a !important;
+}
+
+@media (min-width: 768px) {
+  /* Match History and Product Master table actions to the Special Orders reference. */
+  .main-data-table .table-action-button.reference-table-action {
+    width: max-content !important;
+    min-width: max-content !important;
+    max-width: 100% !important;
+    height: 1.875rem !important;
+    min-height: 1.875rem !important;
+    border-radius: 0.375rem !important;
+    flex: 0 0 auto !important;
+    gap: 0.25rem !important;
+    padding: 0 0.5rem !important;
+    font-family: inherit !important;
+    font-size: 0.625rem !important;
+    font-weight: 600 !important;
+    line-height: 1 !important;
+    white-space: nowrap !important;
+  }
+
+  .main-data-table .table-action-button.reference-table-action svg {
+    width: 0.875rem !important;
+    height: 0.875rem !important;
+    stroke-width: 1.75px !important;
+  }
+}
+
 html.dark .archive-toggle-button {
   border-color: #475569;
   background: #25282c;
   color: #cbd5e1;
 }
 
-html.dark .archive-toggle-button:hover,
 html.dark .archive-toggle-button--active {
   border-color: #64748b;
   background: #30343a;
   color: #f1f5f9;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  html.dark button.archive-toggle-button:hover:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]) {
+    border-color: #64748b !important;
+    background: #30343a !important;
+    color: #f1f5f9 !important;
+  }
 }
 
 /* Semantic row emphasis for records that still need action. */
@@ -297,6 +680,68 @@ html.dark .archive-toggle-button--active {
 .main-data-table > tbody > tr.attention-row-final:hover > td,
 .main-data-table > tbody > tr.attention-row-final:focus-within > td {
   background-color: #f8fafc;
+}
+
+/* Match the Dashboard KPI card lift for standalone content cards. */
+.app-dashboard-card-hover {
+  transition: all 300ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  .app-dashboard-card-hover:hover {
+    transform: translateY(-0.25rem);
+    box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1),
+      0 4px 6px -4px rgb(0 0 0 / 0.1);
+  }
+}
+
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: reduce) {
+  .app-dashboard-card-hover {
+    transition: none;
+  }
+
+  .app-dashboard-card-hover:hover {
+    box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1),
+      0 4px 6px -4px rgb(0 0 0 / 0.1);
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .main-data-table > tbody > tr.app-dashboard-table-row-hover > td {
+    transition: background-color 300ms cubic-bezier(0.4, 0, 0.2, 1),
+      box-shadow 300ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  html:not(.dark) .main-data-table > tbody > tr.app-dashboard-table-row-hover:not(.attention-row-active):not(.attention-row-critical):hover > td {
+    background-color: #f8fafc;
+  }
+
+  html.dark .main-data-table > tbody > tr.app-dashboard-table-row-hover:not(.attention-row-active):not(.attention-row-critical):hover > td {
+    background-color: rgb(148 163 184 / 0.08);
+  }
+
+  .main-data-table > tbody > tr.app-dashboard-table-row-hover:hover > td {
+    box-shadow: inset 0 1px 0 rgb(17 24 39 / 0.16),
+      inset 0 -1px 0 rgb(17 24 39 / 0.16);
+  }
+
+  .main-data-table > tbody > tr.app-dashboard-table-row-hover.attention-row-active:hover > td:first-child {
+    box-shadow: inset 3px 0 0 #c98a12,
+      inset 0 1px 0 rgb(17 24 39 / 0.16),
+      inset 0 -1px 0 rgb(17 24 39 / 0.16);
+  }
+
+  .main-data-table > tbody > tr.app-dashboard-table-row-hover.attention-row-critical:hover > td:first-child {
+    box-shadow: inset 3px 0 0 #d46a6a,
+      inset 0 1px 0 rgb(17 24 39 / 0.16),
+      inset 0 -1px 0 rgb(17 24 39 / 0.16);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .main-data-table > tbody > tr.app-dashboard-table-row-hover > td {
+    transition: none !important;
+  }
 }
 
 html.dark .main-data-table > tbody > tr.attention-row-final > td {
@@ -379,6 +824,83 @@ html.dark .main-data-table > tbody > tr.attention-row-critical > td {
   }
 }
 
+/* Recommendation surfaces need a visible edge without heavier shadows. */
+.recommendation-page :is(.recommendation-current-card, .recommendation-current-summary, .recommendation-section, .recommendation-option-card, .recommendation-review-card),
+.recommendation-page .recommendation-modal-body > div > :is(section, details, .rounded-xl) {
+  border-color: #cbd5e1;
+}
+
+.recommendation-alternative-section {
+  container-name: recommendation-alternatives;
+  container-type: inline-size;
+}
+
+.recommendation-all-alternatives {
+  container-name: recommendation-all-alternatives;
+  container-type: inline-size;
+}
+
+.recommendation-all-alternatives .recommendation-alternative-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  justify-content: start;
+  gap: 0.75rem;
+}
+
+.recommendation-alternative-section .recommendation-alternative-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  justify-content: start;
+  gap: 0.5rem;
+}
+
+.recommendation-alternative-section .recommendation-alternative-grid > :nth-child(n + 2) {
+  display: none;
+}
+
+.recommendation-view-all-desktop {
+  display: none;
+}
+
+@container recommendation-alternatives (min-width: 42rem) {
+  .recommendation-alternative-section .recommendation-alternative-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .recommendation-alternative-section .recommendation-alternative-grid > :nth-child(n + 2) {
+    display: flex;
+  }
+
+  .recommendation-view-all-mobile {
+    display: none;
+  }
+
+  .recommendation-view-all-desktop {
+    display: inline-flex;
+  }
+}
+
+@container recommendation-all-alternatives (min-width: 36rem) {
+  .recommendation-all-alternatives .recommendation-alternative-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@container recommendation-all-alternatives (min-width: 56rem) {
+  .recommendation-all-alternatives .recommendation-alternative-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+html.dark .recommendation-page .recommendation-filter-select,
+html.dark .recommendation-page .recommendation-filter-select:focus {
+  background-color: #111827 !important;
+  border-color: #111827 !important;
+  color: #fff !important;
+}
+
 img,
 svg {
   max-width: 100%;
@@ -448,36 +970,40 @@ html.dark {
     --dark-text: #f4f4f5;
     --dark-text-secondary: #a1a1aa;
     --dark-text-muted: #858995;
+    --app-field-bg: #232428;
+    --app-field-hover-bg: #292b30;
+    --app-field-focus-bg: #18181b;
+    --app-field-border: #3c3f45;
+    --app-field-border-hover: #52565f;
+    --app-field-border-focus: #94a3b8;
+    --app-field-text: #f4f4f5;
+    --app-field-placeholder: #a1a1aa;
+    --app-field-disabled-bg: #15161a;
+    --app-field-disabled-text: #858995;
+    --app-field-readonly-bg: #1c1d21;
+    --app-field-readonly-text: #a1a1aa;
+    --app-field-error-bg: #26191c;
+    --app-field-error-border: #f87171;
+    --app-field-error-ring: rgb(248 113 113 / 0.18);
+    --app-field-focus-ring: rgb(148 163 184 / 0.2);
+    --app-field-file-button-bg: #34363c;
+    --app-scrollbar-thumb: #94a3b8;
+    --app-scrollbar-thumb-hover: #64748b;
     background-color: var(--dark-page) !important;
     color: var(--dark-text) !important;
-    scrollbar-color: #4b5563 var(--dark-content);
 }
 
 html.dark body {
     background-color: var(--dark-page) !important;
 }
 
-/* Login keeps its light-mode presentation, with a dedicated charcoal hierarchy in Dark Mode. */
+/* Authentication retains the original navy canvas regardless of app theme. */
 html.dark .login-page {
-    background: linear-gradient(145deg, #09090b 0%, #0b0d10 52%, #111318 100%) !important;
+    background: linear-gradient(to bottom right, #111827 0%, #0f172a 50%, #0f1419 100%) !important;
 }
 
 html.dark .login-page-decor {
     opacity: 0.08;
-}
-
-html.dark .login-date-pill {
-    background-color: rgba(24, 24, 27, 0.88) !important;
-    border-color: var(--dark-border) !important;
-    box-shadow: none;
-}
-
-html.dark .login-date-pill .text-white {
-    color: var(--dark-text-secondary) !important;
-}
-
-html.dark .login-date-pill .text-gray-300 {
-    color: var(--dark-text-muted) !important;
 }
 
 html.dark .login-card {
@@ -524,14 +1050,15 @@ html.dark .login-input:-webkit-autofill:focus {
 }
 
 .login-input-label {
-    background-color: transparent !important;
-    text-shadow: -2px 0 #ffffff, 2px 0 #ffffff;
+    /* Keep the outline from showing through the floating-label text. */
+    background-color: #ffffff !important;
+    text-shadow: none;
 }
 
 html.dark .login-input-label {
-    background-color: transparent !important;
+    background-color: var(--dark-inset) !important;
     color: var(--dark-text-muted) !important;
-    text-shadow: -2px 0 var(--dark-surface), 2px 0 var(--dark-surface);
+    text-shadow: none;
 }
 
 html.dark .login-input:focus + .login-input-label,
@@ -1188,38 +1715,6 @@ html.dark .shadow-inner {
     box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.025) !important;
 }
 
-/* Form controls remain quiet, readable, and clearly bounded. */
-html.dark input,
-html.dark select,
-html.dark textarea {
-    background-color: var(--dark-inset) !important;
-    border-color: var(--dark-border) !important;
-    color: var(--dark-text) !important;
-}
-
-html.dark input::placeholder,
-html.dark textarea::placeholder {
-    color: var(--dark-text-muted) !important;
-}
-
-html.dark input:disabled,
-html.dark select:disabled,
-html.dark textarea:disabled,
-html.dark input[readonly] {
-    background-color: #15161a !important;
-    color: #7f838c !important;
-    border-color: #2a2c31 !important;
-}
-
-html.dark input:focus,
-html.dark select:focus,
-html.dark textarea:focus {
-    border-color: #52565f !important;
-    outline: none !important;
-    box-shadow: none !important;
-    background-color: var(--dark-surface) !important;
-}
-
 /* Shared tables preserve their light-mode structure with quiet dark row separation. */
 html.dark .main-data-table > tbody {
     background-color: var(--dark-surface);
@@ -1301,6 +1796,7 @@ html.dark .recommendation-section {
 html.dark .recommendation-option-card:hover {
     background-color: var(--dark-hover) !important;
     border-color: var(--dark-border-strong) !important;
+    box-shadow: 0 8px 18px rgb(2 6 23 / 0.34) !important;
 }
 
 /* Budget uses green only as an accent, never as a full-section fill. */
@@ -1374,18 +1870,6 @@ html.dark .recommendation-back-link:hover {
     color: var(--dark-text) !important;
 }
 
-html.dark .recommendation-results-scroll {
-    scrollbar-color: #4b5563 var(--dark-content);
-}
-
-html.dark .recommendation-results-scroll::-webkit-scrollbar-track {
-    background: var(--dark-content);
-}
-
-html.dark .recommendation-results-scroll::-webkit-scrollbar-thumb {
-    border-color: var(--dark-content);
-}
-
 html.dark .recommendation-tier-badge.recommendation-tier-value {
     background-color: #203129 !important;
     border-color: #365041 !important;
@@ -1443,6 +1927,17 @@ html.dark .recommendation-modal-continue:hover {
 }
 
 /* Current Order follows the same shell, card, and nested-control hierarchy as POS products. */
+.pos-current-order-mobile-drawer {
+    box-sizing: border-box;
+    height: 100vh;
+}
+
+@supports (height: 100dvh) {
+    .pos-current-order-mobile-drawer {
+        height: 100dvh;
+    }
+}
+
 html.dark .pos-current-order,
 html.dark .pos-current-order-header,
 html.dark .pos-checkout-panel {
@@ -1536,15 +2031,12 @@ html.dark .pos-cart-item-checkbox:focus-visible {
 }
 
 html.dark .pos-cart-empty-icon,
-html.dark .pos-cart-item,
-html.dark .pos-checkout-form,
-html.dark .pos-summary-collapse {
+html.dark .pos-cart-item {
     background-color: var(--dark-inset) !important;
     border-color: var(--dark-border) !important;
 }
 
-html.dark .pos-cart-item:hover,
-html.dark .pos-summary-collapse:hover {
+html.dark .pos-cart-item:hover {
     background-color: var(--dark-hover) !important;
     border-color: var(--dark-border-strong) !important;
 }
@@ -1568,18 +2060,6 @@ html.dark .pos-payment-option-active {
     background-color: #252529 !important;
     color: var(--dark-text) !important;
     box-shadow: inset 0 0 0 1px var(--dark-border-strong) !important;
-}
-
-html.dark .pos-checkout-form .bg-white,
-html.dark .pos-checkout-form .bg-gray-50,
-html.dark .pos-checkout-form .bg-slate-50 {
-    background-color: var(--dark-inset) !important;
-    border-color: var(--dark-border) !important;
-}
-
-html.dark .pos-totals {
-    background-color: var(--dark-inset) !important;
-    color: var(--dark-text) !important;
 }
 
 /* Semantic badges and controls retain clear meaning without bright light-mode fills. */
@@ -1720,23 +2200,35 @@ html.dark .recharts-tooltip-item {
     color: var(--dark-text-secondary) !important;
 }
 
-html.dark ::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
+/* Shared slim scrollbars for page and nested scroll regions. */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: var(--app-scrollbar-thumb) transparent;
 }
 
-html.dark ::-webkit-scrollbar-track {
-    background: var(--dark-content);
+*:hover {
+    scrollbar-color: var(--app-scrollbar-thumb-hover) transparent;
 }
 
-html.dark ::-webkit-scrollbar-thumb {
-    background: #4b5563;
-    border: 2px solid var(--dark-content);
+*::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+    background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+    background-color: var(--app-scrollbar-thumb);
+    border: 1px solid transparent;
     border-radius: 999px;
+    background-clip: padding-box;
 }
 
-html.dark ::-webkit-scrollbar-thumb:hover {
-    background: #64748b;
+*::-webkit-scrollbar-thumb:hover {
+    background-color: var(--app-scrollbar-thumb-hover);
 }
 
 /* Modern Toast Icon Animations */
@@ -1773,4 +2265,290 @@ html.dark ::-webkit-scrollbar-thumb:hover {
   animation: icon-slide-up 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
   animation-delay: 0.05s;
   opacity: 0;
+}
+
+/* Keep POS Order List content and item surfaces distinct without changing the modal chrome. */
+.pos-order-list-scroll-area {
+  background-color: #F1F5F9;
+}
+
+.pos-order-list-item-card {
+  transition: all 300ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .pos-order-list-item-card:not(:has(.pos-order-list-item-controls:hover, .pos-order-list-item-controls:focus-within)):hover {
+    border-color: #111827;
+    box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+    transform: translateY(-0.25rem);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pos-order-list-item-card {
+    transition: none;
+  }
+}
+
+/* Match the Order List card hover treatment on Current Order items. */
+.pos-current-order-item-card {
+  transition: all 300ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  .pos-current-order-item-card:not(:has(.pos-cart-item-controls:hover, .pos-cart-item-controls:focus-within, .pos-cart-item-remove:hover, .pos-cart-item-remove:focus-within)):hover {
+    position: relative;
+    z-index: 1;
+    border-color: #111827;
+    box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+    transform: translateY(-0.25rem);
+  }
+}
+
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: reduce) {
+  .pos-current-order-item-card:not(:has(.pos-cart-item-controls:hover, .pos-cart-item-controls:focus-within, .pos-cart-item-remove:hover, .pos-cart-item-remove:focus-within)):hover {
+    border-color: #111827;
+    box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pos-current-order-item-card {
+    transition: none;
+  }
+}
+
+/* Let the POS catalog measure card columns against its own available width. */
+.pos-product-list {
+  container-name: pos-product-catalog;
+  container-type: inline-size;
+}
+
+@media (min-width: 768px) {
+  .pos-product-grid-collapsed {
+    --pos-product-grid-card-width: max(9.5rem, calc((100cqw - 312px) / 3));
+    grid-template-columns: repeat(auto-fill, minmax(var(--pos-product-grid-card-width), 1fr));
+  }
+}
+
+@media (min-width: 1024px) {
+  .pos-product-grid-collapsed {
+    --pos-product-grid-card-width: max(9.5rem, calc((100cqw - 344px) / 4));
+  }
+}
+
+@media (min-width: 1536px) {
+  .pos-product-grid-collapsed {
+    --pos-product-grid-card-width: max(9.5rem, calc((100cqw - 354px) / 5));
+  }
+}
+
+@container pos-product-catalog (min-width: 78rem) {
+  .pos-product-grid-collapsed {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+}
+
+/* Shared editable field surfaces. Reaches utility-built controls while
+   leaving toggles and inline borderless controls to their own patterns. */
+:is(
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="hidden"]):not([type="image"]):not([type="color"]):not([class~="border-0"]):not([class~="bg-transparent"]),
+  input.login-input,
+  select:not(.recommendation-filter-select):not([class~="bg-gray-900"]):not([class~="bg-slate-900"]):not([class~="bg-[#111827]"]),
+  textarea:not([class~="border-0"]):not([class~="bg-transparent"])
+) {
+  background-color: var(--app-field-bg) !important;
+  border-color: var(--app-field-border) !important;
+  color: var(--app-field-text) !important;
+  transition-property: background-color, border-color, box-shadow, color;
+  transition-duration: 140ms;
+  transition-timing-function: ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  :is(
+    input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="hidden"]):not([type="image"]):not([type="color"]):not([class~="border-0"]):not([class~="bg-transparent"]),
+    input.login-input,
+    select:not(.recommendation-filter-select):not([class~="bg-gray-900"]):not([class~="bg-slate-900"]):not([class~="bg-[#111827]"]),
+    textarea:not([class~="border-0"]):not([class~="bg-transparent"])
+  ):hover:not(:disabled):not([readonly]):not([aria-readonly="true"]) {
+    background-color: var(--app-field-hover-bg) !important;
+    border-color: var(--app-field-border-hover) !important;
+  }
+}
+
+:is(
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="hidden"]):not([type="image"]):not([type="color"]):not([class~="border-0"]):not([class~="bg-transparent"]),
+  input.login-input,
+  select:not(.recommendation-filter-select):not([class~="bg-gray-900"]):not([class~="bg-slate-900"]):not([class~="bg-[#111827]"]),
+  textarea:not([class~="border-0"]):not([class~="bg-transparent"])
+):focus {
+  background-color: var(--app-field-focus-bg) !important;
+  border-color: var(--app-field-border-focus) !important;
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+:is(
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="hidden"]):not([type="image"]):not([type="color"]):not([class~="border-0"]):not([class~="bg-transparent"]),
+  input.login-input,
+  select:not(.recommendation-filter-select):not([class~="bg-gray-900"]):not([class~="bg-slate-900"]):not([class~="bg-[#111827]"]),
+  textarea:not([class~="border-0"]):not([class~="bg-transparent"])
+):focus-visible {
+  box-shadow: 0 0 0 3px var(--app-field-focus-ring) !important;
+}
+
+:is(input, textarea)[readonly],
+:is(input, textarea)[aria-readonly="true"] {
+  background-color: var(--app-field-readonly-bg) !important;
+  border-color: var(--app-field-border) !important;
+  color: var(--app-field-readonly-text) !important;
+  cursor: default;
+}
+
+:is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="hidden"]):not([type="image"]):not([type="color"]), select, textarea):disabled {
+  background-color: var(--app-field-disabled-bg) !important;
+  border-color: var(--app-field-border) !important;
+  color: var(--app-field-disabled-text) !important;
+  cursor: not-allowed !important;
+  opacity: 1 !important;
+}
+
+:is(input, textarea)::placeholder {
+  color: var(--app-field-placeholder) !important;
+  opacity: 1;
+}
+
+:is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="hidden"]):not([type="image"]):not([type="color"]), select, textarea):is([aria-invalid="true"], [data-invalid="true"], [class*="border-red-"], [class*="border-rose-"]):not(:disabled):not([readonly]) {
+  background-color: var(--app-field-error-bg) !important;
+  border-color: var(--app-field-error-border) !important;
+}
+
+:is(input, select, textarea):is([aria-invalid="true"], [data-invalid="true"], [class*="border-red-"], [class*="border-rose-"]):focus-visible {
+  box-shadow: 0 0 0 3px var(--app-field-error-ring) !important;
+}
+
+/* Compound fields use one shared shell for the border and focus treatment. */
+.app-input-group {
+  background-color: var(--app-field-bg) !important;
+  border-color: var(--app-field-border) !important;
+  transition: background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.app-input-group:focus-within {
+  background-color: var(--app-field-focus-bg) !important;
+  border-color: var(--app-field-border-focus) !important;
+  box-shadow: 0 0 0 3px var(--app-field-focus-ring) !important;
+}
+
+.app-input-group:has(> input:disabled) {
+  background-color: var(--app-field-disabled-bg) !important;
+}
+
+.app-input-group:has(> input[aria-invalid="true"]) {
+  background-color: var(--app-field-error-bg) !important;
+  border-color: var(--app-field-error-border) !important;
+}
+
+.app-input-group > input {
+  background-color: transparent !important;
+  border-color: transparent !important;
+  color: var(--app-field-text) !important;
+  box-shadow: none !important;
+}
+
+.app-input-group > input::placeholder {
+  color: var(--app-field-placeholder) !important;
+}
+
+.app-input-group > input:disabled {
+  color: var(--app-field-disabled-text) !important;
+  cursor: not-allowed !important;
+}
+
+.app-input-group > input[readonly] {
+  color: var(--app-field-readonly-text) !important;
+  cursor: default;
+}
+
+.login-input-label,
+html.dark .login-input-label {
+  background-color: var(--app-field-bg) !important;
+}
+
+html.dark div.app-input-group {
+  border-color: var(--app-field-border) !important;
+}
+
+html.dark div.app-input-group:focus-within {
+  border-color: var(--app-field-border-focus) !important;
+}
+
+html.dark div.app-input-group:has(> input[aria-invalid="true"]) {
+  border-color: var(--app-field-error-border) !important;
+}
+
+input[type="file"]::file-selector-button {
+  margin-right: 0.75rem;
+  border: 0;
+  border-radius: 0.375rem;
+  background-color: var(--app-field-file-button-bg);
+  padding: 0.375rem 0.75rem;
+  color: var(--app-field-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+input[type="file"]:focus-visible::file-selector-button {
+  outline: 2px solid var(--app-field-border-focus);
+  outline-offset: 2px;
+}
+
+/* Only show native validation styling after a user submits the form. */
+:where(form[data-validation-submitted="true"], [data-validation-scope][data-validation-submitted="true"])
+  :is(input, select, textarea, [role="combobox"]):is(:invalid, [aria-invalid="true"], [data-invalid="true"]) {
+  border-color: #e11d48 !important;
+  box-shadow: 0 0 0 1px rgb(225 29 72 / 16%);
+}
+
+html.dark :where(form[data-validation-submitted="true"], [data-validation-scope][data-validation-submitted="true"])
+  :is(input, select, textarea, [role="combobox"]):is(:invalid, [aria-invalid="true"], [data-invalid="true"]) {
+  border-color: #fb7185 !important;
+  box-shadow: 0 0 0 1px rgb(251 113 133 / 20%);
+}
+
+:where(form[data-validation-submitted="true"], [data-validation-scope][data-validation-submitted="true"])
+  label[data-validation-generated-invalid-label="true"] {
+  border-color: #e11d48 !important;
+  box-shadow: 0 0 0 1px rgb(225 29 72 / 16%);
+}
+
+html.dark :where(form[data-validation-submitted="true"], [data-validation-scope][data-validation-submitted="true"])
+  label[data-validation-generated-invalid-label="true"] {
+  border-color: #fb7185 !important;
+  box-shadow: 0 0 0 1px rgb(251 113 133 / 20%);
+}
+
+:where(form[data-validation-submitted="true"], [data-validation-scope][data-validation-submitted="true"])
+  button[data-validation-generated-invalid="true"] {
+  border-color: #e11d48 !important;
+  box-shadow: 0 0 0 1px rgb(225 29 72 / 16%);
+}
+
+html.dark :where(form[data-validation-submitted="true"], [data-validation-scope][data-validation-submitted="true"])
+  button[data-validation-generated-invalid="true"] {
+  border-color: #fb7185 !important;
+  box-shadow: 0 0 0 1px rgb(251 113 133 / 20%);
+}
+
+.form-validation-error-message {
+  display: block;
+  margin-top: 0.25rem;
+  color: #be123c;
+  font-size: 0.75rem;
+  line-height: 1.25rem;
+}
+
+html.dark .form-validation-error-message {
+  color: #fda4af;
 }

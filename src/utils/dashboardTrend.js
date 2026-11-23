@@ -1,4 +1,4 @@
-import { getValidSales, isValidCreditCollectionForReporting } from '../../shared/saleLifecycle.mjs';
+import { getValidSales, isCreditPaymentCollectionForReporting, isImmediateSaleCollectionForReporting, isSalePhysicallyFulfilledForItemReporting } from '../../shared/saleLifecycle.mjs';
 
 const startOfDay = (value) => new Date(value.getFullYear(), value.getMonth(), value.getDate());
 
@@ -20,6 +20,7 @@ export const getDashboardComparisonPeriod = ({
   customStartDate = '',
   customEndDate = '',
   specificDate = '',
+  reportingPeriod = null,
 }) => {
   const today = startOfDay(now);
   let currentStart;
@@ -35,9 +36,12 @@ export const getDashboardComparisonPeriod = ({
       label = 'yesterday';
       break;
     case 'week':
-      // Match the Dashboard's existing rolling "This Week" start date.
-      currentStart = addDays(today, -7);
-      currentEnd = addDays(today, 1);
+      // Dashboard can provide its shared Asia/Manila reporting window so the
+      // comparison uses exactly the same seven end-exclusive calendar days.
+      // Reports keeps its own existing date-range behavior when omitted.
+      currentStart = reportingPeriod?.start ? new Date(reportingPeriod.start) : addDays(today, -7);
+      currentEnd = reportingPeriod?.end ? new Date(reportingPeriod.end) : addDays(today, 1);
+      if (Number.isNaN(currentStart.getTime()) || Number.isNaN(currentEnd.getTime()) || currentEnd <= currentStart) return null;
       label = 'last week';
       break;
     case 'month':
@@ -98,7 +102,7 @@ export const getPreviousPeriodMetrics = (transactions, period) => (
   }, { sales: 0, orders: 0 })
 );
 
-export const getPreviousSalesReportMetrics = (transactions, creditTransactions, period) => {
+export const getPreviousSalesReportMetrics = (transactions, creditTransactions, period, specialOrderCollections = []) => {
   const summary = getValidSales(transactions).reduce((result, transaction) => {
     const transactionDate = new Date(transaction?.date);
     if (Number.isNaN(transactionDate.getTime()) || transactionDate < period.previousStart || transactionDate >= period.previousEnd) {
@@ -106,18 +110,18 @@ export const getPreviousSalesReportMetrics = (transactions, creditTransactions, 
     }
 
     const total = Number(transaction?.total || 0);
-    const itemCount = (transaction?.items || []).reduce((count, item) => {
+    const itemCount = isSalePhysicallyFulfilledForItemReporting(transaction) ? (transaction?.items || []).reduce((count, item) => {
       const quantity = Number(item?.qty || 0);
       return count + (Number.isFinite(quantity) ? quantity : 0);
-    }, 0);
+    }, 0) : 0;
     return {
-      collectedRevenue: result.collectedRevenue + (String(transaction?.paymentMethod || '').toLowerCase() === 'credit' || !Number.isFinite(total) ? 0 : total),
+      collectedRevenue: result.collectedRevenue + (isImmediateSaleCollectionForReporting(transaction) && Number.isFinite(total) ? total : 0),
       orders: result.orders + 1,
       items: result.items + itemCount,
     };
   }, { collectedRevenue: 0, orders: 0, items: 0 });
 
-  const creditCollections = (Array.isArray(creditTransactions) ? creditTransactions : []).filter(isValidCreditCollectionForReporting).reduce((total, creditTransaction) => (
+  const creditCollections = (Array.isArray(creditTransactions) ? creditTransactions : []).filter(isCreditPaymentCollectionForReporting).reduce((total, creditTransaction) => (
     total + (creditTransaction?.paymentHistory || []).reduce((paymentTotal, payment) => {
       const paymentDate = new Date(payment?.paymentDate);
       const amount = Number(payment?.amount || 0);
@@ -130,9 +134,20 @@ export const getPreviousSalesReportMetrics = (transactions, creditTransactions, 
     }, 0)
   ), 0);
 
+  const specialCollectionCentavos = (Array.isArray(specialOrderCollections) ? specialOrderCollections : []).reduce((total, payment) => {
+    const paymentDate = new Date(payment?.recordedAt);
+    const amount = Number(payment?.amountCentavos);
+    return Number.isNaN(paymentDate.getTime())
+      || paymentDate < period.previousStart
+      || paymentDate >= period.previousEnd
+      || !Number.isSafeInteger(amount)
+      ? total
+      : total + amount;
+  }, 0);
+
   return {
     ...summary,
-    collectedRevenue: summary.collectedRevenue + creditCollections,
+    collectedRevenue: summary.collectedRevenue + creditCollections + specialCollectionCentavos / 100,
   };
 };
 

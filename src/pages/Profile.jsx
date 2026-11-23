@@ -7,6 +7,7 @@ import { completeFirstLoginSecuritySetupApi, meApi, updateMyProfileApi, verifyCu
 import { getPasswordChecks, isValidPassword } from '../utils/passwordPolicy';
 import { normalizeHumanReadable } from '../utils/textNormalization';
 import ProfileSkeleton from '../components/ProfileSkeleton';
+import { setFormValidationErrors } from '../utils/formValidationNavigation';
 
 const normalizePhoneDigits = (value) => (value || '').replace(/\D/g, '').slice(0, 11);
 const PROFILE_CACHE_KEY = 'profile.cache.v1';
@@ -103,8 +104,6 @@ const Profile = () => {
     const {
         appSettings: settings,
         updateSettings,
-        userPreferences,
-        updateUserPreferences,
         userRole,
         ROLES,
         roleNames,
@@ -127,12 +126,6 @@ const Profile = () => {
             renameUserReferences(settings.adminDisplayName, newSettings.adminDisplayName);
         }
         updateSettings(newSettings);
-    };
-
-    const handleAutoPrintToggle = () => {
-        const nextAutoPrint = !autoPrint;
-        void updateUserPreferences({ autoPrintReceipts: nextAutoPrint })
-            .catch((error) => showToast('Update Failed', error?.message || 'Unable to save Auto Print preference.', 'error'));
     };
 
     const cachedProfileSnapshot = React.useMemo(() => readCachedProfileSnapshot(), []);
@@ -331,7 +324,6 @@ const Profile = () => {
     const passwordChecks = getPasswordChecks(profileData.adminPassword);
     const allPasswordChecksMet = Object.values(passwordChecks).every(Boolean);
 
-    const autoPrint = Boolean(userPreferences.autoPrintReceipts);
     const isDragging = useRef(false);
     const lastMousePos = useRef({ x: 0, y: 0 });
 
@@ -500,26 +492,31 @@ const Profile = () => {
         if (isFirstLoginSetupSaving) return;
 
         if (!firstLoginPassword) {
+            setFormValidationErrors(event.currentTarget, { newPassword: 'Enter a new password.' });
             setFirstLoginSetupError('A new password is required.');
             return;
         }
 
         if (firstLoginPassword !== firstLoginPasswordConfirmation) {
+            setFormValidationErrors(event.currentTarget, { confirmPassword: 'Password entries do not match.' });
             setFirstLoginSetupError('Password entries do not match.');
             return;
         }
 
         if (!isValidPassword(firstLoginPassword)) {
+            setFormValidationErrors(event.currentTarget, { newPassword: 'Use a password that meets the listed security requirements.' });
             setFirstLoginSetupError('Password must be at least 8 characters and include uppercase, lowercase, number, and special character.');
             return;
         }
 
         if (!/^\d{6}$/.test(firstLoginPin)) {
+            setFormValidationErrors(event.currentTarget, { newPin: 'Enter a six-digit security PIN.' });
             setFirstLoginSetupError('Security PIN must be exactly 6 digits.');
             return;
         }
 
         if (firstLoginPin !== firstLoginPinConfirmation) {
+            setFormValidationErrors(event.currentTarget, { confirmPin: 'Security PIN entries do not match.' });
             setFirstLoginSetupError('Security PIN entries do not match.');
             return;
         }
@@ -550,6 +547,20 @@ const Profile = () => {
         }
     };
 
+    const reportProfileFieldError = (field, message) => {
+        const securityFields = new Set(['currentPassword', 'newPassword', 'confirmPassword', 'oldPin', 'newPin', 'confirmPin']);
+        const section = securityFields.has(field) ? 'security' : 'personal';
+        const scope = document.querySelector('[data-validation-scope="profile-settings"]');
+        setActiveSection(section);
+        if (scope && section === activeSection) {
+            setFormValidationErrors(scope, { [field]: message });
+        } else {
+            window.requestAnimationFrame(() => {
+                if (scope?.isConnected) setFormValidationErrors(scope, { [field]: message });
+            });
+        }
+    };
+
     const handleSave = async () => {
         if (profileSaveInFlightRef.current) return;
 
@@ -563,47 +574,56 @@ const Profile = () => {
         const normalizedContactNumber = normalizePhoneDigits(profileData.contactNumber);
 
         if (!isCashierProfile && !(profileData.fullName || '').trim()) {
+            reportProfileFieldError('fullName', 'Enter your full name.');
             showToast('Error', 'Full name is required.', 'error');
             return;
         }
 
         if (!isCashierProfile && !nextDisplayName) {
+            reportProfileFieldError(userRole === ROLES.SUPER_ADMIN ? 'adminDisplayName' : 'fullName', 'Enter your display name.');
             showToast('Error', 'Display name is required.', 'error');
             return;
         }
 
         if (!isCashierProfile && !normalizedEmail) {
+            reportProfileFieldError('email', 'Enter your email address.');
             showToast('Error', 'Email is required.', 'error');
             return;
         }
 
         if (!isCashierProfile && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+            reportProfileFieldError('email', 'Enter a valid email address.');
             showToast('Error', 'Enter a valid email address.', 'error');
             return;
         }
 
         if (!isCashierProfile && normalizedContactNumber && normalizedContactNumber.length !== 11) {
+            reportProfileFieldError('contactNumber', 'Contact number must be exactly 11 digits.');
             showToast('Error', 'Contact number must be exactly 11 digits.', 'error');
             return;
         }
 
         if (profileData.adminPassword) {
             if (!currentPassword) {
+                reportProfileFieldError('currentPassword', 'Enter your current password.');
                 showToast('Error', 'Current password is required.', 'error');
                 return;
             }
 
             if (passwordVerifyState !== 'valid') {
+                reportProfileFieldError('currentPassword', 'Enter your current password to verify this change.');
                 showToast('Error', 'Current password is incorrect.', 'error');
                 return;
             }
 
             if (profileData.adminPassword !== confirmPassword) {
+                reportProfileFieldError('confirmPassword', 'Password entries do not match.');
                 showToast('Error', 'Passwords do not match.', 'error');
                 return;
             }
 
             if (!isValidPassword(profileData.adminPassword)) {
+                reportProfileFieldError('newPassword', 'Use a password that meets the listed security requirements.');
                 showToast('Weak Password', 'Password must be at least 8 characters and include uppercase, lowercase, number, and special character.', 'error');
                 return;
             }
@@ -611,21 +631,25 @@ const Profile = () => {
 
         if (newPin) {
             if (!oldPin || oldPin.length !== 6) {
+                reportProfileFieldError('oldPin', 'Enter your current six-digit PIN.');
                 showToast('Error', 'Current PIN is required.', 'error');
                 return;
             }
 
             if (pinVerifyState !== 'valid') {
+                reportProfileFieldError('oldPin', 'Enter your current PIN to verify this change.');
                 showToast('Error', 'Current PIN is incorrect.', 'error');
                 return;
             }
 
             if (newPin.length !== 6) {
+                reportProfileFieldError('newPin', 'Enter a six-digit PIN.');
                 showToast('Error', 'PIN must be exactly 6 digits.', 'error');
                 return;
             }
 
             if (newPin !== confirmPin) {
+                reportProfileFieldError('confirmPin', 'PIN entries do not match.');
                 showToast('Error', 'New PIN entries do not match.', 'error');
                 return;
             }
@@ -875,10 +899,10 @@ const Profile = () => {
 
     return (
         <div className="w-full min-h-screen bg-slate-200/50">
-            <div className="w-full min-h-screen max-w-[1180px] mx-auto flex flex-col relative text-[12px] md:text-[13px]">
+            <div data-validation-scope="profile-settings" className="w-full min-h-screen max-w-[1180px] mx-auto flex flex-col relative text-[12px] md:text-[13px]">
             {mustChangeCredentials && (
                 <div className="app-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-                    <form onSubmit={handleFirstLoginSecuritySetup} className="w-full max-w-sm overflow-hidden rounded-2xl bg-white shadow-2xl animate-in fade-in zoom-in-95 duration-200 dark:bg-gray-800">
+                    <form onSubmit={handleFirstLoginSecuritySetup} onClick={(e) => e.stopPropagation()} className="w-full max-w-sm overflow-hidden rounded-2xl bg-white shadow-2xl animate-in fade-in zoom-in-95 duration-200 dark:bg-gray-800">
                         <div className="border-b border-gray-100 px-5 py-4 text-center dark:border-gray-700">
                             <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-100">
                                 <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a4 4 0 018 0v4" /></svg>
@@ -891,6 +915,8 @@ const Profile = () => {
                                 <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-300">New Password</label>
                                 <input
                                     type="password"
+                                    name="newPassword"
+                                    data-validation-key="newPassword"
                                     autoComplete="new-password"
                                     value={firstLoginPassword}
                                     onChange={(event) => setFirstLoginPassword(event.target.value)}
@@ -902,6 +928,8 @@ const Profile = () => {
                                 <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-300">Confirm New Password</label>
                                 <input
                                     type="password"
+                                    name="confirmPassword"
+                                    data-validation-key="confirmPassword"
                                     autoComplete="new-password"
                                     value={firstLoginPasswordConfirmation}
                                     onChange={(event) => setFirstLoginPasswordConfirmation(event.target.value)}
@@ -914,6 +942,8 @@ const Profile = () => {
                                     <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-300">New Security PIN</label>
                                     <input
                                         type="password"
+                                        name="newPin"
+                                        data-validation-key="newPin"
                                         inputMode="numeric"
                                         autoComplete="new-password"
                                         value={firstLoginPin}
@@ -927,6 +957,8 @@ const Profile = () => {
                                     <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-300">Confirm Security PIN</label>
                                     <input
                                         type="password"
+                                        name="confirmPin"
+                                        data-validation-key="confirmPin"
                                         inputMode="numeric"
                                         autoComplete="new-password"
                                         value={firstLoginPinConfirmation}
@@ -1047,7 +1079,7 @@ const Profile = () => {
                             <button
                                 type="button"
                                 onClick={() => fileInputRef.current.click()}
-                                className="absolute -bottom-1 -right-1 h-9 w-9 rounded-full bg-gray-900 text-white shadow-lg ring-2 ring-white transition-transform duration-200 hover:scale-105"
+                                className="absolute -bottom-1 -right-1 h-9 w-9 rounded-full bg-gray-900 text-white shadow-lg ring-2 ring-white transition-all hover:opacity-90 hover:-translate-y-0.5"
                                 aria-label="Change profile photo"
                             >
                                 <svg className="mx-auto h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
@@ -1125,7 +1157,7 @@ const Profile = () => {
                         </div>
 
                         {activeSection === 'personal' && (
-                            <div className="overflow-y-auto no-scrollbar pr-1 pb-2 max-h-[calc(100vh-340px)] md:max-h-[calc(100vh-300px)]">
+                            <div className="overflow-y-auto pr-1 pb-2 max-h-[calc(100vh-340px)] md:max-h-[calc(100vh-300px)]">
                                 <div className="border-b border-gray-100 pb-4 mb-4">
                                     <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wider flex items-center gap-2">
                                         <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5.121 17.804A13.937 13.937 0 0112 15c2.761 0 5.303.896 7.379 2.404M15 10a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
@@ -1157,12 +1189,15 @@ const Profile = () => {
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                     <div>
                                         <label className="block text-xs font-semibold text-gray-900 uppercase tracking-wide mb-2">Full Name</label>
-                                        <div className="flex items-center bg-gray-50 border border-gray-200 rounded-xl focus-within:border-slate-800 transition-colors">
+                                        <div className="app-input-group flex items-center bg-gray-50 border border-gray-200 rounded-xl focus-within:border-slate-800 transition-colors">
                                             <div className="pl-3 pr-2 flex items-center pointer-events-none">
                                                 <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
                                             </div>
                                             <input
                                                 type="text"
+                                                name="fullName"
+                                                data-validation-key="fullName"
+                                                data-validation-aliases="name"
                                                 value={profileData.fullName || ''}
                                                 onChange={(e) => setProfileData({ ...profileData, fullName: e.target.value })}
                                                 onBlur={(e) => setProfileData((prev) => ({ ...prev, fullName: normalizeHumanReadable(e.target.value) }))}
@@ -1174,12 +1209,15 @@ const Profile = () => {
 
                                     <div>
                                         <label className="block text-xs font-semibold text-gray-900 uppercase tracking-wide mb-2">Display Name</label>
-                                        <div className="flex items-center bg-gray-50 border border-gray-200 rounded-xl focus-within:border-slate-800 transition-colors">
+                                        <div className="app-input-group flex items-center bg-gray-50 border border-gray-200 rounded-xl focus-within:border-slate-800 transition-colors">
                                             <div className="pl-3 pr-2 flex items-center pointer-events-none">
                                                 <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 11c1.657 0 3-1.343 3-3S13.657 5 12 5s-3 1.343-3 3 1.343 3 3 3zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"></path></svg>
                                             </div>
                                             <input
                                                 type="text"
+                                                name="adminDisplayName"
+                                                data-validation-key="adminDisplayName"
+                                                data-validation-aliases="displayName"
                                                 value={profileData.adminDisplayName || ''}
                                                 onChange={(e) => setProfileData({ ...profileData, adminDisplayName: e.target.value })}
                                                 onBlur={(e) => setProfileData((prev) => ({ ...prev, adminDisplayName: normalizeHumanReadable(e.target.value) }))}
@@ -1196,12 +1234,14 @@ const Profile = () => {
 
                                     <div>
                                         <label className="block text-xs font-semibold text-gray-900 uppercase tracking-wide mb-2">Email Address</label>
-                                        <div className="flex items-center bg-gray-50 border border-gray-200 rounded-xl focus-within:border-slate-800 transition-colors">
+                                        <div className="app-input-group flex items-center bg-gray-50 border border-gray-200 rounded-xl focus-within:border-slate-800 transition-colors">
                                             <div className="pl-3 pr-2 flex items-center pointer-events-none">
                                                 <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
                                             </div>
                                             <input
                                                 type="text"
+                                                name="email"
+                                                data-validation-key="email"
                                                 value={profileData.email}
                                                 onChange={(e) => setProfileData({ ...profileData, email: e.target.value })}
                                                 className="w-full pr-4 py-2.5 bg-transparent rounded-xl text-sm text-gray-900 focus:ring-0 focus:outline-none border-0"
@@ -1212,12 +1252,14 @@ const Profile = () => {
 
                                     <div>
                                         <label className="block text-xs font-semibold text-gray-900 uppercase tracking-wide mb-2">Contact Number</label>
-                                        <div className="flex items-center bg-gray-50 border border-gray-200 rounded-xl focus-within:border-slate-800 transition-colors">
+                                        <div className="app-input-group flex items-center bg-gray-50 border border-gray-200 rounded-xl focus-within:border-slate-800 transition-colors">
                                             <div className="pl-3 pr-2 flex items-center pointer-events-none">
                                                 <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 5a2 2 0 012-2h2.28a2 2 0 011.894 1.368l.69 2.071a2 2 0 01-.457 2.043l-1.35 1.35a16 16 0 006.586 6.586l1.35-1.35a2 2 0 012.043-.457l2.071.69A2 2 0 0121 18.72V21a2 2 0 01-2 2h-1C9.716 23 1 14.284 1 4V3a2 2 0 012-2z"></path></svg>
                                             </div>
                                             <input
                                                 type="tel"
+                                                name="contactNumber"
+                                                data-validation-key="contactNumber"
                                                 inputMode="numeric"
                                                 pattern="[0-9]{11}"
                                                 value={profileData.contactNumber || ''}
@@ -1258,30 +1300,11 @@ const Profile = () => {
                                     </>
                                 )}
 
-                                <section className="mt-5 border-t border-gray-100 pt-4">
-                                    <h4 className="text-xs font-semibold text-gray-900 uppercase tracking-wide">Preferences</h4>
-                                    <div className="mt-3 flex items-center justify-between gap-4 rounded-xl border border-gray-200 bg-gray-50/70 px-4 py-3.5">
-                                        <div className="min-w-0">
-                                            <h5 className="text-sm font-semibold text-gray-900">Automatic Printing</h5>
-                                            <p className="mt-0.5 text-xs text-gray-500">Automatically print the Order Confirmation after a successful transaction.</p>
-                                        </div>
-                                        <button
-                                            type="button"
-                                            onClick={handleAutoPrintToggle}
-                                            aria-pressed={autoPrint}
-                                            aria-label={`${autoPrint ? 'Disable' : 'Enable'} automatic printing`}
-                                            className={`relative h-6 w-11 shrink-0 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 focus-visible:ring-offset-2 ${!autoPrint ? 'bg-gray-200' : ''}`}
-                                            style={{ backgroundColor: autoPrint ? '#111827' : '' }}
-                                        >
-                                            <span className={`absolute left-1 top-1 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${autoPrint ? 'translate-x-5' : ''}`} />
-                                        </button>
-                                    </div>
-                                </section>
                             </div>
                         )}
 
                         {activeSection === 'security' && (
-                            <div className="overflow-y-auto no-scrollbar pr-1 pb-2 max-h-[calc(100vh-340px)] md:max-h-[calc(100vh-300px)]">
+                            <div className="overflow-y-auto pr-1 pb-2 max-h-[calc(100vh-340px)] md:max-h-[calc(100vh-300px)]">
                                 <div className="space-y-6">
                                     <div className="border-b border-gray-100 pb-4">
                                         <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wider flex items-center gap-2">
@@ -1323,6 +1346,7 @@ const Profile = () => {
                                                 </div>
                                                 <input
                                                     name="currentPassword"
+                                                    data-validation-key="currentPassword"
                                                     autoComplete="new-password"
                                                     type={showCurrentPassword ? 'text' : 'password'}
                                                     value={currentPassword}
@@ -1366,6 +1390,7 @@ const Profile = () => {
                                                 </div>
                                                 <input
                                                     name="newPassword"
+                                                    data-validation-key="newPassword"
                                                     autoComplete="new-password"
                                                     type={showPassword ? 'text' : 'password'}
                                                     value={profileData.adminPassword}
@@ -1430,6 +1455,7 @@ const Profile = () => {
                                                 </div>
                                                 <input
                                                     name="confirmPassword"
+                                                    data-validation-key="confirmPassword"
                                                     autoComplete="new-password"
                                                     type="password"
                                                     value={confirmPassword}
@@ -1467,6 +1493,8 @@ const Profile = () => {
                                 </div>
                                 <input
                                     type={showOldPin ? 'text' : 'password'}
+                                    name="oldPin"
+                                    data-validation-key="oldPin"
                                     value={oldPin}
                                     onChange={e => {
                                         setOldPin(e.target.value.replace(/[^0-9]/g, ''));
@@ -1509,6 +1537,8 @@ const Profile = () => {
                                 </div>
                                 <input
                                     type={showNewPin ? 'text' : 'password'}
+                                    name="newPin"
+                                    data-validation-key="newPin"
                                     value={newPin}
                                     onChange={e => setNewPin(e.target.value.replace(/[^0-9]/g, ''))}
                                     disabled={!canEnterNewPin}
@@ -1538,6 +1568,8 @@ const Profile = () => {
                                 </div>
                                 <input
                                     type="password"
+                                    name="confirmPin"
+                                    data-validation-key="confirmPin"
                                     value={confirmPin}
                                     onChange={e => setConfirmPin(e.target.value.replace(/[^0-9]/g, ''))}
                                     disabled={!canEnterNewPin}
@@ -1573,6 +1605,7 @@ const Profile = () => {
                                         <button
                                             type="button"
                                             onClick={handleSave}
+                                            data-validation-submit
                                             disabled={!isModified || isProfileSaving}
                                             className={`px-5 py-2 rounded-xl text-xs font-semibold uppercase tracking-wider transition-all ${
                                                 isModified && !isProfileSaving

@@ -58,7 +58,7 @@ const ReportsDateSelector = ({
       )}
 
       {value === 'custom' && (
-        <div className="ml-2 flex items-center gap-2">
+        <div className="ml-2 flex flex-wrap items-center gap-2">
           <input
             type="date"
             value={customStartDate}

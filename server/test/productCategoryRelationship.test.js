@@ -14,7 +14,7 @@ require.cache[realtimeServicePath] = {
   id: realtimeServicePath,
   filename: realtimeServicePath,
   loaded: true,
-  exports: { publishInventoryUpdated: () => {} },
+  exports: { publishInventoryUpdated: () => {}, publishCategoriesUpdated: () => {} },
 };
 
 const Product = require('../src/models/Product');
@@ -37,7 +37,7 @@ const makeResponse = () => ({
 });
 
 const makeRequest = (body = {}, id = '') => ({
-  body,
+  body: { purchaseCost: 0, ...body },
   params: id ? { id } : {},
   user: { _id: 'admin-1', name: 'Admin' },
   ip: '127.0.0.1',

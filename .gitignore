@@ -42,7 +42,8 @@ tools/.copilot-*.log
 # Generated database backups may contain credentials and business data
 /server/backups/
 
-# Authenticated Proof of Payment image uploads
+# Local upload directories may contain private customer or payment evidence
+**/uploads/
 /server/uploads/payment-proofs/
 server/uploads/sale-void-proofs/
 server/uploads/transaction-supporting-documents/

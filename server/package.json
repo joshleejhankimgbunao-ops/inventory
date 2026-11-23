@@ -18,6 +18,7 @@
     "migrate:primary-superadmin": "node scripts/designatePrimarySuperAdmin.js",
     "sync:categories:from-products": "node scripts/syncCategoriesFromProducts.js",
     "smoke": "node scripts/smokeTest.js",
+    "mail:test": "node scripts/sendTestEmail.js",
     "test:auth-flow": "node scripts/integrationAuthFlowTest.js",
     "test:auto-print": "node --test test/autoPrintPreference.test.js",
     "test:inventory-reason": "node --test test/inventoryAdjustmentReason.test.js",

@@ -4,7 +4,7 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { sendResetEmail, sendAccountCredentialsEmail } = require('../services/emailService');
 const { writeActivityLog } = require('../services/logService');
-const { revokeRealtimeSession } = require('../services/realtimeService');
+const { revokeRealtimeSession, revokeRealtimeUser, publishUsersUpdated } = require('../services/realtimeService');
 const { getJwtSecret } = require('../config/security');
 const { normalizeHumanReadable } = require('../../../shared/textNormalization.cjs');
 
@@ -18,8 +18,16 @@ const passwordRequirementsMessage = (fieldName = 'password') => (
   `${fieldName} must be at least ${PASSWORD_MIN_LENGTH} characters and include uppercase, lowercase, number, and special character.`
 );
 
-const signToken = (userId) => {
-  return jwt.sign({ id: userId }, getJwtSecret(), {
+const signToken = (user) => {
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const revokedAtMs = new Date(user?.authRevokedAt || 0).getTime();
+  const afterRevocationSeconds = Number.isFinite(revokedAtMs) && revokedAtMs > 0
+    ? Math.floor(revokedAtMs / 1000) + 1
+    : nowSeconds;
+  return jwt.sign({
+    id: user?._id || user,
+    iat: Math.max(nowSeconds, afterRevocationSeconds),
+  }, getJwtSecret(), {
     expiresIn: process.env.JWT_EXPIRES_IN || '1d',
     algorithm: 'HS256',
   });
@@ -332,6 +340,7 @@ const updateMyProfile = async (req, res, next) => {
   user.avatarUrl = nextAvatarUrl;
 
     await user.save({ validateBeforeSave: false });
+    if (hasNewPassword || hasNewPin) revokeRealtimeUser(user._id);
 
     return res.json({
       message: 'Profile updated.',
@@ -455,6 +464,9 @@ const updateUserByUsername = async (req, res, next) => {
       return res.status(403).json({ message: 'Additional Super Admin accounts can only be modified by the Primary Super Admin.' });
     }
 
+    const previousRole = user.role;
+    const previousIsActive = user.isActive !== false;
+
     const nextUsername = req.body?.username ? normalizeValue(req.body.username) : user.username;
     const nextEmail = req.body?.email ? normalizeValue(req.body.email) : user.email;
 
@@ -528,6 +540,11 @@ const updateUserByUsername = async (req, res, next) => {
       user.isActive = req.body.isActive;
     }
 
+    const accessChanged = previousRole !== user.role || previousIsActive !== (user.isActive !== false);
+    if (accessChanged) {
+      user.authRevokedAt = new Date(Math.max(Date.now(), new Date(user.authRevokedAt || 0).getTime() + 1));
+    }
+
     if (req.body?.password) {
       if (!isValidPassword(req.body.password)) {
         return res.status(400).json({
@@ -548,6 +565,9 @@ const updateUserByUsername = async (req, res, next) => {
     }
 
     await user.save({ validateBeforeSave: false });
+
+    if (accessChanged) revokeRealtimeUser(user._id);
+    publishUsersUpdated({ reason: accessChanged ? 'user.access-updated' : 'user.updated' });
 
     return res.json({
       message: 'User updated.',
@@ -589,6 +609,8 @@ const deleteUserByUsername = async (req, res, next) => {
     }
 
     await User.deleteOne({ _id: user._id });
+    revokeRealtimeUser(user._id);
+    publishUsersUpdated({ reason: 'user.deleted' });
 
     await writeActivityLog({
       user: req.user,
@@ -756,6 +778,7 @@ const register = async (req, res, next) => {
       mustChangeCredentials: true,
       preferences: normalizedPreferencesResult.value,
     });
+    publishUsersUpdated({ reason: 'user.created' });
 
     let emailDelivery = {
       attempted: false,
@@ -784,7 +807,7 @@ const register = async (req, res, next) => {
       }
     }
 
-    const token = signToken(user._id);
+    const token = signToken(user);
     return res.status(201).json({
       token,
       user: sanitizeUser(user),
@@ -840,7 +863,7 @@ const login = async (req, res, next) => {
       userAgent: req.get('user-agent') || '',
     });
 
-    const token = signToken(user._id);
+    const token = signToken(user);
     return res.json({
       token,
       user: sanitizeUser(user),
@@ -949,6 +972,7 @@ const resetPassword = async (req, res, next) => {
     user.authRevokedAt = now;
     user.mustChangeCredentials = Boolean(user.mustChangeCredentials);
     await user.save();
+    revokeRealtimeUser(user._id);
 
     return res.json({ message: 'Password reset successful.' });
   } catch (error) {
@@ -987,6 +1011,7 @@ const resetPin = async (req, res, next) => {
     user.authRevokedAt = now;
     user.mustChangeCredentials = Boolean(user.mustChangeCredentials);
     await user.save({ validateBeforeSave: false });
+    revokeRealtimeUser(user._id);
 
     return res.json({ message: 'PIN reset successful.' });
   } catch (error) {

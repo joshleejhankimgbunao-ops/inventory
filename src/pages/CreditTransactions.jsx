@@ -1,29 +1,39 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { showToast } from '../utils/toastHelper';
 import { showPageLoadError } from '../utils/pageLoadError';
+import ContextualEmptyState from '../components/ContextualEmptyState';
 import { useAuth } from '../context/AuthContext';
 import {
     getCreditTransactionByIdApi,
     getCreditTransactionsSummaryApi,
     listCreditTransactionsApi,
+    recordCreditPaymentApi,
     markCreditTransactionPaidApi,
     getCreditTransactionProofApi,
+    getCreditPaymentProofApi,
+    getCreditCancellationProofApi,
     extendCreditTransactionTermApi,
     cancelCreditTransactionApi,
 } from '../services/inventoryApi';
 import { subscribeRealtimeEvent } from '../services/realtimeClient';
+import { getTransactionProductDisplayName } from '../utils/productDisplayName';
+import { useInventory } from '../context/InventoryContext';
 import Pagination from '../components/Pagination';
 import IdentifierChip from '../components/IdentifierChip';
-import ReceiptPreviewModal from '../components/ReceiptPreviewModal';
+import OrderConfirmationModal from '../components/OrderConfirmationModal';
 import TableActionButton from '../components/TableActionButton';
+import RecordActionIcon from '../components/RecordActionIcon';
+import EvidenceUploadField from '../components/EvidenceUploadField';
+import CustomerOverdueHistoryModal from '../components/CustomerOverdueHistoryModal';
 import { formatCurrency, formatNumber } from '../utils/numberFormat';
 import { getCreditDueStatus } from '../utils/creditDueStatus';
 import { getActorDisplayName } from '../utils/actorDisplay';
 import { getAttentionRowClass } from '../utils/tableStatusStyle';
 import { normalizeHumanReadable } from '../utils/textNormalization';
 import { createClientRequestId } from '../utils/clientRequestId';
-import { buildCreditReceiptTransaction, isFullyPaidCreditTransaction } from '../utils/creditReceipt';
-import { printReceipt } from '../services/receiptPrinter';
+import { buildCreditConfirmation } from '../utils/creditConfirmation';
+import { setFormValidationErrors } from '../utils/formValidationNavigation';
 import {
     isWholeNumberInput,
     preventInvalidWholeNumberKeyDown,
@@ -77,8 +87,21 @@ const getCreditPaymentMode = (record) => {
     const explicitMode = String(record?.creditPaymentMode || '').trim();
     if (explicitMode) return explicitMode;
 
-    const modeMatch = String(record?.orderId?.notes || '').trim().match(/preferred mode of payment:\s*(.+)$/i);
+    const modeMatch = String(record?.orderId?.notes || '').trim().match(/(?:preferred mode of payment|down payment method):\s*(.+)$/i);
     return modeMatch ? String(modeMatch[1] || '').trim() : record?.orderId?.paymentMethod || '-';
+};
+
+const getDownPayment = (record) => {
+    const event = (record?.paymentHistory || []).find((payment) => payment?.type === 'down_payment');
+    const amount = Number(event?.amount ?? record?.downPaymentAmount ?? 0);
+    return Number.isFinite(amount) && amount > 0 ? { amount, method: String(event?.method || record?.creditPaymentMode || '').trim() } : null;
+};
+
+const getPaymentEventLabel = (record, payment, index) => {
+    if (payment?.type === 'down_payment') return 'Down Payment';
+    const payments = Array.isArray(record?.paymentHistory) ? record.paymentHistory : [];
+    if (String(record?.status || '').toLowerCase() === 'paid' && index === payments.length - 1) return 'Final Payment';
+    return 'Partial Payment';
 };
 
 const getCreditProcessorDisplayName = (record) => getActorDisplayName(
@@ -94,11 +117,12 @@ const startOfDay = (value) => {
 };
 
 const CREDIT_PAYMENT_MODES = ['cash', 'gcash', 'cheque', 'bank transfer', 'other'];
-const MAX_PROOF_OF_PAYMENT_SIZE = 5 * 1024 * 1024;
-const ACCEPTED_PROOF_MIME_TYPES = new Set(['image/jpeg', 'image/png']);
+const MONEY_INPUT_PATTERN = /^\d+(?:\.\d{1,2})?$/;
 
 const CreditTransactions = () => {
-    const { appSettings, userRole, currentUserName, ROLES } = useAuth();
+    const [searchParams] = useSearchParams();
+    const { processedInventory = [], categories: productCategories = [] } = useInventory();
+    const { appSettings } = useAuth();
     const [rows, setRows] = useState([]);
     const [summary, setSummary] = useState({
         totalCreditReceivables: 0,
@@ -107,7 +131,7 @@ const CreditTransactions = () => {
         paidAccounts: 0,
         overdueAccounts: 0,
     });
-    const [searchQuery, setSearchQuery] = useState('');
+    const [searchQuery, setSearchQuery] = useState(() => searchParams.get('search') || '');
     const [statusFilter, setStatusFilter] = useState('All');
     const [customerFilter, setCustomerFilter] = useState('ALL');
     const [processedByFilter, setProcessedByFilter] = useState('ALL');
@@ -118,14 +142,15 @@ const CreditTransactions = () => {
     const [customEndDate, setCustomEndDate] = useState('');
     const [sortOrder, setSortOrder] = useState('desc');
     const [isLoading, setIsLoading] = useState(true);
+    const [loadError, setLoadError] = useState('');
+    const creditDataRequestRef = useRef(0);
+    const [isCustomerOverdueHistoryOpen, setIsCustomerOverdueHistoryOpen] = useState(false);
     const [currentPage, setCurrentPage] = useState(1);
     const [itemsPerPage, setItemsPerPage] = useState(10);
 
     const [selectedRecord, setSelectedRecord] = useState(null);
     const [isDetailsOpen, setIsDetailsOpen] = useState(false);
-    const [creditReceiptPreview, setCreditReceiptPreview] = useState(null);
-    const [creditReceiptPrintStatus, setCreditReceiptPrintStatus] = useState('idle');
-    const creditReceiptPrintInFlightRef = useRef(false);
+    const [creditConfirmationView, setCreditConfirmationView] = useState(null);
 
     const [isMarkPaidModalOpen, setIsMarkPaidModalOpen] = useState(false);
     const [markPaidModalMode, setMarkPaidModalMode] = useState('markPaid');
@@ -142,6 +167,7 @@ const CreditTransactions = () => {
         transactionDate: '',
         paymentDate: '',
         paymentMethod: 'cash',
+        reference: '',
         note: '',
         cancelReason: '',
     });
@@ -151,11 +177,10 @@ const CreditTransactions = () => {
     const creditMutationInFlightRef = useRef(false);
     const markPaidRequestIdRef = useRef('');
     const [isCancellingCredit, setIsCancellingCredit] = useState(false);
-    const [proofFile, setProofFile] = useState(null);
-    const [proofPreviewUrl, setProofPreviewUrl] = useState('');
+    const [proofFiles, setProofFiles] = useState([]);
+    const [cancelProofFiles, setCancelProofFiles] = useState([]);
     const [proofError, setProofError] = useState('');
     const [proofLightbox, setProofLightbox] = useState(null);
-    const proofInputRef = useRef(null);
     const markPaidPaymentMethodRef = useRef(null);
     const customMarkPaidPaymentMethodInputRef = useRef(null);
     const extensionMax = Number(markPaidForm.maxExtensionDays || 0);
@@ -197,11 +222,30 @@ const CreditTransactions = () => {
             ? 'text-gray-900 font-semibold'
             : 'text-rose-500 font-semibold')
         : 'text-gray-400';
+    const paymentAmountText = String(markPaidForm.amount || '').trim();
+    const paymentAmount = MONEY_INPUT_PATTERN.test(paymentAmountText) ? Number(paymentAmountText) : NaN;
+    const outstandingBalance = Number(markPaidTarget?.remainingBalance || 0);
+    const paymentAmountError = markPaidModalMode === 'markPaid' && (
+        !Number.isFinite(paymentAmount) || paymentAmount <= 0
+            ? 'Enter an amount greater than ₱0.00 with no more than two decimal places.'
+            : markPaidTarget?.collectionSource === 'special_order_ledger' && paymentAmount !== outstandingBalance
+                ? 'The linked Special Order balance must be settled in one final payment.'
+            : paymentAmount > outstandingBalance
+                ? 'Payment cannot exceed the remaining balance.'
+                : ''
+    );
+    const balanceAfterPayment = paymentAmountError || !Number.isFinite(paymentAmount)
+        ? null
+        : Math.max(0, outstandingBalance - paymentAmount);
     const selectedDisplayStatus = selectedRecord ? getCreditDueStatus(selectedRecord) : '';
-
-    useEffect(() => () => {
-        if (proofPreviewUrl) URL.revokeObjectURL(proofPreviewUrl);
-    }, [proofPreviewUrl]);
+    const selectedCreditConfirmation = selectedRecord ? buildCreditConfirmation(selectedRecord) : null;
+    const selectedPaymentStatus = ['Paid', 'Cancelled', 'Overdue'].includes(selectedDisplayStatus)
+        ? selectedDisplayStatus
+        : Number(selectedRecord?.amountPaid || 0) > 0 ? 'Partially Paid' : selectedDisplayStatus;
+    const selectedLegacyProofIsInHistory = Boolean(selectedRecord?.proofOfPayment && (selectedRecord.paymentHistory || []).some((payment) => (
+        [...(Array.isArray(payment?.proofs) ? payment.proofs : []), payment?.proof]
+            .some((proof) => proof?.storageKey && proof.storageKey === selectedRecord.proofOfPayment.storageKey)
+    )));
 
     useEffect(() => () => {
         if (proofLightbox?.url) URL.revokeObjectURL(proofLightbox.url);
@@ -269,13 +313,16 @@ const CreditTransactions = () => {
     };
 
     const loadData = React.useCallback(async () => {
+        const requestId = ++creditDataRequestRef.current;
         setIsLoading(true);
+        setLoadError('');
         try {
             const [nextSummary, nextRows] = await Promise.all([
                 getCreditTransactionsSummaryApi(),
                 listCreditTransactionsApi({ status: 'All', search: searchQuery }),
             ]);
 
+            if (requestId !== creditDataRequestRef.current) return;
             setSummary(nextSummary || {
                 totalCreditReceivables: 0,
                 unpaidAccounts: 0,
@@ -285,21 +332,57 @@ const CreditTransactions = () => {
             });
             setRows(Array.isArray(nextRows) ? nextRows : []);
         } catch (error) {
+            if (requestId !== creditDataRequestRef.current) return;
+            setLoadError(error?.message || 'Unable to load credit transactions.');
             showPageLoadError(showToast, error, 'credit-load');
         } finally {
-            setIsLoading(false);
+            if (requestId === creditDataRequestRef.current) setIsLoading(false);
         }
     }, [searchQuery]);
+
+    const resetCreditFilters = () => {
+        setSearchQuery('');
+        setStatusFilter('All');
+        setCustomerFilter('ALL');
+        setProcessedByFilter('ALL');
+        setDateRange('all');
+        setSpecificDate('');
+        setCustomStartDate('');
+        setCustomEndDate('');
+        setSortOrder('desc');
+    };
+    const hasCreditFilters = Boolean(searchQuery.trim())
+        || statusFilter !== 'All'
+        || customerFilter !== 'ALL'
+        || processedByFilter !== 'ALL'
+        || dateRange !== 'all'
+        || Boolean(specificDate || customStartDate || customEndDate);
+    const creditEmptyState = loadError
+        ? { title: 'Credit transactions unavailable', description: 'Credit transactions could not be loaded. Please try again.', actionLabel: 'Retry', onAction: () => { void loadData(); } }
+        : hasCreditFilters
+            ? { title: 'No matching results', description: 'Try a different search or filter.', actionLabel: 'Clear Filters', onAction: resetCreditFilters }
+            : { title: 'No credit transactions yet', description: 'Recorded credit orders will appear here.' };
 
     useEffect(() => {
         void loadData();
     }, [loadData]);
 
     useEffect(() => {
-        const unsubscribe = subscribeRealtimeEvent('credit-transactions.updated', () => {
-            void loadData();
-        });
-        return () => unsubscribe();
+        let refreshTimer = null;
+        const scheduleRefresh = () => {
+            if (refreshTimer) window.clearTimeout(refreshTimer);
+            refreshTimer = window.setTimeout(() => {
+                refreshTimer = null;
+                void loadData();
+            }, 80);
+        };
+        const events = ['credit-transactions.updated', 'sale.created', 'sale.updated', 'realtime.resync'];
+        const unsubscribe = events.map((event) => subscribeRealtimeEvent(event, scheduleRefresh));
+        return () => {
+            if (refreshTimer) window.clearTimeout(refreshTimer);
+            unsubscribe.forEach((stop) => stop());
+            creditDataRequestRef.current += 1;
+        };
     }, [loadData]);
 
     const customerOptions = useMemo(() => {
@@ -326,14 +409,6 @@ const CreditTransactions = () => {
         const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
 
         const filtered = rows.filter((row) => {
-            if (userRole === ROLES.CASHIER) {
-                const cashierName = getCreditProcessorDisplayName(row).toLowerCase();
-                const currentCashier = String(currentUserName || 'Cashier').trim().toLowerCase();
-                if (cashierName && cashierName !== currentCashier) {
-                    return false;
-                }
-            }
-
             const customerName = String(row?.customerName || '').trim();
             const customer = customerName.toLowerCase();
             const creditId = String(row?.creditTransactionId || '').toLowerCase();
@@ -404,7 +479,7 @@ const CreditTransactions = () => {
         });
 
         return withMeta.map((entry) => entry.row);
-    }, [rows, searchQuery, statusFilter, customerFilter, processedByFilter, userRole, currentUserName, ROLES, dateRange, specificDate, customStartDate, customEndDate, sortOrder]);
+    }, [rows, searchQuery, statusFilter, customerFilter, processedByFilter, dateRange, specificDate, customStartDate, customEndDate, sortOrder]);
 
     useEffect(() => {
         setCurrentPage(1);
@@ -424,12 +499,22 @@ const CreditTransactions = () => {
 
     const handleOpenDetails = async (row) => {
         try {
+            setCreditConfirmationView(null);
             const detail = await getCreditTransactionByIdApi(row._id);
             setSelectedRecord(detail);
             setIsDetailsOpen(true);
         } catch (error) {
             showPageLoadError(showToast, error, 'credit-details');
         }
+    };
+
+    const handleViewConfirmation = () => {
+        const confirmation = buildCreditConfirmation(selectedRecord);
+        if (!confirmation) {
+            showToast('Confirmation Unavailable', 'The saved order confirmation is not available for this transaction.', 'error', 'credit-confirmation-unavailable');
+            return;
+        }
+        setCreditConfirmationView(confirmation);
     };
 
     const closeProofLightbox = () => {
@@ -450,68 +535,36 @@ const CreditTransactions = () => {
         }
     };
 
-    const openCreditReceiptPreview = (record, { isReprint = true } = {}) => {
-        if (!isFullyPaidCreditTransaction(record)) return;
+    const handleViewPaymentProof = async (payment, index = 0) => {
+        const proof = payment?.proofs?.[index] || (index === 0 ? payment?.proof : null);
+        if (!selectedRecord?._id || !proof?.storageKey || !payment?.clientRequestId) return;
 
-        setCreditReceiptPrintStatus('idle');
-        setCreditReceiptPreview({
-            record,
-            transaction: buildCreditReceiptTransaction(record),
-            isReprint,
-        });
-    };
-
-    const closeCreditReceiptPreview = () => {
-        if (creditReceiptPrintInFlightRef.current) return;
-        setCreditReceiptPreview(null);
-        setCreditReceiptPrintStatus('idle');
-    };
-
-    const printCreditReceipt = async () => {
-        if (!creditReceiptPreview?.transaction || creditReceiptPrintInFlightRef.current) return;
-
-        creditReceiptPrintInFlightRef.current = true;
-        setCreditReceiptPrintStatus('printing');
         try {
-            await printReceipt({
-                transaction: creditReceiptPreview.transaction,
-                settings: appSettings,
-                isReprint: creditReceiptPreview.isReprint,
+            const imageBlob = await getCreditPaymentProofApi(selectedRecord._id, payment.clientRequestId, index);
+            setProofLightbox({
+                url: URL.createObjectURL(imageBlob),
+                fileName: proof.fileName || 'Proof of Payment',
             });
-            setCreditReceiptPrintStatus('success');
-            showToast('Print Success', 'Receipt sent to the thermal printer.', 'success', 'credit-receipt-print-success');
         } catch (error) {
-            setCreditReceiptPrintStatus('idle');
-            const details = error?.message || 'Unable to print the paid Credit receipt.';
-            showToast('Print Failed', `${details} The transaction remains Paid; you can retry from View Details.`, 'error', 'credit-receipt-print-error');
-        } finally {
-            creditReceiptPrintInFlightRef.current = false;
+            showToast('Proof Unavailable', error.message || 'Unable to load Proof of Payment.', 'error', 'credit-payment-proof-view');
+        }
+    };
+
+    const handleViewCancellationProof = async (index) => {
+        if (!selectedRecord?._id) return;
+        try {
+            const imageBlob = await getCreditCancellationProofApi(selectedRecord._id, index);
+            setProofLightbox({
+                url: URL.createObjectURL(imageBlob),
+                fileName: selectedRecord.cancelProofs?.[index]?.fileName || 'Proof of Cancellation',
+            });
+        } catch (error) {
+            showToast('Proof Unavailable', error.message || 'Unable to load Proof of Cancellation.', 'error', 'credit-cancel-proof-view');
         }
     };
 
     const clearProofSelection = () => {
-        setProofFile(null);
-        setProofPreviewUrl('');
-        setProofError('');
-        if (proofInputRef.current) proofInputRef.current.value = '';
-    };
-
-    const handleProofSelection = (file) => {
-        if (!file) return;
-
-        if (!ACCEPTED_PROOF_MIME_TYPES.has(String(file.type || '').toLowerCase())) {
-            clearProofSelection();
-            setProofError('Proof of Payment must be a JPG, JPEG, or PNG image.');
-            return;
-        }
-        if (file.size > MAX_PROOF_OF_PAYMENT_SIZE) {
-            clearProofSelection();
-            setProofError('Proof of Payment must be 5 MB or smaller.');
-            return;
-        }
-
-        setProofFile(file);
-        setProofPreviewUrl(URL.createObjectURL(file));
+        setProofFiles([]);
         setProofError('');
     };
 
@@ -525,6 +578,7 @@ const CreditTransactions = () => {
         setIsCancelConfirmOpen(false);
         setIsMarkPaidPaymentMethodOpen(false);
         clearProofSelection();
+        setCancelProofFiles([]);
         setMarkPaidForm({
             transactionId: row?.creditTransactionId || '',
             customerName: row?.customerName || '',
@@ -538,6 +592,7 @@ const CreditTransactions = () => {
             paymentMethodOther: normalizedPaymentMethod === 'other' && existingPaymentMethod.toLowerCase() !== 'other'
                 ? existingPaymentMethod
                 : '',
+            reference: '',
             note: '',
             cancelReason: '',
         });
@@ -553,11 +608,15 @@ const CreditTransactions = () => {
             showToast('Missing Reason', 'Please provide a cancellation reason.', 'error', 'credit-cancel-validation');
             return;
         }
+        if (cancelProofFiles.length < 1 || cancelProofFiles.length > 3) {
+            showToast('Missing Proof', 'Choose 1 to 3 Proof of Cancellation photos.', 'error', 'credit-cancel-proof-validation');
+            return;
+        }
 
         creditMutationInFlightRef.current = true;
         setIsCancellingCredit(true);
         try {
-            await cancelCreditTransactionApi(markPaidTarget._id, { reason });
+            await cancelCreditTransactionApi(markPaidTarget._id, { reason, proofFiles: cancelProofFiles });
             showToast('Cancelled', 'Credit order cancelled and archived.', 'success', 'credit-cancel');
             setIsMarkPaidModalOpen(false);
             setIsCancelModalOpen(false);
@@ -576,9 +635,9 @@ const CreditTransactions = () => {
         if (creditMutationInFlightRef.current) return;
         if (!markPaidTarget?._id) return;
 
-        const amount = Number(markPaidForm.amount || 0);
-        if (!Number.isFinite(amount) || amount <= 0) {
-            showToast('Invalid Amount', 'Enter a valid payment amount.', 'error', 'credit-payment-validation');
+        if (paymentAmountError) {
+            setFormValidationErrors(e.currentTarget, { paymentAmount: paymentAmountError });
+            showToast('Invalid Amount', paymentAmountError, 'error', 'credit-payment-validation');
             return;
         }
 
@@ -591,21 +650,26 @@ const CreditTransactions = () => {
             ? normalizeHumanReadable(markPaidForm.paymentMethodOther)
             : markPaidForm.paymentMethod;
         if (!paymentMethod) {
+            setFormValidationErrors(e.currentTarget, { paymentMethodOther: 'Enter the other payment method.' });
             showToast('Missing Payment Method', 'Enter the other payment method.', 'error', 'credit-payment-method-validation');
             return;
         }
 
-        if (!proofFile) {
-            setProofError('Proof of Payment is required.');
+        if (proofFiles.length < 1 || proofFiles.length > 3) {
+            const message = 'Choose 1 to 3 Proof of Payment photos.';
+            setProofError(message);
+            setFormValidationErrors(e.currentTarget, { proofFiles: message });
             return;
         }
 
         const maxAllowedExtension = Number(markPaidForm.maxExtensionDays || 0);
         if (extensionInputError) {
+            setFormValidationErrors(e.currentTarget, { extensionDays: extensionInputError });
             showToast('Invalid Extension', extensionInputError, 'error', 'credit-mark-paid-validation');
             return;
         }
         if (extensionDays > maxAllowedExtension) {
+            setFormValidationErrors(e.currentTarget, { extensionDays: `Maximum extension is ${maxAllowedExtension} day(s).` });
             showToast('Extension Limit', `Maximum extension is ${maxAllowedExtension} day(s).`, 'error', 'credit-mark-paid-validation');
             return;
         }
@@ -614,28 +678,41 @@ const CreditTransactions = () => {
         setIsSavingMarkPaid(true);
         try {
             const paidTransactionId = markPaidTarget._id;
-            await markCreditTransactionPaidApi(paidTransactionId, {
+            const paymentPayload = {
+                amount: paymentAmountText,
                 method: paymentMethod,
                 paymentDate: markPaidForm.paymentDate,
-                extensionDays,
+                reference: markPaidForm.reference,
                 note: markPaidForm.note,
-                proofFile,
+                proofFiles,
                 clientRequestId: markPaidRequestIdRef.current || (markPaidRequestIdRef.current = createClientRequestId('credit-payment')),
-            });
-            showToast('Updated', 'Account marked as fully paid.', 'success', 'credit-mark-paid');
+            };
+            const updated = markPaidTarget.collectionSource === 'special_order_ledger'
+                ? await markCreditTransactionPaidApi(paidTransactionId, { ...paymentPayload, extensionDays: 0 })
+                : await recordCreditPaymentApi(paidTransactionId, paymentPayload);
+            const updatedRemainingBalance = Number(updated?.remainingBalance);
+            const fullyPaid = String(updated?.status || '').toLowerCase() === 'paid'
+                || (Number.isFinite(updatedRemainingBalance) && updatedRemainingBalance <= 0);
+            showToast('Updated', fullyPaid ? 'Payment recorded. Account is fully paid.' : 'Payment recorded. Remaining balance has been updated.', 'success', 'credit-payment-recorded');
             setIsMarkPaidModalOpen(false);
             setMarkPaidTarget(null);
             clearProofSelection();
             markPaidRequestIdRef.current = '';
             try {
                 const finalizedRecord = await getCreditTransactionByIdApi(paidTransactionId);
-                openCreditReceiptPreview(finalizedRecord, { isReprint: false });
-            } catch (receiptError) {
-                showToast('Receipt Load Failed', `${receiptError.message || 'Unable to load the finalized receipt.'} The transaction remains Paid; open View Details to retry.`, 'error', 'credit-receipt-load-error');
+                const confirmation = buildCreditConfirmation(finalizedRecord);
+                setSelectedRecord(finalizedRecord);
+                if (confirmation) {
+                    setCreditConfirmationView(confirmation);
+                } else {
+                    showToast('Confirmation Unavailable', 'The saved order confirmation is not available for this transaction.', 'error', 'credit-confirmation-unavailable');
+                }
+            } catch (confirmationError) {
+                showToast('Confirmation Load Failed', confirmationError.message || 'Payment was recorded, but the updated order confirmation could not be loaded.', 'error', 'credit-confirmation-load-error');
             }
             await loadData();
         } catch (error) {
-            showToast('Update Failed', error.message || 'Unable to mark account as fully paid.', 'error', 'credit-mark-paid');
+            showToast('Payment Failed', error.message || 'Unable to record payment.', 'error', 'credit-payment-recorded');
         } finally {
             creditMutationInFlightRef.current = false;
             setIsSavingMarkPaid(false);
@@ -672,7 +749,7 @@ const CreditTransactions = () => {
 
     return (
         <div className="flex h-auto flex-col gap-2 md:h-[calc(100vh-80px)] md:min-h-0 md:overflow-hidden">
-            <div className="flex h-auto flex-col gap-3 rounded-2xl border border-slate-300 bg-slate-200/50 p-4 shadow-inner md:h-full md:min-h-0">
+            <div className="flex h-auto flex-col gap-3 rounded-2xl border border-slate-300 bg-slate-200/50 p-2 shadow-inner md:h-full md:min-h-0 md:p-4">
                 <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 border-b border-gray-200 pb-3">
                     <div>
                         <p className="text-3xl md:text-4xl font-semibold tracking-tight text-gray-900 leading-tight">Credit Transactions</p>
@@ -683,7 +760,7 @@ const CreditTransactions = () => {
 
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2">
-                    <div className="bg-white rounded-xl border border-gray-100 p-3">
+                    <div className="app-dashboard-card-hover bg-white rounded-xl border border-gray-100 p-3 shadow-sm">
                         <div className="flex items-center justify-between">
                             <div>
                                 <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">Total Credit Receivables</p>
@@ -699,7 +776,7 @@ const CreditTransactions = () => {
                             </div>
                         </div>
                     </div>
-                    <div className="bg-white rounded-xl border border-gray-100 p-3">
+                    <div className="app-dashboard-card-hover bg-white rounded-xl border border-gray-100 p-3 shadow-sm">
                         <div className="flex items-center justify-between">
                             <div>
                                 <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">Unpaid Accounts</p>
@@ -713,7 +790,7 @@ const CreditTransactions = () => {
                             </div>
                         </div>
                     </div>
-                    <div className="bg-white rounded-xl border border-gray-100 p-3">
+                    <div className="app-dashboard-card-hover bg-white rounded-xl border border-gray-100 p-3 shadow-sm">
                         <div className="flex items-center justify-between">
                             <div>
                                 <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">Overdue Accounts</p>
@@ -728,7 +805,7 @@ const CreditTransactions = () => {
                             </div>
                         </div>
                     </div>
-                    <div className="bg-white rounded-xl border border-gray-100 p-3">
+                    <div className="app-dashboard-card-hover bg-white rounded-xl border border-gray-100 p-3 shadow-sm">
                         <div className="flex items-center justify-between">
                             <div>
                                 <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">Paid Accounts</p>
@@ -743,25 +820,26 @@ const CreditTransactions = () => {
                     </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2">
-                    {/* Search */}
-                    <div className="main-toolbar-search group">
-                        <input
-                            type="text"
-                            placeholder="Search customer, invoice, or order..."
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            className="main-toolbar-search-input"
-                        />
-                        <div className="main-toolbar-search-icon">
-                            <svg className="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                            </svg>
+                <div className="flex w-full flex-wrap items-center gap-2">
+                    <div className="flex w-full min-w-0 flex-wrap items-center gap-2 sm:w-auto sm:flex-1">
+                        {/* Search */}
+                        <div className="main-toolbar-search group">
+                            <input
+                                type="text"
+                                placeholder="Search customer, invoice, or order..."
+                                value={searchQuery}
+                                onChange={(e) => setSearchQuery(e.target.value)}
+                                className="main-toolbar-search-input"
+                            />
+                            <div className="main-toolbar-search-icon">
+                                <svg className="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                                </svg>
+                            </div>
                         </div>
-                    </div>
 
-                    {/* Filter & Sort */}
-                    <div className="relative z-30 w-full sm:w-auto flex items-center gap-2">
+                        {/* Filter & Sort */}
+                        <div className="relative z-30 w-full flex items-center gap-2 sm:w-auto">
                         <button
                             onClick={() => setIsFilterPanelOpen(!isFilterPanelOpen)}
                             className="px-3 py-2 rounded-xl font-semibold text-xs shadow-sm flex items-center gap-1.5 transition-all border-2 bg-gray-900 text-white border-gray-900 hover:opacity-90"
@@ -912,6 +990,15 @@ const CreditTransactions = () => {
                             </div>
                         )}
                     </div>
+                    </div>
+                    <button
+                        type="button"
+                        onClick={() => setIsCustomerOverdueHistoryOpen(true)}
+                        className="ml-auto inline-flex shrink-0 items-center justify-center gap-1.5 rounded-xl border-2 border-gray-900 bg-gray-900 px-3 py-2 text-xs font-semibold text-slate-100 shadow-sm transition-all hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-500 focus-visible:ring-offset-2"
+                    >
+                        <svg className="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M16 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2m16 0v-2a4 4 0 0 0-3-3.87M14 3.13a4 4 0 0 1 0 7.75M10 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z" /></svg>
+                        <span className="whitespace-nowrap">Customer Overdue History</span>
+                    </button>
                 </div>
 
                 {isFilterPanelOpen && (
@@ -919,7 +1006,42 @@ const CreditTransactions = () => {
                 )}
 
                 <div className="flex min-h-0 flex-1 flex-col">
-                    <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain max-xl:overflow-x-auto max-xl:overscroll-x-contain">
+                    <div className="min-h-0 flex flex-1 flex-col gap-3 overflow-y-auto px-0 py-2 md:hidden" aria-label="Credit transaction mobile records">
+                        {isLoading ? (
+                            Array.from({ length: 4 }).map((_, index) => <div key={`credit-mobile-skeleton-${index}`} className="h-44 animate-pulse rounded-xl border border-slate-200 bg-white" />)
+                        ) : visibleRows.length === 0 ? (
+                            <div className="rounded-xl border border-slate-200 bg-white text-sm text-slate-500"><ContextualEmptyState {...creditEmptyState} /></div>
+                        ) : currentRows.map((row) => {
+                            const displayStatus = getCreditDueStatus(row);
+                            const isCancelled = displayStatus === 'Cancelled';
+                            const canRecordPayment = !(isCancelled || Number(row.remainingBalance || 0) <= 0);
+                            const effectiveDueDate = row.dueDate || row.originalDueDate;
+                            return (
+                                <article key={`mobile-${row._id}`} className={`app-dashboard-card-hover ${getAttentionRowClass(displayStatus)} rounded-xl border border-slate-200 bg-white p-3 shadow-sm`}>
+                                    <div className="flex min-w-0 items-start justify-between gap-3">
+                                        <div className="min-w-0">
+                                            <h3 className="break-all text-sm font-semibold leading-5 text-slate-900">{row.creditTransactionId}</h3>
+                                            <p className="mt-0.5 break-words text-xs text-slate-600">{row.customerName}</p>
+                                            {row.orderReference && <p className="mt-0.5 break-all text-[11px] text-slate-500">Order: {row.orderReference}</p>}
+                                        </div>
+                                        <span className={`shrink-0 rounded-full border px-2 py-1 text-[10px] font-semibold uppercase tracking-wide ${statusBadgeClass(displayStatus)}`}>{displayStatus}</span>
+                                    </div>
+                                    <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 border-t border-slate-100 pt-3">
+                                        <div><dt className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Invoice Date</dt><dd className="mt-0.5 text-xs text-slate-800">{formatDateShort(row.createdAt)}</dd></div>
+                                        {effectiveDueDate && <div><dt className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Due Date</dt><dd className="mt-0.5 text-xs text-slate-800">{formatDateShort(effectiveDueDate)}</dd></div>}
+                                        {row.totalAmount !== null && row.totalAmount !== undefined && Number.isFinite(Number(row.totalAmount)) && <div><dt className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Total Amount</dt><dd className="mt-0.5 text-sm font-semibold tabular-nums text-slate-900">{formatMoney(row.totalAmount)}</dd></div>}
+                                        {row.remainingBalance !== null && row.remainingBalance !== undefined && Number.isFinite(Number(row.remainingBalance)) && <div><dt className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Remaining Balance</dt><dd className="mt-0.5 text-sm font-semibold tabular-nums text-slate-900">{formatMoney(row.remainingBalance)}</dd></div>}
+                                    </dl>
+                                    <div className="mt-3 grid grid-cols-1 gap-2 border-t border-slate-100 pt-3 min-[380px]:grid-cols-2">
+                                        <button type="button" onClick={() => handleOpenDetails(row)} className="inline-flex min-h-10 min-w-0 items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-center text-xs font-semibold text-slate-800 transition-colors hover:border-slate-400 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400/50"><RecordActionIcon name="eye" />View Details</button>
+                                        <button type="button" onClick={() => handleOpenMarkPaidModal(row, 'extendOnly')} disabled={isCancelled || Number(row.remainingBalance || 0) <= 0 || Number(row.termDays || 0) >= 60} className="inline-flex min-h-10 min-w-0 items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-center text-xs font-semibold text-slate-800 transition-colors hover:border-slate-400 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400/50 disabled:cursor-not-allowed disabled:opacity-50"><RecordActionIcon name="calendar-clock" />Extend Day Term</button>
+                                        <button type="button" onClick={() => handleOpenMarkPaidModal(row, 'markPaid')} disabled={!canRecordPayment} className={`inline-flex min-h-10 min-w-0 items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-center text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500/50 disabled:cursor-not-allowed disabled:opacity-60 ${canRecordPayment ? 'border-slate-900 bg-slate-900 text-white hover:border-slate-700 hover:bg-slate-700' : 'border-slate-200 bg-slate-100 text-slate-400'}`}><RecordActionIcon name="wallet" />Record Payment</button>
+                                    </div>
+                                </article>
+                            );
+                        })}
+                    </div>
+                    <div className="hidden min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain max-xl:overflow-x-auto max-xl:overscroll-x-contain md:block">
                         <table className="main-data-table w-full min-w-0 table-fixed border-separate border-spacing-0 text-left max-xl:min-w-[900px]">
                         <thead className="sticky top-0 z-10 shadow-sm">
                             <tr className="bg-gray-900 text-white uppercase tracking-wider">
@@ -976,17 +1098,7 @@ const CreditTransactions = () => {
                                 ))
                             ) : visibleRows.length === 0 ? (
                                 <tr>
-                                    <td className="p-8 text-center border border-gray-200" colSpan={10}>
-                                        <div className="flex flex-col items-center justify-center text-gray-500 border-2 border-dashed border-gray-300 rounded-3xl p-8 bg-gray-50/50">
-                                            <div className="bg-white p-4 rounded-full mb-4 shadow-sm ring-1 ring-gray-200">
-                                                <svg className="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M3 7h18M5 5h14a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2zm2 9h4" />
-                                                </svg>
-                                            </div>
-                                            <h3 className="text-lg font-semibold text-gray-900 mb-1">No credit transactions found</h3>
-                                            <p className="text-gray-500 text-sm">Try a different search keyword or status filter.</p>
-                                        </div>
-                                    </td>
+                                    <td className="border border-gray-200 px-2 py-2 text-center" colSpan={10}><ContextualEmptyState {...creditEmptyState} /></td>
                                 </tr>
                             ) : (
                                 currentRows.map((row) => (
@@ -997,7 +1109,7 @@ const CreditTransactions = () => {
                                         const displayStatus = getCreditDueStatus(row);
                                         const isCancelled = displayStatus === 'Cancelled';
                                         return (
-                                    <tr key={row._id} className={`${getAttentionRowClass(displayStatus)} group transition-colors duration-150`}>
+                                    <tr key={row._id} className={`app-dashboard-table-row-hover ${getAttentionRowClass(displayStatus)} group`}>
                                         <td className="whitespace-nowrap px-0.5 py-1.5 text-center border border-gray-200 leading-tight">
                                             <IdentifierChip className="whitespace-nowrap break-normal px-1.5 text-[11px]">{row.creditTransactionId}</IdentifierChip>
                                         </td>
@@ -1020,6 +1132,7 @@ const CreditTransactions = () => {
                                                 <TableActionButton
                                                     onClick={() => handleOpenDetails(row)}
                                                     label="View Details"
+                                                    className={displayStatus === 'Paid' ? 'credit-record-payment-action' : ''}
                                                 >
                                                     <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
                                                         <path strokeLinecap="round" strokeLinejoin="round" d="M1.5 12s3.6-7 10.5-7 10.5 7 10.5 7-3.6 7-10.5 7S1.5 12 1.5 12z" />
@@ -1039,11 +1152,11 @@ const CreditTransactions = () => {
                                                 <TableActionButton
                                                     onClick={() => handleOpenMarkPaidModal(row, 'markPaid')}
                                                     disabled={isCancelled || Number(row.remainingBalance || 0) <= 0}
-                                                    variant="positive"
-                                                    label="Mark as Paid"
+                                                    className="credit-record-payment-action"
+                                                    label="Record Payment"
                                                 >
                                                     <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                                                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 5v14m7-7H5" />
                                                     </svg>
                                                 </TableActionButton>
                                             </div>
@@ -1068,175 +1181,121 @@ const CreditTransactions = () => {
                 </div>
             </div>
 
-            {isDetailsOpen && selectedRecord && !creditReceiptPreview && !proofLightbox && (
-                <div className="app-modal-backdrop fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-                    <div className="w-full max-w-3xl bg-white rounded-xl border border-gray-200 shadow-xl overflow-hidden">
-                        <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between bg-gray-50">
-                            <div>
-                                <h3 className="font-semibold text-gray-900">Credit Transaction Details</h3>
-                                <p className="text-xs text-gray-500">{selectedRecord.creditTransactionId} - {selectedRecord.customerName}</p>
-                                <p className="text-[10px] text-gray-400 mt-0.5">Order: {selectedRecord.orderReference || '-'} | Cashier: {getCreditProcessorDisplayName(selectedRecord)}</p>
+            {isDetailsOpen && selectedRecord && !proofLightbox && !creditConfirmationView && (
+                <div className="app-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3 backdrop-blur-sm sm:p-4">
+                    <section role="dialog" aria-modal="true" aria-labelledby="credit-transaction-details-title" onClick={(event) => event.stopPropagation()} className="flex max-h-[calc(100dvh-1.5rem)] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-2xl sm:max-h-[calc(100dvh-2rem)]">
+                        <header className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-200 bg-white px-4 py-3.5 sm:px-5">
+                            <div className="min-w-0">
+                                <h2 id="credit-transaction-details-title" className="text-lg font-semibold tracking-tight text-slate-950">Credit Transaction Details</h2>
+                                <p className="mt-0.5 break-all text-xs text-slate-500">Credit ID: <span className="font-medium text-slate-700">{selectedRecord.creditTransactionId || '—'}</span></p>
                             </div>
-                            <div className="flex items-center gap-2">
-                                {String(selectedRecord.status || '').toLowerCase() === 'cancelled' && (
-                                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide border bg-rose-100 text-rose-800 border-rose-200">
-                                        Cancelled
-                                    </span>
-                                )}
-                                <button onClick={() => setIsDetailsOpen(false)} className="text-gray-400 hover:text-gray-600">Close</button>
-                            </div>
-                        </div>
-                        <div className="p-4 space-y-3 max-h-[70vh] overflow-y-auto">
-                            <div>
-                                <h4 className="mb-2 text-xs font-semibold tracking-wider text-gray-500">Transaction Information</h4>
-                                <div className="grid grid-cols-1 gap-2 text-sm sm:grid-cols-3">
-                                    <div className="rounded-lg border border-gray-100 bg-gray-50 p-2">
-                                        <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Credit ID</p>
-                                        <div className="mt-0.5 whitespace-nowrap"><IdentifierChip>{selectedRecord.creditTransactionId}</IdentifierChip></div>
-                                    </div>
-                                    <div className="rounded-lg border border-gray-100 bg-gray-50 p-2">
-                                        <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Order Reference</p>
-                                        <div className="mt-0.5">{selectedRecord.orderReference ? <IdentifierChip>{selectedRecord.orderReference}</IdentifierChip> : '-'}</div>
-                                    </div>
-                                    <div className="rounded-lg border border-gray-100 bg-gray-50 p-2">
-                                        <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Customer</p>
-                                        <p className="font-semibold text-gray-900">{selectedRecord.customerName || '-'}</p>
-                                    </div>
-                                    <div className="rounded-lg border border-gray-100 bg-gray-50 p-2">
-                                        <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Order Date</p>
-                                        <p className="font-semibold text-gray-900">{formatDateShort(getOrderDate(selectedRecord))}</p>
-                                    </div>
-                                    <div className="rounded-lg border border-gray-100 bg-gray-50 p-2">
-                                        <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Due Date</p>
-                                        <p className="font-semibold text-gray-900">{formatDateShort(selectedRecord.dueDate)}</p>
-                                        <span className={`mt-1 inline-flex rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusBadgeClass(selectedDisplayStatus)}`}>
-                                            {selectedDisplayStatus}
-                                        </span>
-                                    </div>
-                                    <div className="rounded-lg border border-gray-100 bg-gray-50 p-2">
-                                        <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Date Paid</p>
-                                        <p className="font-semibold text-gray-900">{getDatePaid(selectedRecord) ? formatDateShort(getDatePaid(selectedRecord)) : '—'}</p>
-                                    </div>
-                                    <div className="rounded-lg border border-gray-100 bg-gray-50 p-2">
-                                        <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Processed By</p>
-                                        <p className="font-semibold text-gray-900">{getCreditProcessorDisplayName(selectedRecord)}</p>
-                                    </div>
-                                    <div className="rounded-lg border border-gray-100 bg-gray-50 p-2">
-                                        <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Payment Method</p>
-                                        <p className="font-semibold capitalize text-gray-900">{getCreditPaymentMode(selectedRecord)}</p>
-                                    </div>
+                            <div className="flex shrink-0 items-center gap-2">
+                                <div className="text-right">
+                                    <span className="block text-[10px] font-medium uppercase tracking-wide text-slate-500">Payment Status</span>
+                                    <span className={`mt-0.5 inline-flex rounded-md border px-2.5 py-1 text-xs font-semibold ${statusBadgeClass(selectedPaymentStatus)}`}>{selectedPaymentStatus}</span>
                                 </div>
+                                <button type="button" onClick={() => setIsDetailsOpen(false)} aria-label="Close credit transaction details" className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-600 focus-visible:ring-offset-2">
+                                    <svg aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18 18 6M6 6l12 12" /></svg>
+                                </button>
                             </div>
+                        </header>
 
-                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-sm">
-                                <div className="bg-gray-50 rounded-lg border border-gray-100 p-2">
-                                    <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Total</p>
-                                    <p className="font-semibold text-gray-900">{formatMoney(selectedRecord.totalAmount)}</p>
-                                </div>
-                                <div className="bg-gray-50 rounded-lg border border-gray-100 p-2">
-                                    <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Paid</p>
-                                    <p className="font-semibold text-gray-900">{formatMoney(selectedRecord.amountPaid)}</p>
-                                </div>
-                                <div className="bg-gray-50 rounded-lg border border-gray-100 p-2">
-                                    <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Remaining</p>
-                                    <p className="font-semibold text-gray-900">{formatMoney(selectedRecord.remainingBalance)}</p>
-                                </div>
-                            </div>
+                        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-3 sm:space-y-4 sm:px-5 sm:py-4">
+                            <section aria-label="Transaction information" className="rounded-xl border border-slate-200 bg-white p-3.5 sm:p-4">
+                                <h3 className="mb-3 text-sm font-semibold text-slate-900">Transaction Information</h3>
+                                <dl className="grid grid-cols-1 gap-x-5 gap-y-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
+                                    <div className="min-w-0"><dt className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Customer</dt><dd className="mt-1 break-words font-medium text-slate-900">{selectedRecord.customerName || '—'}</dd></div>
+                                    <div className="min-w-0"><dt className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Order Reference</dt><dd className="mt-1 break-all font-medium text-slate-900">{selectedRecord.orderReference || '—'}</dd></div>
+                                    <div className="min-w-0"><dt className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Order Date</dt><dd className="mt-1 font-medium text-slate-900">{formatDateShort(getOrderDate(selectedRecord))}</dd></div>
+                                    <div className="min-w-0"><dt className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Due Date</dt><dd className="mt-1 font-medium text-slate-900">{formatDateShort(selectedRecord.dueDate)}</dd></div>
+                                    {getDatePaid(selectedRecord) && <div className="min-w-0"><dt className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Date Paid</dt><dd className="mt-1 font-medium text-slate-900">{formatDateShort(getDatePaid(selectedRecord))}</dd></div>}
+                                    <div className="min-w-0"><dt className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Processed By</dt><dd className="mt-1 break-words font-medium text-slate-900">{getCreditProcessorDisplayName(selectedRecord)}</dd></div>
+                                    {selectedRecord.originalDueDate && <div className="min-w-0"><dt className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Recorded Original Due Date</dt><dd className="mt-1 font-medium text-slate-900">{formatDateShort(selectedRecord.originalDueDate)}</dd></div>}
+                                    {Number(selectedRecord.termDays) > 0 && <div className="min-w-0"><dt className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Credit Term</dt><dd className="mt-1 font-medium text-slate-900">{formatNumber(selectedRecord.termDays)} days</dd></div>}
+                                </dl>
+                            </section>
 
-                            {String(selectedRecord.status || '').toLowerCase() === 'paid' && (
-                                <div>
-                                    <h4 className="mb-2 text-xs font-semibold tracking-wider text-gray-500">Paid Payment Details</h4>
-                                    <div className="grid grid-cols-1 gap-2 text-sm sm:grid-cols-3">
-                                        <div className="rounded-lg border border-gray-100 bg-gray-50 p-2">
-                                            <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Payment Date</p>
-                                            <p className="font-semibold text-gray-900">{getDatePaid(selectedRecord) ? formatDateShort(getDatePaid(selectedRecord)) : '-'}</p>
-                                        </div>
-                                        <div className="rounded-lg border border-gray-100 bg-gray-50 p-2">
-                                            <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Payment Method</p>
-                                            <p className="font-semibold capitalize text-gray-900">{getCreditPaymentMode(selectedRecord)}</p>
-                                        </div>
-                                        <div className="rounded-lg border border-gray-100 bg-gray-50 p-2">
-                                            <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Proof of Payment</p>
-                                            {selectedRecord.proofOfPayment ? (
-                                                <button
-                                                    type="button"
-                                                    onClick={handleViewProof}
-                                                    className="mt-0.5 text-xs font-semibold text-gray-900 underline underline-offset-2 hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-900/20 rounded"
-                                                >
-                                                    View Proof
-                                                </button>
-                                            ) : (
-                                                <p className="font-semibold text-gray-500">Not Available</p>
-                                            )}
-                                        </div>
-                                    </div>
-                                </div>
-                            )}
+                            <section aria-label="Payment summary" className="rounded-xl border border-slate-200 bg-white p-3.5 sm:p-4">
+                                <h3 className="text-sm font-semibold text-slate-900">Payment Summary</h3>
+                                <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 text-sm sm:grid-cols-4">
+                                    <div className="min-w-0"><dt className="text-xs text-slate-500">Total Amount</dt><dd className="mt-1 font-semibold tabular-nums text-slate-900">{formatMoney(selectedRecord.totalAmount)}</dd></div>
+                                    <div className="min-w-0"><dt className="text-xs text-slate-500">Down Payment</dt><dd className="mt-1 font-semibold tabular-nums text-slate-900">{getDownPayment(selectedRecord) ? formatMoney(getDownPayment(selectedRecord).amount) : '—'}</dd><dd className="mt-0.5 text-[10px] text-slate-500">Included in Total Paid</dd></div>
+                                    <div className="min-w-0"><dt className="text-xs text-slate-500">Total Paid</dt><dd className="mt-1 font-semibold tabular-nums text-slate-900">{formatMoney(selectedRecord.amountPaid)}</dd></div>
+                                    <div className="min-w-0"><dt className="text-xs text-slate-500">Remaining Balance</dt><dd className={`mt-1 font-semibold tabular-nums ${Number(selectedRecord.remainingBalance || 0) > 0 ? 'text-amber-800' : 'text-slate-900'}`}>{formatMoney(selectedRecord.remainingBalance)}</dd></div>
+                                </dl>
+                            </section>
 
-                            <div>
-                                <h4 className="text-xs font-semibold tracking-wider text-gray-500 mb-2">Order Items</h4>
-                                <div className="border border-gray-200 rounded-lg overflow-hidden">
-                                    <table className="w-full text-xs">
-                                        <thead className="bg-gray-50 border-b border-gray-200">
-                                            <tr className="text-left text-[11px] uppercase tracking-wider text-gray-500">
-                                                <th className="px-2 py-1.5">Item</th>
-                                                <th className="px-2 py-1.5 text-center">Qty</th>
-                                                <th className="px-2 py-1.5 text-right">Unit</th>
-                                                <th className="px-2 py-1.5 text-right">Subtotal</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {(selectedRecord.orderId?.items || []).length === 0 ? (
-                                                <tr>
-                                                    <td className="px-2 py-3 text-gray-500 text-center" colSpan={4}>No order items available.</td>
+                            <section aria-label="Order items" className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                                <div className="border-b border-slate-200 px-3.5 py-2.5 sm:px-4"><h3 className="text-sm font-semibold text-slate-900">Order Items</h3></div>
+                                <div className="overflow-x-auto">
+                                    <table className="w-full min-w-[620px] table-fixed border-collapse text-sm">
+                                        <colgroup><col className="w-[52%]" /><col className="w-[14%]" /><col className="w-[17%]" /><col className="w-[17%]" /></colgroup>
+                                        <thead className="bg-slate-900 text-white"><tr><th scope="col" className="px-3 py-2.5 text-left text-xs font-semibold sm:px-4">Item</th><th scope="col" className="whitespace-nowrap px-2 py-2.5 text-right text-xs font-semibold">Quantity</th><th scope="col" className="whitespace-nowrap px-3 py-2.5 text-right text-xs font-semibold">Unit Price</th><th scope="col" className="whitespace-nowrap px-3 py-2.5 text-right text-xs font-semibold sm:px-4">Subtotal</th></tr></thead>
+                                        <tbody className="divide-y divide-slate-200 text-slate-700">
+                                            {(selectedRecord.orderId?.items || []).length === 0 ? <tr><td className="px-4 py-7 text-center text-sm text-slate-500" colSpan={4}>No order items available.</td></tr> : (selectedRecord.orderId?.items || []).map((item, idx) => (
+                                                <tr key={`${item.code || item.name || 'item'}-${idx}`}>
+                                                    <td className="px-3 py-3 align-top sm:px-4"><p className="break-words font-semibold leading-5 text-slate-950">{getTransactionProductDisplayName(item, processedInventory, productCategories)}</p><p className="mt-0.5 break-all text-xs text-slate-500">{item.code || '—'}</p></td>
+                                                    <td className="whitespace-nowrap px-2 py-3 text-right align-top tabular-nums">{formatNumber(item.quantity)}</td>
+                                                    <td className="whitespace-nowrap px-3 py-3 text-right align-top tabular-nums">{formatMoney(item.unitPrice)}</td>
+                                                    <td className="whitespace-nowrap px-3 py-3 text-right align-top font-medium tabular-nums sm:px-4">{formatMoney(item.subtotal)}</td>
                                                 </tr>
-                                            ) : (
-                                                (selectedRecord.orderId?.items || []).map((item, idx) => (
-                                                    <tr key={`${item.code || item.name || 'item'}-${idx}`} className="border-b border-gray-100">
-                                                        <td className="px-2 py-1.5">
-                                                            <div className="font-semibold text-gray-900">{item.name || 'Item'}</div>
-                                                            <div className="text-[10px] text-gray-500">{item.code || '-'}</div>
-                                                        </td>
-                                                        <td className="px-2 py-1.5 text-center font-semibold">{item.quantity}</td>
-                                                        <td className="px-2 py-1.5 text-right">{formatMoney(item.unitPrice)}</td>
-                                                        <td className="px-2 py-1.5 text-right font-semibold">{formatMoney(item.subtotal)}</td>
-                                                    </tr>
-                                                ))
-                                            )}
+                                            ))}
                                         </tbody>
                                     </table>
                                 </div>
-                            </div>
+                            </section>
 
+                            <section aria-label="Payment history" className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                                <div className="border-b border-slate-200 px-3.5 py-2.5 sm:px-4"><h3 className="text-sm font-semibold text-slate-900">Payment History</h3></div>
+                                <div className="overflow-x-auto">
+                                    <table className="w-full min-w-[680px] border-collapse text-xs">
+                                        <thead className="bg-slate-900 text-white"><tr><th scope="col" className="px-3 py-2.5 text-left text-xs font-semibold sm:px-4">Date</th><th scope="col" className="px-2 py-2.5 text-left text-xs font-semibold">Type</th><th scope="col" className="px-3 py-2.5 text-right text-xs font-semibold">Amount</th><th scope="col" className="px-3 py-2.5 text-left text-xs font-semibold">Method</th><th scope="col" className="px-3 py-2.5 text-left text-xs font-semibold">Reference</th><th scope="col" className="px-3 py-2.5 text-left text-xs font-semibold sm:px-4">Evidence</th></tr></thead>
+                                        <tbody className="divide-y divide-slate-200 text-slate-700">
+                                            {(selectedRecord.paymentHistory || []).length === 0 ? <tr><td colSpan={6} className="px-3 py-7 text-center text-sm text-slate-500">No payments recorded yet.</td></tr> : (selectedRecord.paymentHistory || []).map((payment, index) => (
+                                                <tr key={`${payment.clientRequestId || payment.paymentDate || 'payment'}-${index}`}>
+                                                    <td className="whitespace-nowrap px-3 py-2.5 sm:px-4">{formatDateShort(payment.paymentDate)}</td>
+                                                    <td className="whitespace-nowrap px-2 py-2.5">{getPaymentEventLabel(selectedRecord, payment, index)}</td>
+                                                    <td className="whitespace-nowrap px-3 py-2.5 text-right font-semibold tabular-nums">{formatMoney(payment.amount)}</td>
+                                                    <td className="px-3 py-2.5 capitalize">{payment.method || '—'}</td>
+                                                    <td className="max-w-36 truncate px-3 py-2.5" title={payment.reference || ''}>{payment.reference || '—'}</td>
+                                                    <td className="px-3 py-2.5 sm:px-4">{payment.clientRequestId && (payment.proofs?.length || payment.proof?.storageKey) ? <div className="flex flex-wrap gap-1">{(payment.proofs?.length ? payment.proofs : [payment.proof]).map((proof, proofIndex) => <button key={`${proof.storageKey}-${proofIndex}`} type="button" onClick={() => handleViewPaymentProof(payment, proofIndex)} className="rounded px-1 font-semibold text-slate-800 underline underline-offset-2 hover:text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-600">View {proofIndex + 1}</button>)}</div> : '—'}</td>
+                                                </tr>
+                                            ))}
+                                            {selectedRecord.proofOfPayment && !selectedLegacyProofIsInHistory && <tr><td className="whitespace-nowrap px-3 py-2.5 sm:px-4">{getDatePaid(selectedRecord) ? formatDateShort(getDatePaid(selectedRecord)) : '—'}</td><td className="px-2 py-2.5">Payment Evidence</td><td className="px-3 py-2.5 text-right text-slate-500">—</td><td className="px-3 py-2.5 capitalize">{getCreditPaymentMode(selectedRecord)}</td><td className="px-3 py-2.5 text-slate-500">—</td><td className="px-3 py-2.5 sm:px-4"><button type="button" onClick={handleViewProof} className="rounded px-1 font-semibold text-slate-800 underline underline-offset-2 hover:text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-600">View Proof</button></td></tr>}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </section>
+
+                            {String(selectedRecord.status || '').toLowerCase() === 'cancelled' && <section aria-label="Cancellation details" className="rounded-xl border border-slate-200 bg-white p-3.5 text-sm text-slate-700 sm:p-4">
+                                <h3 className="font-semibold text-slate-900">Cancellation</h3>
+                                <p className="mt-1.5">Reason: {selectedRecord.cancelReason || '—'}</p>
+                                <p className="mt-1.5 text-xs text-slate-600">Previously recorded payments remain in Payment History; cancellation does not refund them.</p>
+                                {(selectedRecord.cancelProofs || []).length > 0 && <div className="mt-3 flex flex-wrap gap-2">{selectedRecord.cancelProofs.map((proof, index) => <button key={`${proof.storageKey}-${index}`} type="button" onClick={() => handleViewCancellationProof(index)} className="font-semibold text-slate-800 underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-600">View Cancellation Proof {index + 1}</button>)}</div>}
+                            </section>}
                         </div>
-                        {isFullyPaidCreditTransaction(selectedRecord) && (
-                            <div className="flex justify-end gap-2 border-t border-gray-200 bg-gray-50 px-4 py-2.5">
-                                <button type="button" onClick={() => setIsDetailsOpen(false)} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-700 shadow-sm transition-all hover:bg-gray-100">Close</button>
-                                <button type="button" onClick={() => openCreditReceiptPreview(selectedRecord, { isReprint: true })} className="rounded-lg border-2 border-gray-900 bg-gray-900 px-3 py-2 text-xs font-semibold text-white shadow-md transition-all hover:opacity-90">Print Receipt</button>
-                            </div>
-                        )}
-                    </div>
+
+                        {selectedCreditConfirmation && <footer className="flex shrink-0 justify-end border-t border-slate-200 bg-white px-4 py-3 sm:px-5">
+                            <button type="button" onClick={handleViewConfirmation} className="inline-flex min-h-10 items-center justify-center rounded-lg border border-slate-900 bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-600 focus-visible:ring-offset-2">View Confirmation</button>
+                        </footer>}
+                    </section>
                 </div>
             )}
 
-            {creditReceiptPreview?.transaction && (
-                <ReceiptPreviewModal
-                    transaction={creditReceiptPreview.transaction}
+            {creditConfirmationView && (
+                <OrderConfirmationModal
+                    transaction={creditConfirmationView.transaction}
+                    customer={creditConfirmationView.customer}
                     settings={appSettings}
-                    isCreditPaymentConfirmation
-                    subtitle={`Credit payment for ${creditReceiptPreview.record.creditTransactionId}`}
-                    isReprint={creditReceiptPreview.isReprint}
-                    printStatus={creditReceiptPrintStatus}
-                    printLabel="Print Confirmation"
-                    contentId="credit-transaction-receipt-content"
-                    onClose={closeCreditReceiptPreview}
-                    onPrint={printCreditReceipt}
+                    readOnly
+                    onBack={() => setCreditConfirmationView(null)}
+                    onContinue={() => setCreditConfirmationView(null)}
                 />
             )}
 
             {proofLightbox && (
                 <div className="app-modal-backdrop fixed inset-0 z-[60] flex items-center justify-center bg-black/75 p-4" role="dialog" aria-modal="true" aria-label="Proof of Payment preview">
-                    <div className="relative max-h-full max-w-4xl">
+                    <div className="relative max-h-full max-w-4xl" onClick={(event) => event.stopPropagation()}>
                         <img src={proofLightbox.url} alt={proofLightbox.fileName} className="max-h-[85vh] max-w-full rounded-lg bg-white object-contain shadow-2xl" />
                         <button
                             type="button"
@@ -1250,17 +1309,21 @@ const CreditTransactions = () => {
                 </div>
             )}
 
+            {isCustomerOverdueHistoryOpen && (
+                <CustomerOverdueHistoryModal onClose={() => setIsCustomerOverdueHistoryOpen(false)} />
+            )}
+
             {isMarkPaidModalOpen && markPaidTarget && !isCancelModalOpen && (
                 <div className="app-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-                    <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-md flex-col overflow-hidden rounded-2xl bg-white shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+                    <div onClick={(event) => event.stopPropagation()} className="flex max-h-[calc(100vh-2rem)] w-full max-w-md flex-col overflow-hidden rounded-2xl bg-white shadow-2xl animate-in fade-in zoom-in-95 duration-200">
                         <div className="px-5 py-3.5 border-b border-gray-100 bg-linear-to-r from-gray-50 to-white flex items-center justify-between rounded-t-2xl">
                             <div className="flex items-center gap-2.5">
                                 <div className="w-8 h-8 rounded-lg bg-gray-900 flex items-center justify-center">
                                     <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path></svg>
                                 </div>
                                 <div>
-                                    <h3 className="font-semibold text-sm text-gray-900 leading-tight">{markPaidModalMode === 'extendOnly' ? 'Extend Day Term' : 'Mark as Paid'}</h3>
-                                    <p className="text-gray-400 text-[10px] mt-0.5">{markPaidModalMode === 'extendOnly' ? 'Update the due date without recording payment.' : 'Confirm and complete this credit transaction.'}</p>
+                                    <h3 className="font-semibold text-sm text-gray-900 leading-tight">{markPaidModalMode === 'extendOnly' ? 'Extend Day Term' : 'Record Payment'}</h3>
+                                    <p className="text-gray-400 text-[10px] mt-0.5">{markPaidModalMode === 'extendOnly' ? 'Update the due date without recording payment.' : 'Record a confirmed partial or final payment.'}</p>
                                 </div>
                             </div>
                             <button
@@ -1296,16 +1359,20 @@ const CreditTransactions = () => {
                                 <>
                                     <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                                         <div>
-                                            <label className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">Amount</label>
+                                            <label className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">Payment Amount (₱)</label>
                                             <input
                                                 type="text"
+                                                name="paymentAmount"
+                                                data-validation-key="paymentAmount"
                                                 inputMode="decimal"
-                                                min="0.01"
-                                                step="0.01"
                                                 value={markPaidForm.amount}
-                                                readOnly
-                                                className="mt-1 w-full p-2 bg-gray-50 border border-gray-200 rounded-lg text-xs font-semibold text-gray-900"
+                                                onChange={(e) => setMarkPaidForm((prev) => ({ ...prev, amount: e.target.value }))}
+                                                readOnly={markPaidTarget?.collectionSource === 'special_order_ledger'}
+                                                aria-invalid={Boolean(paymentAmountError)}
+                                                aria-describedby={paymentAmountError ? 'credit-payment-amount-error' : 'credit-payment-balance-after'}
+                                                className={`mt-1 w-full p-2 bg-white border rounded-lg text-xs font-semibold text-gray-900 outline-none ${paymentAmountError ? 'border-rose-400 focus:border-rose-500 focus:ring-2 focus:ring-rose-100' : 'border-gray-300 focus:border-gray-900 focus:ring-2 focus:ring-gray-900/10'}`}
                                             />
+                                            {paymentAmountError && <p id="credit-payment-amount-error" role="alert" className="mt-1 text-[10px] font-medium text-rose-600">{paymentAmountError}</p>}
                                         </div>
                                         <div>
                                             <label className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">Payment Date</label>
@@ -1316,6 +1383,12 @@ const CreditTransactions = () => {
                                                 className="mt-1 w-full p-2 bg-gray-50 border border-gray-200 rounded-lg text-xs font-semibold text-gray-700"
                                             />
                                         </div>
+                                    </div>
+                                    <div id="credit-payment-balance-after" className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-lg border border-gray-200 bg-gray-50 p-2 text-xs">
+                                        <div><p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Invoice Total</p><p className="mt-0.5 font-semibold text-gray-900">{formatMoney(markPaidTarget.totalAmount)}</p></div>
+                                        <div><p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Total Paid</p><p className="mt-0.5 font-semibold text-gray-900">{formatMoney(markPaidTarget.amountPaid)}</p></div>
+                                        <div><p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Remaining Balance</p><p className="mt-0.5 font-semibold text-gray-900">{formatMoney(markPaidTarget.remainingBalance)}</p></div>
+                                        <div><p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Balance After Payment</p><p className="mt-0.5 font-semibold text-gray-900">{balanceAfterPayment === null ? '—' : formatMoney(balanceAfterPayment)}</p></div>
                                     </div>
                                     <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                                         <div>
@@ -1331,6 +1404,7 @@ const CreditTransactions = () => {
                                             <label className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">Payment Method</label>
                                             <button
                                                 type="button"
+                                                data-validation-key="paymentMethod"
                                                 onClick={() => setIsMarkPaidPaymentMethodOpen((prev) => !prev)}
                                                 aria-haspopup="listbox"
                                                 aria-expanded={isMarkPaidPaymentMethodOpen}
@@ -1369,6 +1443,8 @@ const CreditTransactions = () => {
                                                 <input
                                                     ref={customMarkPaidPaymentMethodInputRef}
                                                     type="text"
+                                                    name="paymentMethodOther"
+                                                    data-validation-key="paymentMethodOther"
                                                     value={markPaidForm.paymentMethodOther || ''}
                                                     onChange={(e) => setMarkPaidForm((prev) => ({ ...prev, paymentMethodOther: e.target.value }))}
                                                     onBlur={(e) => setMarkPaidForm((prev) => ({ ...prev, paymentMethodOther: normalizeHumanReadable(e.target.value) }))}
@@ -1385,6 +1461,16 @@ const CreditTransactions = () => {
                                             )}
                                         </div>
                                     </div>
+                                    <label className="block text-[11px] font-semibold uppercase tracking-wider text-gray-500">
+                                        Payment Reference (Optional)
+                                        <input
+                                            type="text"
+                                            value={markPaidForm.reference || ''}
+                                            onChange={(e) => setMarkPaidForm((prev) => ({ ...prev, reference: e.target.value }))}
+                                            placeholder="Reference or confirmation number"
+                                            className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-2 py-2 text-xs font-semibold text-gray-800 outline-none focus:border-gray-900 focus:ring-2 focus:ring-gray-900/10"
+                                        />
+                                    </label>
                                 </>
                             ) : (
                                 <div className="grid grid-cols-2 gap-2.5">
@@ -1428,6 +1514,8 @@ const CreditTransactions = () => {
                                             </button>
                                             <input
                                                 type="text"
+                                                name="extensionDays"
+                                                data-validation-key="extensionDays"
                                                 inputMode="numeric"
                                                 pattern="[0-9]*"
                                                 min="0"
@@ -1471,48 +1559,7 @@ const CreditTransactions = () => {
                                 </div>
                             </div>
                             {markPaidModalMode === 'markPaid' && (
-                                <div>
-                                    <label htmlFor="credit-payment-proof" className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">Proof of Payment <span className="text-rose-500">*</span></label>
-                                    <input
-                                        id="credit-payment-proof"
-                                        ref={proofInputRef}
-                                        type="file"
-                                        accept="image/jpeg,image/png,.jpg,.jpeg,.png"
-                                        onChange={(event) => handleProofSelection(event.target.files?.[0])}
-                                        className="sr-only"
-                                    />
-                                    {proofFile ? (
-                                        <div className="mt-1 flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 p-1.5">
-                                            <img src={proofPreviewUrl} alt="Selected proof preview" className="h-8 w-8 shrink-0 rounded-md border border-gray-200 object-cover" />
-                                            <p className="min-w-0 flex-1 truncate text-xs font-medium text-gray-700" title={proofFile.name}>{proofFile.name}</p>
-                                            <button
-                                                type="button"
-                                                onClick={() => proofInputRef.current?.click()}
-                                                className="text-[11px] font-semibold text-gray-700 hover:text-gray-950 focus:outline-none focus:ring-2 focus:ring-gray-900/20 rounded"
-                                            >
-                                                Replace
-                                            </button>
-                                            <button
-                                                type="button"
-                                                onClick={clearProofSelection}
-                                                className="text-[11px] font-semibold text-rose-600 hover:text-rose-700 focus:outline-none focus:ring-2 focus:ring-rose-300 rounded"
-                                            >
-                                                Remove
-                                            </button>
-                                        </div>
-                                    ) : (
-                                        <button
-                                            type="button"
-                                            onClick={() => proofInputRef.current?.click()}
-                                            className={`mt-1 flex w-full items-center justify-center rounded-lg border border-dashed px-3 py-1.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 ${proofError ? 'border-rose-400 bg-rose-50 text-rose-700 focus:ring-rose-200' : 'border-gray-300 bg-gray-50 text-gray-700 hover:border-gray-400 hover:bg-gray-100 focus:ring-gray-900/20'}`}
-                                        >
-                                            Select Proof
-                                        </button>
-                                    )}
-                                    <p className={`mt-1 text-[10px] ${proofError || !proofFile ? 'text-rose-600' : 'text-gray-400'}`}>
-                                        {proofError || (!proofFile ? 'Proof of Payment is required.' : 'JPG, JPEG, or PNG. Maximum 5 MB.')}
-                                    </p>
-                                </div>
+                                <EvidenceUploadField id="credit-payment-proof" validationKey="proofFiles" label="Proof of Payment" files={proofFiles} onChange={(files) => { setProofFiles(files); setProofError(''); }} minFiles={1} maxFiles={3} disabled={isSavingMarkPaid} error={proofError} />
                             )}
                             <div>
                                 <label className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">Notes (Optional)</label>
@@ -1560,10 +1607,10 @@ const CreditTransactions = () => {
                                 {markPaidModalMode === 'markPaid' && (
                                     <button
                                         type="submit"
-                                        disabled={isSavingMarkPaid || isSavingExtensionOnly || isCancellingCredit || Boolean(extensionInputError) || !proofFile}
-                                        className={`flex-1 py-2.5 rounded-xl text-xs font-semibold text-white shadow-md transition-all transform ${(isSavingMarkPaid || isSavingExtensionOnly || extensionInputError || !proofFile) ? 'bg-gray-500 cursor-not-allowed' : 'bg-gray-900 hover:opacity-90 hover:-translate-y-0.5'}`}
+                                        disabled={isSavingMarkPaid || isSavingExtensionOnly || isCancellingCredit || Boolean(paymentAmountError) || proofFiles.length < 1}
+                                        className={`flex-1 py-2.5 rounded-xl text-xs font-semibold text-white shadow-md transition-all transform ${(isSavingMarkPaid || isSavingExtensionOnly || paymentAmountError || proofFiles.length < 1) ? 'bg-gray-500 cursor-not-allowed' : 'bg-gray-900 hover:opacity-90 hover:-translate-y-0.5'}`}
                                     >
-                                        {isSavingMarkPaid ? 'Saving...' : 'Mark as Paid'}
+                                        {isSavingMarkPaid ? 'Saving...' : 'Record Payment'}
                                     </button>
                                 )}
                             </div>
@@ -1574,10 +1621,10 @@ const CreditTransactions = () => {
 
             {isCancelModalOpen && markPaidTarget && (
                 <div className="app-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-                    <div className="w-full max-w-sm overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl animate-in fade-in zoom-in-95 duration-200 dark:border-slate-700 dark:bg-slate-900">
+                    <div onClick={(event) => event.stopPropagation()} className="max-h-[90vh] w-full max-w-sm overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-xl animate-in fade-in zoom-in-95 duration-200 dark:border-slate-700 dark:bg-slate-900">
                         <div className="border-b border-slate-200 px-5 py-4 dark:border-slate-700">
                             <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Cancel Credit Order</h3>
-                            <p className="mt-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">Provide a reason before cancelling this credit transaction.</p>
+                            <p className="mt-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">Provide a reason and 1–3 proof photos. Cancellation does not refund recorded payments.</p>
                         </div>
 
                         <div className="px-5 py-4">
@@ -1590,6 +1637,7 @@ const CreditTransactions = () => {
                                             <p className="mt-1 text-[11px] leading-4 text-slate-600 dark:text-slate-400">
                                                 Cancel <span className="font-semibold text-slate-800 dark:text-slate-200">Transaction {markPaidForm.transactionId || '-'}</span>? This action will update its status.
                                             </p>
+                                            <p className="mt-1 text-[11px] text-rose-700">Previously collected payments are not refunded or reversed. {cancelProofFiles.length} proof photo(s) attached.</p>
                                         </div>
                                     </div>
                                 </div>
@@ -1607,6 +1655,8 @@ const CreditTransactions = () => {
                                     <p className="mt-1.5 text-[10px] text-slate-500 dark:text-slate-400">Required to cancel this credit order.</p>
                                 </div>
                             )}
+
+                            {!isCancelConfirmOpen && <div className="mt-3"><EvidenceUploadField id="credit-cancel-proof" label="Proof of Cancellation" files={cancelProofFiles} onChange={setCancelProofFiles} minFiles={1} maxFiles={3} disabled={isCancellingCredit} /></div>}
 
                             <div className="mt-4 flex gap-2.5">
                                 <button
@@ -1629,8 +1679,8 @@ const CreditTransactions = () => {
                                         }
                                         handleCancelCreditOrder();
                                     }}
-                                    disabled={isCancellingCredit || !String(markPaidForm.cancelReason || '').trim()}
-                                    className={`flex-1 rounded-xl border py-2.5 text-xs font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-300 ${(isCancellingCredit || !String(markPaidForm.cancelReason || '').trim()) ? 'cursor-not-allowed border-rose-200 bg-rose-100 text-rose-400 dark:border-rose-950 dark:bg-rose-950/35 dark:text-rose-700' : 'border-rose-700 bg-rose-700 text-white hover:border-rose-800 hover:bg-rose-800 dark:border-rose-800 dark:bg-rose-900/70 dark:text-rose-100 dark:hover:bg-rose-900'}`}
+                                    disabled={isCancellingCredit || !String(markPaidForm.cancelReason || '').trim() || cancelProofFiles.length < 1}
+                                    className={`flex-1 rounded-xl border py-2.5 text-xs font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-300 ${(isCancellingCredit || !String(markPaidForm.cancelReason || '').trim() || cancelProofFiles.length < 1) ? 'cursor-not-allowed border-rose-200 bg-rose-100 text-rose-400 dark:border-rose-950 dark:bg-rose-950/35 dark:text-rose-700' : 'border-rose-700 bg-rose-700 text-white hover:border-rose-800 hover:bg-rose-800 dark:border-rose-800 dark:bg-rose-900/70 dark:text-rose-100 dark:hover:bg-rose-900'}`}
                                 >
                                     {isCancellingCredit ? 'Cancelling...' : (isCancelConfirmOpen ? 'Confirm' : 'Cancel Order')}
                                 </button>

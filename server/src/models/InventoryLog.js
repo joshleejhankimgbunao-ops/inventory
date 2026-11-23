@@ -21,6 +21,9 @@ const inventoryLogSchema = new mongoose.Schema(
       default: null,
       index: true,
     },
+    saleRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Sale', default: null, index: true },
+    specialOrderRef: { type: mongoose.Schema.Types.ObjectId, ref: 'SpecialOrder', default: null, index: true },
+    batchMovementRefs: [{ type: mongoose.Schema.Types.ObjectId, ref: 'ExpiryBatchMovement' }],
     userRef: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
@@ -61,5 +64,6 @@ const inventoryLogSchema = new mongoose.Schema(
 );
 
 inventoryLogSchema.index({ createdAt: -1 });
+inventoryLogSchema.index({ productRef: 1, createdAt: -1, _id: -1 });
 
 module.exports = mongoose.model('InventoryLog', inventoryLogSchema);

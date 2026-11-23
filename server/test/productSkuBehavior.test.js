@@ -24,10 +24,12 @@ require.cache[realtimeServicePath] = {
 
 const Product = require('../src/models/Product');
 const Category = require('../src/models/Category');
+const Sale = require('../src/models/Sale');
 const {
   addProductRecommendation,
   createProduct,
   generateNextSku,
+  listProducts,
   normalizeSku,
   removeProductRecommendation,
   updateProduct,
@@ -47,11 +49,173 @@ const makeResponse = () => ({
   },
 });
 
+test('Add Product distinguishes configured selling units but rejects same-unit, archived and legacy conflicts', async () => {
+  const originalFind = Product.find;
+  const originalFindOne = Product.findOne;
+  const originalCreate = Product.create;
+  const originalCategoryFindOne = Category.findOne;
+  const categoryId = '507f1f77bcf86cd799439011';
+  const category = {
+    _id: categoryId, name: 'Fasteners', isActive: true, attributeSchemaVersion: 1,
+    productAttributes: [{ name: 'Size / Variant', key: 'size_variant', type: 'text', required: true }],
+    sizeUnits: ['pcs', 'box', 'pack'],
+  };
+  const existing = { _id: 'existing', sku: 'OTH-012', name: 'Concrete Nails', category: 'Fasteners',
+    categoryRef: categoryId, attributes: { size_variant: '4' }, sellingUnit: 'pcs', stock: 100, price: 10, isActive: true };
+  let rows = [existing];
+  const created = [];
+  Product.find = async () => rows;
+  Product.findOne = async () => null;
+  Product.create = async (payload) => { created.push(payload); return { _id: `created-${created.length}`, ...payload }; };
+  Category.findOne = async () => category;
+  const add = async (sku, unit, size = '4') => {
+    const response = makeResponse();
+    await createProduct(makeRequest({ name: 'Concrete Nails', sku, category: 'Fasteners',
+      attributes: { size_variant: size }, sellingUnit: unit, stock: 0, price: 25 }), response, assert.fail);
+    return response;
+  };
+  try {
+    assert.equal((await add('OTH-014', 'PCS')).statusCode, 409);
+    assert.equal((await add('OTH-015', ' pack ')).statusCode, 201);
+    assert.equal(created.at(-1).sellingUnit, 'pack');
+    assert.equal(created.at(-1).sku, 'OTH-015');
+    assert.equal(created.at(-1).stock, 0);
+    assert.equal(created.at(-1).price, 25);
+    assert.equal(existing.stock, 100);
+    assert.equal((await add('OTH-016', 'pcs', '5')).statusCode, 201);
+    assert.equal((await add('OTH-017', 'kg')).statusCode, 400);
+    assert.equal(created.length, 2);
+
+    category.sizeUnits = ['pcs'];
+    assert.equal((await add('OTH-021', 'pack')).statusCode, 400);
+    category.sizeUnits = ['pcs', 'box', 'pack'];
+
+    rows = [{ ...existing, isActive: false }];
+    assert.equal((await add('OTH-018', 'pcs')).statusCode, 409);
+    rows = [{ ...existing, sellingUnit: '' }];
+    assert.equal((await add('OTH-019', 'pack')).statusCode, 409);
+    assert.equal((await add('OTH-020', 'pcs')).statusCode, 409);
+    assert.equal(created.length, 2);
+  } finally {
+    Product.find = originalFind;
+    Product.findOne = originalFindOne;
+    Product.create = originalCreate;
+    Category.findOne = originalCategoryFindOne;
+  }
+});
+
+test('Edit Product excludes its own ID and checks changed attributes and selling unit against other SKUs', async () => {
+  const originalFind = Product.find;
+  const originalFindById = Product.findById;
+  const originalFindOneAndUpdate = Product.findOneAndUpdate;
+  const originalCategoryFindOne = Category.findOne;
+  const originalSaleExists = Sale.exists;
+  const categoryId = '507f1f77bcf86cd799439011';
+  const category = {
+    _id: categoryId, name: 'Fasteners', isActive: true, attributeSchemaVersion: 1,
+    productAttributes: [{ name: 'Size / Variant', key: 'size_variant', type: 'text', required: true }],
+    sizeUnits: ['pcs', 'box', 'pack'],
+  };
+  const current = { _id: 'current', sku: 'OTH-009', name: 'Concrete Nails', category: 'Fasteners',
+    categoryRef: categoryId, attributes: { size_variant: '5' }, sellingUnit: 'pack', stock: 0, price: 25, isActive: true };
+  const other = { _id: 'other', sku: 'OTH-012', name: 'Concrete Nails', category: 'Fasteners',
+    categoryRef: categoryId, attributes: { size_variant: '4' }, sellingUnit: 'pcs', stock: 100, price: 10, isActive: true };
+  let rows = [current, other];
+  let writes = 0;
+  Product.findById = async () => current;
+  Product.find = async (filter) => rows.filter((row) => String(row._id) !== String(filter._id?.$ne || ''));
+  Product.findOneAndUpdate = async (_filter, payload) => { writes += 1; return { ...current, ...payload }; };
+  Category.findOne = async () => category;
+  Sale.exists = async () => false;
+  const edit = async (body) => {
+    const response = makeResponse();
+    await updateProduct({ ...makeRequest(body), params: { id: current._id } }, response, assert.fail);
+    return response;
+  };
+  try {
+    assert.equal((await edit({ price: 30 })).statusCode, 200);
+    assert.equal((await edit({ attributes: { size_variant: '4' }, sellingUnit: 'pack' })).statusCode, 200);
+    assert.equal((await edit({ sellingUnit: 'pcs' })).statusCode, 200);
+    assert.equal(writes, 3);
+
+    rows = [current, { ...other, sellingUnit: 'pack' }];
+    assert.equal((await edit({ attributes: { size_variant: '4' }, sellingUnit: 'pack' })).statusCode, 409);
+    rows = [current, { ...other, attributes: { size_variant: '5' } }];
+    assert.equal((await edit({ sellingUnit: 'pcs' })).statusCode, 409);
+    assert.equal((await edit({ sellingUnit: 'kg' })).statusCode, 400);
+    assert.equal(writes, 3);
+  } finally {
+    Product.find = originalFind;
+    Product.findById = originalFindById;
+    Product.findOneAndUpdate = originalFindOneAndUpdate;
+    Category.findOne = originalCategoryFindOne;
+    Sale.exists = originalSaleExists;
+  }
+});
+
 const makeRequest = (body = {}) => ({
-  body,
-  user: { _id: 'admin-1', name: 'Admin' },
+  body: { purchaseCost: 0, ...body },
+  user: { _id: 'admin-1', name: 'Admin', role: 'admin' },
   ip: '127.0.0.1',
   get: () => '',
+});
+
+test('Product creation requires a separate non-negative purchase cost and preserves it independently of selling price', async () => {
+  const originalFind = Product.find;
+  const originalFindOne = Product.findOne;
+  const originalCreate = Product.create;
+  const originalCategoryFindOne = Category.findOne;
+  const category = {
+    _id: '507f1f77bcf86cd799439011', name: 'Fasteners', isActive: true, attributeSchemaVersion: 1,
+    productAttributes: [{ name: 'Size / Variant', key: 'size_variant', type: 'text', required: true }],
+    sizeUnits: ['pcs'],
+  };
+  let createdPayload;
+  Product.find = async () => [];
+  Product.findOne = async () => null;
+  Product.create = async (payload) => { createdPayload = payload; return { _id: 'created-cost', ...payload }; };
+  Category.findOne = async () => category;
+
+  try {
+    const missingCost = makeResponse();
+    await createProduct(makeRequest({
+      name: 'Concrete Nails', sku: 'FAST-COST-1', category: 'Fasteners', attributes: { size_variant: '4' }, sellingUnit: 'pcs', stock: 0, price: 25, purchaseCost: undefined,
+    }), missingCost, assert.fail);
+    assert.equal(missingCost.statusCode, 400);
+    assert.match(missingCost.body.message, /purchaseCost is required/i);
+
+    const validCost = makeResponse();
+    await createProduct(makeRequest({
+      name: 'Concrete Nails', sku: 'FAST-COST-2', category: 'Fasteners', attributes: { size_variant: '5' }, sellingUnit: 'pcs', stock: 0, price: '25.50', purchaseCost: '12.75',
+    }), validCost, assert.fail);
+    assert.equal(validCost.statusCode, 201);
+    assert.equal(createdPayload.price, 25.5);
+    assert.equal(createdPayload.purchaseCost, 12.75);
+  } finally {
+    Product.find = originalFind;
+    Product.findOne = originalFindOne;
+    Product.create = originalCreate;
+    Category.findOne = originalCategoryFindOne;
+  }
+});
+
+test('Product cost remains available to product managers but is omitted from non-admin product responses', async () => {
+  const originalFind = Product.find;
+  const row = { _id: 'cost-visibility', sku: 'FAST-COST-3', name: 'Concrete Nails', stock: 10, reservedStock: 3, price: 25, purchaseCost: 12.75, isActive: true };
+  Product.find = () => ({ sort: () => ({ lean: async () => [row] }) });
+
+  try {
+    const cashierResponse = makeResponse();
+    await listProducts({ user: { role: 'cashier' } }, cashierResponse, assert.fail);
+    assert.equal(cashierResponse.body[0].purchaseCost, undefined);
+    assert.equal(cashierResponse.body[0].availableToSell, 7);
+
+    const adminResponse = makeResponse();
+    await listProducts({ user: { role: 'admin' } }, adminResponse, assert.fail);
+    assert.equal(adminResponse.body[0].purchaseCost, 12.75);
+  } finally {
+    Product.find = originalFind;
+  }
 });
 
 test('manual SKU is trimmed and normalized to uppercase without changing permitted business characters', () => {
@@ -60,45 +224,78 @@ test('manual SKU is trimmed and normalized to uppercase without changing permitt
   assert.match(validateSku(`A${String.fromCharCode(1)}B`), /control characters/i);
 });
 
-test('removing a recommendation persists the exclusion and rejects a no-op removal', async () => {
-  const originalUpdateOne = Product.updateOne;
+test('removing a manual recommendation preserves reviews and exclusions and rejects a no-op removal', async () => {
+  const { getAlternatives } = await import('../../src/utils/recommendationLogic.js');
+  const originalFindOneAndUpdate = Product.findOneAndUpdate;
   const originalFindById = Product.findById;
   const originalExists = Product.exists;
   const request = makeRequest();
-  request.params = { id: 'product-1', alternativeCode: 'alt-001' };
-  const updatedProduct = {
-    _id: 'product-1',
-    sku: 'TARGET-001',
-    name: 'Target Product',
-    manualAlternatives: [],
-    excludedAlternatives: ['ALT-001'],
+  request.params = { id: '111111111111111111111111', alternativeCode: 'alt-001' };
+  const candidate = {
+    id: '222222222222222222222222', code: 'ALT-001', name: 'Target Product',
+    category: 'Lumbers', size: 'Standard', sellingUnit: 'pcs', stock: 10, price: 100, isActive: true,
   };
 
   try {
-    Product.updateOne = async (filter, update) => {
-      assert.equal(filter._id, 'product-1');
-      assert.equal(filter.$or[0].manualAlternatives, 'ALT-001');
-      assert.equal(update.$addToSet.excludedAlternatives, 'ALT-001');
-      assert.equal(update.$pull.manualAlternatives, 'ALT-001');
-      return { matchedCount: 1, modifiedCount: 1 };
-    };
-    Product.findById = async () => updatedProduct;
-    Product.exists = async () => ({ _id: 'product-1' });
+    for (const { exclusions, decision, remainsEligible } of [
+      { exclusions: ['PRE-EXCLUDED'], decision: 'approved', remainsEligible: true },
+      { exclusions: ['ALT-001'], decision: 'approved', remainsEligible: false },
+      { exclusions: [], decision: 'rejected', remainsEligible: false },
+    ]) {
+      const review = { targetSku: 'TARGET-001', candidateProduct: candidate.id, candidateSku: candidate.code, decision };
+      const budgetBasis = { type: 'budget', targetSku: 'TARGET-001', candidateSku: 'OTHER-001' };
+      let currentTarget = {
+        _id: request.params.id, id: request.params.id, sku: 'TARGET-001', code: 'TARGET-001',
+        name: 'Target Product', category: 'Lumbers', size: 'Standard', sellingUnit: 'pcs',
+        stock: 10, price: 100, recommendationRevision: 2,
+        manualAlternatives: ['ALT-001'], manualBudgetOptions: ['OTHER-001'],
+        excludedAlternatives: [...exclusions], excludedBudgetOptions: ['OTHER-EXCLUDED'],
+        recommendationReviews: [review],
+        recommendationBases: [
+          { type: 'alternative', targetSku: 'TARGET-001', candidateProduct: candidate.id, candidateSku: candidate.code },
+          budgetBasis,
+        ],
+      };
+      Product.findById = async () => currentTarget;
+      Product.findOneAndUpdate = async (filter, update) => {
+        assert.equal(filter._id, request.params.id);
+        assert.equal(filter.sku, 'TARGET-001');
+        assert.equal(filter.manualAlternatives, 'ALT-001');
+        assert.deepEqual(filter.$expr, { $eq: [{ $ifNull: ['$recommendationRevision', 0] }, 2] });
+        assert.deepEqual(update.$pull, { manualAlternatives: 'ALT-001' });
+        assert.equal(update.$addToSet, undefined);
+        assert.equal(update.$unset, undefined);
+        assert.equal(update.$inc.recommendationRevision, 1);
+        assert.deepEqual(update.$set.recommendationBases, [budgetBasis]);
+        currentTarget = {
+          ...currentTarget,
+          manualAlternatives: [],
+          recommendationBases: update.$set.recommendationBases,
+          recommendationRevision: 3,
+        };
+        return currentTarget;
+      };
 
-    const successResponse = makeResponse();
-    await removeProductRecommendation(request, successResponse, assert.fail);
+      const successResponse = makeResponse();
+      await removeProductRecommendation(request, successResponse, assert.fail);
 
-    assert.equal(successResponse.statusCode, 200);
-    assert.deepEqual(successResponse.body.excludedAlternatives, ['ALT-001']);
+      assert.equal(successResponse.statusCode, 200);
+      assert.deepEqual(successResponse.body.manualAlternatives, []);
+      assert.deepEqual(successResponse.body.recommendationBases, [budgetBasis]);
+      assert.deepEqual(successResponse.body.excludedAlternatives, exclusions);
+      assert.deepEqual(successResponse.body.excludedBudgetOptions, ['OTHER-EXCLUDED']);
+      assert.deepEqual(successResponse.body.recommendationReviews, [review]);
+      assert.equal(getAlternatives(currentTarget, [candidate], {}).some((item) => item.code === candidate.code), remainsEligible);
 
-    Product.updateOne = async () => ({ matchedCount: 0, modifiedCount: 0 });
-    const noOpResponse = makeResponse();
-    await removeProductRecommendation(request, noOpResponse, assert.fail);
+      Product.findOneAndUpdate = async () => null;
+      const noOpResponse = makeResponse();
+      await removeProductRecommendation(request, noOpResponse, assert.fail);
 
-    assert.equal(noOpResponse.statusCode, 409);
-    assert.match(noOpResponse.body.message, /already removed|no longer available/i);
+      assert.equal(noOpResponse.statusCode, 409);
+      assert.match(noOpResponse.body.message, /already removed|no longer available/i);
+    }
   } finally {
-    Product.updateOne = originalUpdateOne;
+    Product.findOneAndUpdate = originalFindOneAndUpdate;
     Product.findById = originalFindById;
     Product.exists = originalExists;
   }
@@ -107,27 +304,28 @@ test('removing a recommendation persists the exclusion and rejects a no-op remov
 test('adding a recommendation persists an exact active SKU relationship without changing the product', async () => {
   const originalFindById = Product.findById;
   const originalFindOne = Product.findOne;
-  const originalUpdateOne = Product.updateOne;
-  const request = makeRequest({ type: 'budget', recommendationId: 'candidate-1', recommendationCode: 'alt-001' });
-  request.params = { id: 'product-1' };
-  const target = { _id: 'product-1', sku: 'TARGET-001', name: 'Target', manualBudgetOptions: [], excludedBudgetOptions: [] };
-  const candidate = { _id: 'candidate-1', sku: 'ALT-001', name: 'Alternative', isActive: true };
+  const originalFindOneAndUpdate = Product.findOneAndUpdate;
+  const request = makeRequest({ type: 'budget', recommendationId: '222222222222222222222222', recommendationCode: 'alt-001' });
+  request.params = { id: '111111111111111111111111' };
+  const target = { _id: '111111111111111111111111', sku: 'TARGET-001', name: 'Target', manualBudgetOptions: [], excludedBudgetOptions: [] };
+  const candidate = { _id: '222222222222222222222222', sku: 'ALT-001', name: 'Alternative', isActive: true };
 
   try {
     Product.findById = async () => target;
     Product.findOne = async (filter) => {
-      assert.equal(filter._id, 'candidate-1');
+      assert.equal(filter._id, '222222222222222222222222');
       assert.equal(filter.sku, 'ALT-001');
       assert.deepEqual(filter.isActive, { $ne: false });
       assert.deepEqual(filter.stock, { $gt: 0 });
       return candidate;
     };
-    Product.updateOne = async (filter, update) => {
+    Product.findOneAndUpdate = async (filter, update) => {
       assert.deepEqual(filter.manualBudgetOptions, { $ne: 'ALT-001' });
       assert.equal(update.$addToSet.manualBudgetOptions, 'ALT-001');
       assert.equal(update.$pull.excludedBudgetOptions, 'ALT-001');
       target.manualBudgetOptions = ['ALT-001'];
-      return { matchedCount: 1, modifiedCount: 1 };
+      assert.equal(update.$set.recommendationBases[0].candidateProduct, candidate._id);
+      return target;
     };
 
     const response = makeResponse();
@@ -137,7 +335,7 @@ test('adding a recommendation persists an exact active SKU relationship without 
   } finally {
     Product.findById = originalFindById;
     Product.findOne = originalFindOne;
-    Product.updateOne = originalUpdateOne;
+    Product.findOneAndUpdate = originalFindOneAndUpdate;
   }
 });
 

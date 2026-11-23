@@ -59,3 +59,31 @@ test('Special Order PDF filenames safely remove filesystem-unsafe characters', a
     'Special-Order-Transaction-SO-2026-001.pdf'
   );
 });
+
+test('ledger-funded Special Order PDF identifies uncalculated VAT and its payment history source', async () => {
+  const { createSpecialOrderTransactionPdf } = await loadSpecialOrderPdf();
+  const { pdf } = createSpecialOrderTransactionPdf({
+    order: { orderNumber: 'SO-LEDGER', status: 'Completed' },
+    transaction: { id: 'TRX-LEDGER', total: 100, items: [], paymentMethod: 'other', paymentStatus: 'Paid',
+      collectionSource: 'special_order_ledger', vatCalculationStatus: 'not_calculated', taxTreatment: 'standard' },
+  });
+  const documentText = pdf.output();
+  assert.match(documentText, /VAT-Rated/);
+  assert.match(documentText, /Not calculated/);
+  assert.match(documentText, /Special Order payment history/);
+  assert.match(documentText, /Transaction No\./);
+  assert.doesNotMatch(documentText, /Receipt No\./);
+  assert.doesNotMatch(documentText, /Payment Method.*Other/);
+});
+
+test('administrative closure is not presented as physical completion in the transaction PDF', async () => {
+  const { createSpecialOrderTransactionPdf } = await loadSpecialOrderPdf();
+  const { pdf } = createSpecialOrderTransactionPdf({
+    order: { orderNumber: 'SO-CLOSED', status: 'Completed', workflowVersion: 2 },
+    transaction: { id: 'TRX-CLOSED', total: 100, items: [], paymentMethod: 'cash', paymentStatus: 'Paid',
+      collectionSource: 'special_order_ledger', specialOrderFulfillmentStatus: 'Administrative Closure' },
+  });
+  const documentText = pdf.output();
+  assert.match(documentText, /Administratively Completed/);
+  assert.doesNotMatch(documentText, /Fulfillment: Completed|Delivered|Picked Up/);
+});

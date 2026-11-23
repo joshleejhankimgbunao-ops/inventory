@@ -1,4 +1,5 @@
 /* global require */
+/* global __dirname */
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
@@ -51,10 +52,12 @@ test('DashboardHome shares the date-resolved cashier dataset across cashier metr
   assert.match(source, /title="My Transactions"/);
   assert.match(source, /getCashierDashboardSales\(\s*selectedDateTransactions,/);
   assert.match(source, /getCashierSalesTotal\(cashierSelectedDateTransactions\)/);
-  assert.match(source, /transactionsForTopProducts\.forEach/);
-  assert.match(source, /My Top-Selling Products/);
-  assert.match(source, /Units Sold/);
-  assert.match(source, /Number\(product\.sales\) === 1 \? 'unit' : 'units'/);
+  assert.match(source, /transactionsForTopProducts\.filter\(isSalePhysicallyFulfilledForItemReporting\)/);
+  assert.match(source, /buildDashboardTopSellingProducts\(/);
+  assert.match(source, /My Top Products by Revenue/);
+  assert.match(source, /Sales Revenue/);
+  assert.match(source, /formatTopProductUnits\(product\.unitsSoldByUnit\)/);
+  assert.doesNotMatch(source, /unit not recorded/);
   assert.match(source, /View all/);
   assert.doesNotMatch(source, />Vol</);
   assert.match(source, /No products sold yet/);

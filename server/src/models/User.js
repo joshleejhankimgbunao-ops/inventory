@@ -23,6 +23,15 @@ const preferencesSchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
+    activityLogReadAt: {
+      type: Date,
+      default: null,
+    },
+    activityLogReadId: {
+      type: String,
+      default: '',
+      trim: true,
+    },
   },
   { _id: false }
 );

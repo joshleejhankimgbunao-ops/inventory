@@ -1,0 +1,7 @@
+{
+  "windowDays": 30,
+  "minimumObservationDays": 14,
+  "minimumNonMovingObservationDays": 30,
+  "fastVelocityUnitsPerDay": 0.25,
+  "thresholdRationale": "0.25 of a SKU selling unit/day is approximately 8 selling units per full 30-day window; it identifies frequent movers while retaining any positive lower-velocity SKU as Slow Moving. No category sample-size requirement is used."
+}

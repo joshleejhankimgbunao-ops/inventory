@@ -1,6 +1,10 @@
 const Setting = require('../models/Setting');
 const mongoose = require('mongoose');
-const { publishSettingsUpdated } = require('../services/realtimeService');
+const {
+  publishSettingsUpdated,
+  publishRealtimeResync,
+  revokeAllRealtimeConnections,
+} = require('../services/realtimeService');
 const { parseStrictDecimal, parseStrictWholeNumber } = require('../utils/numericValidation');
 const { toPublicSettings } = require('../config/publicSettings');
 const { BACKUP_SCHEMA_VERSION, BACKUP_COLLECTIONS, generateSystemBackup } = require('../services/systemBackupService');
@@ -502,6 +506,11 @@ const restoreSystemBackup = async (req, res, next) => {
     } finally {
       await session.endSession();
     }
+
+    // A restore may replace users and every operational collection. Notify connected
+    // clients only after the transaction commits, then force fresh authorization on reconnect.
+    publishRealtimeResync({ reason: 'system.restored' });
+    revokeAllRealtimeConnections();
 
     await reloadAutomaticBackupScheduler();
 

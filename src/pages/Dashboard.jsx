@@ -6,8 +6,8 @@ import AnimatedPage from '../components/AnimatedPage';
 import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
 import { ROLES, canAccess } from '../constants/roles';
-import { listUsersApi, updateMyPreferencesApi } from '../services/authApi';
-import { getPendingSaleVoidRequestCountApi, listCreditTransactionsApi } from '../services/inventoryApi';
+import { listUsersApi } from '../services/authApi';
+import { getPendingSaleVoidRequestCountApi, getUnreadActivityCountApi, listCreditTransactionsApi, markActivityLogsReadApi } from '../services/inventoryApi';
 import { subscribeRealtimeEvent } from '../services/realtimeClient';
 import { showToast } from '../utils/toastHelper';
 import { getPendingVoidRequestAlertSessionKey } from '../utils/pendingVoidRequests';
@@ -17,6 +17,13 @@ import { getActorDisplayName } from '../utils/actorDisplay';
 import logo from '../assets/logo.png';
 import DateTimeDisplay from '../components/DateTimeDisplay';
 import PageSkeleton from '../components/PageSkeleton';
+import ContextualEmptyState from '../components/ContextualEmptyState';
+import PosNavigationCartIcon from '../components/PosNavigationCartIcon';
+
+const getActivityLogDisplayText = (value) => String(value || '')
+    .replace(/Reconciled Expiry Batches/gi, 'Verified Expiry Batches')
+    .replace(/Expiry batches reconciled against verified physical stock/gi, 'Expiry batch quantities verified against physical stock')
+    .replace(/existing stock requires batch reconciliation/gi, 'existing stock needs batch verification');
 
 // Lazy Load Pages (prefetched on idle — see useEffect below)
 const DashboardHome = lazy(() => import('./DashboardHome'));
@@ -106,12 +113,14 @@ const Dashboard = ({ onLogout }) => {
   // super‑admin/appSettings and any avatar stored on a user record.
   const { 
     activityLogs, setActivityLogs,
+    isActivityLogsLoading, activityLogsError, retryActivityLogs,
     processedInventory, 
         isPageDataLoading
   } = useInventory();
 
     const [backendUsers, setBackendUsers] = useState([]);
   const [pendingVoidRequestCount, setPendingVoidRequestCount] = useState(0);
+  const [unreadActivityCount, setUnreadActivityCount] = useState(0);
   const pendingVoidAlertCheckedRef = React.useRef(false);
         const [isBackendUsersLoading, setIsBackendUsersLoading] = useState(true);
 
@@ -230,6 +239,57 @@ const Dashboard = ({ onLogout }) => {
       window.removeEventListener('sale:void-requests-changed', schedulePendingVoidRequestRefresh);
     };
   }, [currentAuthUserId, currentAuthUsername, isAdminOrAbove, navigate]);
+
+  useEffect(() => {
+    if (!['admin', 'superadmin'].includes(String(userRole || '').toLowerCase()) || (!currentAuthUserId && !currentAuthUsername)) {
+      setUnreadActivityCount(0);
+      return undefined;
+    }
+
+    setUnreadActivityCount(0);
+    let disposed = false;
+    let refreshTimer = null;
+    let refreshInFlight = false;
+    let refreshPending = false;
+    const refreshUnreadActivityCount = async () => {
+      if (refreshInFlight) {
+        refreshPending = true;
+        return;
+      }
+      refreshInFlight = true;
+      try {
+        const count = await getUnreadActivityCountApi();
+        if (!disposed) setUnreadActivityCount(count);
+      } catch {
+        // Keep the last authoritative count during transient API failures.
+      } finally {
+        refreshInFlight = false;
+        if (refreshPending && !disposed) {
+          refreshPending = false;
+          scheduleUnreadActivityCountRefresh();
+        }
+      }
+    };
+    const scheduleUnreadActivityCountRefresh = () => {
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        void refreshUnreadActivityCount();
+      }, 75);
+    };
+
+    void refreshUnreadActivityCount();
+    const unsubscribeActivityLogged = subscribeRealtimeEvent('activity.logged', scheduleUnreadActivityCountRefresh);
+    const unsubscribeActivityRead = subscribeRealtimeEvent('activity.read', scheduleUnreadActivityCountRefresh);
+    const unsubscribeRealtimeResync = subscribeRealtimeEvent('realtime.resync', scheduleUnreadActivityCountRefresh);
+    return () => {
+      disposed = true;
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+      unsubscribeActivityLogged();
+      unsubscribeActivityRead();
+      unsubscribeRealtimeResync();
+    };
+  }, [currentAuthUserId, currentAuthUsername, userRole]);
   
   
   // Request Desktop Notification Permission (User-Interactive Toast)
@@ -254,51 +314,6 @@ const Dashboard = ({ onLogout }) => {
             navigate('/profile?section=security&required=1', { replace: true });
         }
     }, [mustChangeCredentials, location.pathname, navigate]);
-
-  useEffect(() => {
-    // Check if Notification API is available in the browser first
-    if (appSettings.desktopNotifications && 'Notification' in window && window.Notification && window.Notification.permission === 'default') {
-        const toastId = toast((t) => ( 
-            <div className="flex flex-col gap-2 min-w-[200px]">
-                <span className="font-semibold text-sm">Enable Desktop Alerts?</span>
-                <span className="text-xs text-gray-500">Get notified when stock is low.</span>
-                <div className="flex gap-2 text-xs font-semibold mt-1">
-                    <button 
-                        onClick={() => {
-                            toast.dismiss(t.id);
-                            // Safe access to Notification
-                            if ('Notification' in window && window.Notification) {
-                                window.Notification.requestPermission().then(perm => {
-                                    if (perm === 'granted') {
-                                        new window.Notification("Notifications Enabled", { body: "You will now receive stock alerts." });
-                                    }
-                                });
-                            }
-                        }}
-                        className="bg-white border-2 border-gray-200 text-gray-900 font-semibold px-3 py-1.5 rounded-lg hover:bg-gray-50 transition-colors"
-                    >
-                        Allow
-                    </button>
-                    <button 
-                        onClick={() => toast.dismiss(t.id)}
-                        className="bg-gray-100 text-gray-600 px-3 py-1.5 rounded-lg hover:bg-gray-200"
-                    >
-                        Later
-                    </button>
-                </div>
-            </div>
-        ), { 
-            duration: 8000, 
-            position: 'bottom-right',
-            style: { border: '1px solid #E5E7EB', padding: '16px' }
-        });
-
-        // Cleanup
-        return () => toast.dismiss(toastId);
-    }
-  }, [appSettings.desktopNotifications]);
-
-
 
   // Evaluate the automatic low-stock alert once after the authenticated session data loads.
   useEffect(() => {
@@ -362,7 +377,7 @@ const Dashboard = ({ onLogout }) => {
                         </button>
                     </div>
                 </div>
-              ), { duration: 6000 });
+              ), { duration: 4000 });
 
               // 2. ALSO Show Desktop Notification (Only if enabled & allowed)
               // Safe check for Notification API existence
@@ -414,28 +429,6 @@ const Dashboard = ({ onLogout }) => {
             window.clearTimeout(timeoutId);
         };
     }, [actLogSearch]);
-
-    const currentBackendUser = React.useMemo(() => {
-        if (!Array.isArray(backendUsers) || backendUsers.length === 0) {
-            return null;
-        }
-
-        if (currentAuthUsername) {
-            const exactMatch = backendUsers.find((user) => {
-                const username = String(user?.username || '').trim().toLowerCase();
-                return username === currentAuthUsername;
-            });
-
-            if (exactMatch) {
-                return exactMatch;
-            }
-        }
-
-        return backendUsers.find((user) => {
-            const name = String(user?.name || '').trim();
-            return name === currentUserName;
-        }) || null;
-    }, [backendUsers, currentAuthUsername, currentUserName]);
 
     const selectableActivityUsers = React.useMemo(() => {
         const normalizeName = (value) => String(value || '').trim().toLowerCase();
@@ -550,6 +543,17 @@ const Dashboard = ({ onLogout }) => {
     }, [filteredActivityLogs, activityLogVisibleCount]);
 
     const hasMoreActivityLogs = visibleActivityLogs.length < filteredActivityLogs.length;
+    const hasActivityLogFilters = Boolean(actLogSearch.trim()) || actLogUserFilter !== 'All' || actLogActionFilter !== 'All';
+    const clearActivityLogFilters = () => {
+        setActLogSearch('');
+        setActLogUserFilter('All');
+        setActLogActionFilter('All');
+    };
+    const activityLogEmptyState = activityLogsError && activityLogs.length === 0
+        ? { title: 'Activity logs unavailable', description: activityLogsError?.message || 'Please try again.', actionLabel: 'Retry', onAction: retryActivityLogs }
+        : hasActivityLogFilters
+            ? { title: 'No matching logs', description: 'Try a different search or filter.', actionLabel: 'Clear Filters', onAction: clearActivityLogFilters }
+            : { title: 'No activity recorded', description: 'Activity will appear here as actions are performed.' };
 
     const formatActivityLogExact = React.useCallback((ts) => {
         if (!ts) return '';
@@ -673,33 +677,21 @@ const Dashboard = ({ onLogout }) => {
         resetActivityLogLazyLoad();
   };
 
-    const [readLogCount, setReadLogCount] = useState(0);
-
-        useEffect(() => {
-                const nextReadCount = Number(currentBackendUser?.preferences?.readLogCount || 0);
-                setReadLogCount(Number.isFinite(nextReadCount) && nextReadCount >= 0 ? nextReadCount : 0);
-        }, [currentBackendUser?.preferences?.readLogCount]);
-
-    const relevantLogs = React.useMemo(() => {
-        return activityLogs.filter(log => log.user !== currentUserName);
-    }, [activityLogs, currentUserName]);
-
-    const unreadActivityCount = Math.max(0, relevantLogs.length - readLogCount);
     const unreadActivityLabel = unreadActivityCount > 99 ? '99+' : String(unreadActivityCount);
 
-  // Effect to update readLogCount when modal opens
+  // Opening the Activity Log records a per-user read cursor on the server.
   useEffect(() => {
-     if (isActivityLogOpen) {
-        const relevantLogsCount = activityLogs.filter(log => log.user !== currentUserName).length;
-        setReadLogCount(relevantLogsCount);
-        updateMyPreferencesApi({
-            hasViewedLogs: true,
-            readLogCount: relevantLogsCount,
-        }).catch(() => {
-            // Keep UI state updated even when backend preference write fails.
+     if (!isActivityLogOpen || !['admin', 'superadmin'].includes(String(userRole || '').toLowerCase())) return undefined;
+     let isMounted = true;
+     markActivityLogsReadApi()
+        .then(() => {
+            if (isMounted) setUnreadActivityCount(0);
+        })
+        .catch(() => {
+            // Keep the existing count if read state could not be saved.
         });
-     }
-  }, [isActivityLogOpen, activityLogs, currentUserName]);
+     return () => { isMounted = false; };
+  }, [isActivityLogOpen, currentAuthUserId, currentAuthUsername, userRole]);
 
   // Desktop Hover State
   const [isSidebarHovered, setIsSidebarHovered] = useState(false);
@@ -775,7 +767,7 @@ const Dashboard = ({ onLogout }) => {
       name: 'Point of Sale',
       page: 'POS',
       path: '/pos', 
-      icon: <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
+      icon: <PosNavigationCartIcon />
     },
         {
             category: 'Sales',
@@ -958,7 +950,7 @@ const Dashboard = ({ onLogout }) => {
        
        {/* Activity Log Modal */}
        {isActivityLogOpen && (
-        <div className="app-modal-backdrop fixed inset-0 z-100 flex items-center justify-center bg-black/50 backdrop-blur-sm transition-opacity" onClick={() => setIsActivityLogOpen(false)}>
+        <div className="app-modal-backdrop fixed inset-0 z-100 flex items-center justify-center bg-black/50 backdrop-blur-sm transition-opacity">
             <div className="bg-white rounded-2xl p-0 max-w-md md:max-w-lg w-full shadow-2xl border border-gray-100 transform scale-100 transition-all overflow-hidden flex flex-col max-h-[85vh] mx-4" onClick={(e) => e.stopPropagation()}>
                 {/* Header */}
                 <div className="px-4 py-3.5 border-b border-gray-100 flex justify-between items-center bg-gradient-to-r from-gray-50 to-white shrink-0">
@@ -971,7 +963,7 @@ const Dashboard = ({ onLogout }) => {
                             <p className="text-[10px] font-semibold text-gray-400 mt-0.5">{activityLogs.length} total entries</p>
                         </div>
                     </div>
-                    <button onClick={() => setIsActivityLogOpen(false)} className="text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 p-1.5 transition-all">
+                    <button type="button" onClick={() => setIsActivityLogOpen(false)} aria-label="Close activity log" className="text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 p-1.5 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500">
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                     </button>
                 </div>
@@ -1049,7 +1041,7 @@ const Dashboard = ({ onLogout }) => {
                                     </span>
                                 )}
                             </div>
-                            <button onClick={() => { setActLogSearch(''); setActLogUserFilter('All'); setActLogActionFilter('All'); }} className="text-[10px] font-semibold text-gray-400 hover:text-gray-600 transition-colors">
+                            <button onClick={clearActivityLogFilters} className="text-[10px] font-semibold text-gray-400 hover:text-gray-600 transition-colors">
                                 Clear filters
                             </button>
                         </div>
@@ -1057,14 +1049,12 @@ const Dashboard = ({ onLogout }) => {
                 </div>
                 {/* Log Content */}
                 <div ref={activityLogScrollContainerRef} className="overflow-y-auto flex-1">
-                    {filteredActivityLogs.length === 0 ? (
-                        <div className="p-10 text-center">
-                            <div className="bg-gray-100 rounded-2xl p-4 w-fit mx-auto mb-3">
-                                <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                            </div>
-                            <p className="text-sm font-semibold text-gray-900">{actLogSearch || actLogUserFilter !== 'All' || actLogActionFilter !== 'All' ? 'No matching logs' : 'No activity recorded'}</p>
-                            <p className="text-xs font-medium text-gray-400 mt-1">{actLogSearch || actLogUserFilter !== 'All' || actLogActionFilter !== 'All' ? 'Try adjusting your search or filters' : 'Activity will appear here as actions are performed'}</p>
+                    {isActivityLogsLoading && activityLogs.length === 0 ? (
+                        <div className="space-y-3 p-4" role="status" aria-label="Loading activity logs" aria-busy="true">
+                            {[0, 1, 2].map((index) => <div key={`activity-log-skeleton-${index}`} className="animate-pulse rounded-lg border border-slate-200 bg-white p-3 motion-reduce:animate-none"><div className="h-3 w-1/3 rounded bg-slate-200" /><div className="mt-2 h-3 w-3/4 rounded bg-slate-100" /></div>)}
                         </div>
+                    ) : filteredActivityLogs.length === 0 ? (
+                        <ContextualEmptyState {...activityLogEmptyState} className="mx-3 my-2 rounded-xl border border-slate-200 bg-white" />
                     ) : (
                         <div className="divide-y divide-gray-50">
                             {(() => {
@@ -1073,7 +1063,9 @@ const Dashboard = ({ onLogout }) => {
                                     const group = getActivityLogDateGroup(log.timestamp);
                                     const showGroup = group !== lastGroup;
                                     lastGroup = group;
-                                    const style = getActivityLogActionStyle(log.action);
+                                    const activityAction = getActivityLogDisplayText(log.action);
+                                    const activityDetails = getActivityLogDisplayText(log.details);
+                                    const style = getActivityLogActionStyle(activityAction);
 
                                     return (
                                         <React.Fragment key={log.id}>
@@ -1091,8 +1083,8 @@ const Dashboard = ({ onLogout }) => {
                                                         <p className="text-xs font-semibold text-gray-900 truncate">{getActorDisplayName(log.userRef, log.user)}</p>
                                                         <span className="text-[10px] font-semibold text-gray-400 whitespace-nowrap tabular-nums">{formatActivityLogExact(log.timestamp)}</span>
                                                     </div>
-                                                    <p className="text-[11px] font-semibold text-gray-600 mt-0.5">{log.action}</p>
-                                                    {log.details && <p className="text-[10px] text-gray-400 font-medium mt-0.5 truncate">{log.details}</p>}
+                                                    <p className="text-[11px] font-semibold text-gray-600 mt-0.5">{activityAction}</p>
+                                                    {log.details && <p className="text-[10px] text-gray-400 font-medium mt-0.5 truncate">{activityDetails}</p>}
                                                 </div>
                                             </div>
                                         </React.Fragment>
@@ -1119,16 +1111,6 @@ const Dashboard = ({ onLogout }) => {
                         </div>
                     )}
                 </div>
-                {/* Footer */}
-                <div className="p-3 bg-gray-50 border-t border-gray-100 shrink-0">
-                    <button 
-                        onClick={() => setIsActivityLogOpen(false)}
-                        className="w-full py-2 rounded-xl font-semibold tracking-wider hover:opacity-90 transition-all shadow-sm text-xs"
-                        style={{ backgroundColor: '#111827', color: '#ffffff' }}
-                    >
-                        Close
-                    </button>
-                </div>
             </div>
         </div>
        )}
@@ -1147,8 +1129,8 @@ const Dashboard = ({ onLogout }) => {
             <div className="flex min-w-0 items-center gap-1.5 sm:gap-2">
               <img src={logo} alt="TLC Logo" className="h-7 w-7 shrink-0 rounded-full border border-white/20 object-contain sm:h-10 sm:w-10 sm:border-2" />
               <div className="flex min-w-0 flex-col">
-                <span className="whitespace-nowrap text-[11px] font-semibold leading-[1.15] tracking-tight text-white min-[375px]:text-xs sm:text-sm">Tableria La Confianza</span>
-                <span className="whitespace-nowrap text-[10px] font-medium leading-[1.15] text-gray-300 sm:text-sm sm:text-white">Company, Incorporated</span>
+                <span className="whitespace-nowrap text-xs font-semibold leading-[1.15] tracking-tight text-white min-[375px]:text-[13px] sm:text-base">Tableria La Confianza</span>
+                <span className="whitespace-nowrap text-[11px] font-medium leading-[1.15] text-gray-300 min-[375px]:text-xs sm:text-[15px] sm:text-white">Company, Incorporated</span>
               </div>
             </div>
          </div>
@@ -1188,7 +1170,11 @@ const Dashboard = ({ onLogout }) => {
                             </div>
                         </div>
                         {isAdminOrAbove() && unreadActivityCount > 0 && (
-                            <span className="absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-red-500 ring-2 ring-[#111827] shadow-[0_4px_10px_-2px_rgba(239,68,68,0.9)]" />
+                            <span
+                                role="img"
+                                aria-label={`${unreadActivityCount} unread Activity Log notifications`}
+                                className="absolute right-0 top-0 h-2.5 w-2.5 translate-x-1/2 -translate-y-1/2 rounded-full bg-red-500 ring-2 ring-[#111827] shadow-[0_4px_10px_-2px_rgba(239,68,68,0.9)]"
+                            />
                         )}
                     </div>
                 </button>
@@ -1240,7 +1226,10 @@ const Dashboard = ({ onLogout }) => {
                                 </div>
                                 Activity Log
                                 {isAdminOrAbove() && unreadActivityCount > 0 && (
-                                    <span className="ml-auto inline-flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-full border border-rose-200/80 bg-rose-100 px-1.5 text-[10px] font-semibold leading-none tabular-nums text-rose-700 dark:border-rose-800/60 dark:bg-rose-950/50 dark:text-rose-300">
+                                    <span
+                                        aria-label={`${unreadActivityCount} unread Activity Log notifications`}
+                                        className="ml-auto inline-flex h-5 min-w-5 shrink-0 items-center justify-center whitespace-nowrap rounded-full border border-rose-200/80 bg-rose-100 px-1.5 text-[10px] font-semibold leading-none tabular-nums text-rose-700 dark:border-rose-800/60 dark:bg-rose-950/50 dark:text-rose-300"
+                                    >
                                         {unreadActivityLabel}
                                     </span>
                                 )}
@@ -1308,7 +1297,7 @@ const Dashboard = ({ onLogout }) => {
           onMouseLeave={handleMouseLeave}
         >
           
-                      <nav className={`flex-1 overflow-y-auto scrollbar-hide overflow-x-hidden transition-[padding] duration-420 ease-[cubic-bezier(0.16,1,0.3,1)] ${isSidebarExpanded ? 'pb-3 pt-3' : 'pb-4 pt-4'}`}>
+                      <nav data-dashboard-scroll-container className={`flex-1 overflow-y-auto overflow-x-hidden transition-[padding] duration-420 ease-[cubic-bezier(0.16,1,0.3,1)] ${isSidebarExpanded ? 'pb-3 pt-3' : 'pb-4 pt-4'}`}>
             <ul className={isSidebarExpanded ? 'space-y-px px-2' : 'space-y-0.5 px-2.5'}>
               {menuItems.map((item, index) => {
                  if (item.hidden) return null; // Skip hidden items from sidebar
@@ -1370,13 +1359,13 @@ const Dashboard = ({ onLogout }) => {
         </aside>
 
         {/* Main Content Area */}
-        <main className={`flex-1 bg-slate-200/50 ml-0 transition-[margin] duration-420 ease-[cubic-bezier(0.16,1,0.3,1)] ${isSidebarHovered ? 'md:ml-[13.5rem]' : 'md:ml-16'} ${isProfilePage ? 'p-2 overflow-hidden h-full' : isFixedLayout ? 'p-2 md:overflow-hidden h-full overflow-y-auto' : 'p-2 overflow-y-auto h-full'}`}>
-           <div className={`w-full ${isFixedLayout || activeMenu === 'Credit Transactions' ? 'md:h-full min-h-full' : ''}`}>
+        <main data-dashboard-scroll-container className={`flex-1 bg-slate-200/50 ml-0 transition-[margin] duration-420 ease-[cubic-bezier(0.16,1,0.3,1)] ${isSidebarHovered ? 'md:ml-[13.5rem]' : 'md:ml-16'} ${isProfilePage ? 'p-2 overflow-hidden h-full' : isFixedLayout && activeMenu !== 'Inventory' ? 'p-2 md:overflow-hidden h-full overflow-y-auto' : 'p-2 overflow-y-auto h-full'}`}>
+           <div className={`w-full ${(isFixedLayout && activeMenu !== 'Inventory') || activeMenu === 'Credit Transactions' ? 'md:h-full min-h-full' : ''}`}>
              
                  {isRouteContentLoading ? (
-                     <PageSkeleton />
+                     <PageSkeleton page={activeMenu} showProductActions={isAdminOrAbove()} />
                  ) : (
-                 <Suspense fallback={<PageSkeleton />}>
+                 <Suspense fallback={<PageSkeleton page={activeMenu} showProductActions={isAdminOrAbove()} />}>
                  <AnimatePresence mode="wait">
                  <Routes location={location} key={location.pathname}>
                 {/* Public / Common Routes */}
@@ -1409,7 +1398,7 @@ const Dashboard = ({ onLogout }) => {
                 <Route path="profile" element={<RequirePageAccess userRole={userRole} page="Profile"><AnimatedPage><Profile /></AnimatedPage></RequirePageAccess>} />
                 
                 {/* Restricted Routes */}
-                <Route path="inventory" element={<RequirePageAccess userRole={userRole} page="Inventory"><AnimatedPage><Inventory /></AnimatedPage></RequirePageAccess>} />
+                <Route path="inventory" element={<RequirePageAccess userRole={userRole} page="Inventory"><AnimatedPage allowPageScroll><Inventory /></AnimatedPage></RequirePageAccess>} />
                 <Route path="users" element={<RequirePageAccess userRole={userRole} page="UserList"><AnimatedPage><UserList /></AnimatedPage></RequirePageAccess>} />
                 <Route path="reports" element={<RequirePageAccess userRole={userRole} page="Reports"><AnimatedPage><Reports /></AnimatedPage></RequirePageAccess>} />
                 <Route path="recommendations" element={<RequirePageAccess userRole={userRole} page="Recommendation"><AnimatedPage><Recommendation /></AnimatedPage></RequirePageAccess>} />

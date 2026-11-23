@@ -48,6 +48,8 @@ test('sale history contract preserves item snapshots and Credit plus Cheque hier
     id: '68a01234567890abcdef9999',
     code: 'HIST-001',
     name: 'Historical Product Snapshot',
+    description: '',
+    sellingUnit: '',
     qty: 3,
     price: 250,
     subtotal: 750,

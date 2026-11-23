@@ -27,6 +27,17 @@ test('manual Stock Out stores its selected reason in Inventory Log details', () 
   );
 });
 
+test('new manual adjustment logs include the unit when the product has one', () => {
+  assert.equal(
+    buildInventoryLogDetails({ productName: 'Latex Paint', stockDelta: 10, adjustmentReason: 'Delivery', sellingUnit: 'gallons' }),
+    'Added 10 gallons of Latex Paint — Reason: Delivery',
+  );
+  assert.equal(
+    buildInventoryLogDetails({ productName: 'Latex Paint', stockDelta: -3, adjustmentReason: 'Expired', sellingUnit: 'gallons' }),
+    'Deducted 3 gallons of Latex Paint — Reason: Expired',
+  );
+});
+
 test('automatic and legacy logs keep the existing generic details without a saved reason', () => {
   assert.equal(
     buildInventoryLogDetails({ productName: 'Latex Paint', stockDelta: -1, adjustmentReason: '' }),

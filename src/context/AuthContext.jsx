@@ -159,9 +159,14 @@ export const AuthProvider = ({ children }) => {
 
         let disposed = false;
         let isRefreshInFlight = false;
+        let refreshPending = false;
 
         const refreshSettings = async () => {
-            if (isRefreshInFlight || disposed) {
+            if (disposed) {
+                return;
+            }
+            if (isRefreshInFlight) {
+                refreshPending = true;
                 return;
             }
 
@@ -175,16 +180,24 @@ export const AuthProvider = ({ children }) => {
                 // Ignore transient refresh failures; stream reconnect will retry later.
             } finally {
                 isRefreshInFlight = false;
+                if (refreshPending && !disposed) {
+                    refreshPending = false;
+                    void refreshSettings();
+                }
             }
         };
 
         const unsubscribe = subscribeRealtimeEvent('settings.updated', () => {
             void refreshSettings();
         });
+        const unsubscribeResync = subscribeRealtimeEvent('realtime.resync', () => {
+            void refreshSettings();
+        });
 
         return () => {
             disposed = true;
             unsubscribe();
+            unsubscribeResync();
         };
     }, [currentAuthUsername]);
 
@@ -429,6 +442,11 @@ export const AuthProvider = ({ children }) => {
         setHasHydratedUserPreferences(true);
 
         if (typeof username === 'string') {
+            if (username !== currentAuthUsername) {
+                // Keep consumers from acting on the previous session's
+                // settings while the new authenticated identity is loading.
+                setIsSettingsLoading(true);
+            }
             sessionStorage.setItem('authUsername', username);
             setCurrentAuthUsername(username);
         }

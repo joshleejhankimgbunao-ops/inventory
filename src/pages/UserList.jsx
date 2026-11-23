@@ -11,6 +11,8 @@ import { ROLES, roleNames } from '../constants/roles';
 import { listUsersApi, registerApi, updateUserByUsernameApi } from '../services/authApi';
 import { normalizeHumanReadable } from '../utils/textNormalization';
 import { formatUserLastLogin } from '../utils/userLastLogin';
+import ContextualEmptyState from '../components/ContextualEmptyState';
+import { subscribeRealtimeEvent } from '../services/realtimeClient';
 
 const PASSWORD_RULE = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{8,}$/;
 const EMAIL_RULE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -57,6 +59,9 @@ const getFieldErrorsFromMessage = (message = '') => {
 
 const UserList = () => {
     const isMountedRef = useRef(true);
+    const usersRequestSequenceRef = useRef(0);
+    const usersRealtimeRefreshTimerRef = useRef(null);
+    const refreshUsersRef = useRef(null);
     const tableContainerRef = useRef(null);
     const userSubmitInFlightRef = useRef(false);
     const { currentUserName, currentAuthUsername, currentAuthUserId, userRole, applyAuthenticatedSession } = useAuth();
@@ -64,7 +69,7 @@ const UserList = () => {
 
     const [users, setUsers] = useState([]);
     const [usersLoadError, setUsersLoadError] = useState(null);
-    const [isUsersLoading, setIsUsersLoading] = useState(false);
+    const [isUsersLoading, setIsUsersLoading] = useState(true);
     const [isBrowserOnline, setIsBrowserOnline] = useState(() => (
         typeof navigator === 'undefined' || navigator.onLine
     ));
@@ -152,6 +157,27 @@ const UserList = () => {
     );
 
     const currentFilteredUsers = showArchived ? filteredArchivedUsers : filteredActiveUsers;
+    const usersInCurrentView = users.filter((user) => showArchived ? user.isArchived : !user.isArchived);
+    const resetUserSearch = () => setSearchTerm('');
+    const userEmptyState = usersLoadError && users.length === 0
+        ? {
+            title: usersLoadError.title || 'Users could not be loaded',
+            description: usersLoadError.message || 'Please try again.',
+            actionLabel: 'Retry',
+            onAction: () => refreshUsersFromBackend(),
+        }
+        : searchTerm.trim() && usersInCurrentView.length > 0
+            ? { title: 'No matching results', description: 'Try a different search or filter.', actionLabel: 'Reset Search', onAction: resetUserSearch }
+            : showArchived
+                ? { title: 'No archived users yet', description: 'Archived accounts will appear here.' }
+                : users.some((user) => user.isArchived)
+                    ? { title: 'No active users', description: 'Archived accounts are available in View Archive.', actionLabel: 'View Archive', onAction: () => setShowArchived(true) }
+                    : {
+                        title: 'No users yet',
+                        description: 'Add your first user to get started.',
+                        actionLabel: userRole === ROLES.SUPER_ADMIN && isBrowserOnline ? 'Add New User' : '',
+                        onAction: userRole === ROLES.SUPER_ADMIN && isBrowserOnline ? () => handleOpenAdd() : null,
+                    };
 
     const userSearchSuggestions = useMemo(() => {
         const terms = new Set();
@@ -255,7 +281,8 @@ const UserList = () => {
         throw lastError;
     };
 
-    const refreshUsersFromBackend = async ({ showLoader = true } = {}) => {
+    const refreshUsersFromBackend = async ({ showLoader = true, preservePage = false } = {}) => {
+        const requestSequence = ++usersRequestSequenceRef.current;
         if (showLoader && isMountedRef.current) {
             setIsUsersLoading(true);
         }
@@ -263,7 +290,7 @@ const UserList = () => {
         try {
             const backendUsers = await fetchUsersFromApiWithRetry();
 
-            if (!isMountedRef.current) {
+            if (!isMountedRef.current || requestSequence !== usersRequestSequenceRef.current) {
                 return false;
             }
 
@@ -275,21 +302,23 @@ const UserList = () => {
             const mappedUsers = mapBackendUsersToUi(backendUsers);
             setUsers(mappedUsers);
             setUsersLoadError(null);
-            setCurrentPage(1);
+            if (!preservePage) setCurrentPage(1);
             return true;
         } catch (error) {
-            if (isMountedRef.current) {
+            if (isMountedRef.current && requestSequence === usersRequestSequenceRef.current) {
                 // Keep current in-memory list; backend remains source-of-truth.
                 setUsersLoadError(getPageLoadError(error));
                 showPageLoadError(showToast, error, 'user-load');
             }
             return false;
         } finally {
-            if (showLoader && isMountedRef.current) {
+            if (showLoader && isMountedRef.current && requestSequence === usersRequestSequenceRef.current) {
                 setIsUsersLoading(false);
             }
         }
     };
+
+    refreshUsersRef.current = refreshUsersFromBackend;
 
     React.useEffect(() => {
         isMountedRef.current = true;
@@ -305,16 +334,17 @@ const UserList = () => {
                     clearTimeout(delayedRetryId);
                 }
                 isMountedRef.current = false;
+                usersRequestSequenceRef.current += 1;
             };
         }
 
         const loadUsers = async () => {
-            const wasLoaded = await refreshUsersFromBackend();
+            const wasLoaded = await refreshUsersRef.current?.();
 
             // First fetch can race with token/session propagation in some browsers.
             if (!wasLoaded && isMountedRef.current) {
                 delayedRetryId = setTimeout(() => {
-                    refreshUsersFromBackend({ showLoader: false });
+                    void refreshUsersRef.current?.({ showLoader: false });
                 }, 900);
             }
         };
@@ -326,6 +356,24 @@ const UserList = () => {
                 clearTimeout(delayedRetryId);
             }
             isMountedRef.current = false;
+            usersRequestSequenceRef.current += 1;
+        };
+    }, [currentAuthUsername, userRole]);
+
+    React.useEffect(() => {
+        if (userRole !== ROLES.SUPER_ADMIN || !currentAuthUsername) return undefined;
+        const scheduleRefresh = () => {
+            window.clearTimeout(usersRealtimeRefreshTimerRef.current);
+            usersRealtimeRefreshTimerRef.current = window.setTimeout(() => {
+                void refreshUsersRef.current?.({ showLoader: false, preservePage: true });
+            }, 100);
+        };
+        const unsubscribeUsers = subscribeRealtimeEvent('users.updated', scheduleRefresh);
+        const unsubscribeResync = subscribeRealtimeEvent('realtime.resync', scheduleRefresh);
+        return () => {
+            window.clearTimeout(usersRealtimeRefreshTimerRef.current);
+            unsubscribeUsers();
+            unsubscribeResync();
         };
     }, [currentAuthUsername, userRole]);
 
@@ -782,7 +830,7 @@ const UserList = () => {
                 {/* Main Content Area */}
                 <div className="flex-1 min-h-0 flex flex-col md:overflow-visible transition-colors bg-transparent pt-3">
                     {usersLoadError && !isOfflineLoadError && (
-                        <div className="mx-5 mb-3 flex items-center justify-between gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700 dark:border-rose-800 dark:bg-rose-900/20 dark:text-rose-300">
+                        <div className="mx-2 mb-3 flex items-center justify-between gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700 dark:border-rose-800 dark:bg-rose-900/20 dark:text-rose-300 md:mx-5">
                             <span>{usersLoadError.title}: {usersLoadError.message}</span>
                             <button
                                 type="button"
@@ -795,8 +843,8 @@ const UserList = () => {
                     )}
 
                     {/* Toolbar */}
-                    <div className="px-5 pb-4 flex flex-col items-stretch justify-between gap-4 bg-transparent sm:flex-row sm:items-center">
-                    <div className="main-toolbar-search group">
+                    <div className="px-2 pb-4 flex flex-col items-stretch justify-between gap-3 bg-transparent md:flex-row md:items-center md:px-5">
+                    <div className="main-toolbar-search group w-full max-w-none md:max-w-[27.5rem]">
                         <input 
                             type="text" 
                             placeholder="Search users..." 
@@ -815,28 +863,28 @@ const UserList = () => {
                         </div>
                     </div>
 
-                    <div className="flex w-full flex-wrap items-center justify-end gap-3 sm:w-auto sm:flex-nowrap">
+                    <div className="flex w-full flex-wrap items-center justify-start gap-3 md:w-auto md:flex-nowrap md:justify-end">
                         <button
                             type="button"
                             onClick={() => setShowArchived(prev => !prev)}
-                            className={`archive-toggle-button group text-xs font-semibold ${showArchived ? 'archive-toggle-button--active' : ''}`}
+                            className={`archive-toggle-button partners-archive-toggle text-xs font-semibold ${showArchived ? 'archive-toggle-button--active' : ''}`}
                             title={showArchived ? 'Back to Active Users' : 'View Archived Users'}
                             aria-label={showArchived ? 'Back to Active Users' : 'View Archived Users'}
                         >
                             {showArchived ? (
-                                <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7 7-7M3 12h13a5 5 0 010 10h-1"></path></svg>
+                                <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7 7-7M3 12h13a5 5 0 010 10h-1"></path></svg>
                             ) : (
-                                <ArchiveIcon className="w-4 h-4 shrink-0" />
+                                <ArchiveIcon className="w-3.5 h-3.5 shrink-0" />
                             )}
-                            <span className={`ml-0 max-w-0 overflow-hidden whitespace-nowrap text-xs font-semibold opacity-0 transition-all duration-300 group-hover:ml-2 group-hover:opacity-100 ${showArchived ? 'group-hover:max-w-40' : 'group-hover:max-w-28'}`}>
+                            <span className="shrink-0 text-xs font-semibold whitespace-nowrap">
                                 {showArchived ? 'Back to Active Users' : 'View Archive'}
                             </span>
                         </button>
-                        <div className="relative group/disabled-add w-full sm:w-auto">
+                        <div className="relative group/disabled-add w-fit">
                             <button
                                 onClick={handleOpenAdd}
                                 disabled={!isBrowserOnline}
-                                className="w-full sm:w-auto px-4 py-2 rounded-lg text-white font-semibold text-xs shadow-md flex items-center justify-center gap-2 transition-all hover:opacity-90 transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:transform-none"
+                                className="w-fit px-4 py-2 rounded-lg text-white font-semibold text-xs shadow-md flex items-center justify-center gap-2 transition-all hover:opacity-90 transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:transform-none"
                                 style={{ backgroundColor: '#111827' }}
                             >
                                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z"></path></svg>
@@ -847,7 +895,51 @@ const UserList = () => {
                 </div>
 
                 {/* Table */}
-                 <div ref={tableContainerRef} className="flex-1 min-h-0 overflow-auto px-5 pb-5 custom-scrollbar">
+                 <div ref={tableContainerRef} className="flex-1 min-h-0 overflow-x-hidden px-2 pb-3 custom-scrollbar md:overflow-auto md:px-5 md:pb-5">
+                    <div className="flex flex-col gap-3 md:hidden" aria-label="User Management mobile records">
+                        {isUsersLoading ? (
+                            Array.from({ length: 4 }).map((_, index) => (
+                                <div key={`users-mobile-skeleton-${index}`} className="h-32 animate-pulse rounded-xl border border-slate-200 bg-white p-3 motion-reduce:animate-none" aria-hidden="true">
+                                    <div className="h-4 w-2/3 rounded bg-slate-200" />
+                                    <div className="mt-3 h-3 w-1/2 rounded bg-slate-100" />
+                                    <div className="mt-4 h-3 w-full rounded bg-slate-100" />
+                                </div>
+                            ))
+                        ) : currentFilteredUsers.length === 0 ? (
+                            <ContextualEmptyState {...userEmptyState} className="rounded-xl border border-slate-200 bg-white" />
+                        ) : paginatedUsers.map((user) => {
+                            const preferredName = (user.displayName || user.name || user.username || 'Unknown User').trim();
+                            const canEditOrArchive = !user.isPrimarySuperAdmin && (user.role !== ROLES.SUPER_ADMIN || isPrimarySuperAdmin) && !showArchived;
+                            const canRestore = !user.isPrimarySuperAdmin && user.role !== ROLES.SUPER_ADMIN && showArchived;
+                            return (
+                                <article key={`mobile-${user.id}`} className={`app-dashboard-card-hover rounded-xl border p-3 shadow-sm ${showArchived ? 'border-orange-200 bg-orange-50/50' : 'border-slate-200 bg-white'}`}>
+                                    <div className="flex min-w-0 items-start justify-between gap-3">
+                                        <div className="min-w-0">
+                                            <h2 className={`break-words text-sm font-semibold leading-5 [overflow-wrap:anywhere] ${showArchived ? 'text-slate-500 line-through' : 'text-slate-900'}`}>{preferredName}</h2>
+                                            <p className="mt-0.5 break-all text-xs text-slate-500">{user.username ? `@${user.username}` : 'Username unavailable'} <span className="mx-1 text-slate-300">·</span> #{String(user.id).padStart(3, '0')}</p>
+                                        </div>
+                                        <span className={`shrink-0 rounded-full border px-2 py-1 text-[10px] font-semibold ${user.status === 'Active' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-100 text-slate-600'}`}>{user.status}</span>
+                                    </div>
+                                    <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 border-t border-slate-100 pt-3">
+                                        <div className="min-w-0"><dt className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Role</dt><dd className="mt-0.5 break-words text-xs font-semibold text-slate-800">{roleNames[user.role] || user.role}{user.isPrimarySuperAdmin ? ' · Primary' : ''}</dd></div>
+                                        <div className="min-w-0"><dt className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Last Login</dt><dd className="mt-0.5 break-words text-xs text-slate-700">{user.lastLogin || '—'}</dd></div>
+                                        {user.email && <div className="col-span-2 min-w-0"><dt className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Email</dt><dd className="mt-0.5 break-all text-xs text-slate-700">{user.email}</dd></div>}
+                                        {user.phone && <div className="col-span-2 min-w-0"><dt className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Phone</dt><dd className="mt-0.5 break-words text-xs text-slate-700">{user.phone}</dd></div>}
+                                    </dl>
+                                    {(canEditOrArchive || canRestore) && (
+                                        <div className="mt-3 flex flex-wrap justify-end gap-2 border-t border-slate-100 pt-3">
+                                            {canEditOrArchive && <>
+                                                <TableActionButton onClick={() => handleOpenEdit(user)} dismissTooltipOnClick disabled={!isBrowserOnline} className="inline-flex min-h-9 w-fit items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none" label={isBrowserOnline ? 'Edit' : 'Editing requires a connection'} aria-label={`Edit ${user.name}`}><EditIcon /><span>Edit</span></TableActionButton>
+                                                <TableActionButton onClick={() => toggleArchive(user)} dismissTooltipOnClick disabled={!isBrowserOnline} variant="destructive" className="inline-flex min-h-9 w-fit items-center justify-center gap-1.5 rounded-lg border border-rose-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-rose-700 transition-colors hover:bg-rose-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none" label={isBrowserOnline ? 'Archive' : 'Archiving requires a connection'} aria-label={`Archive ${user.name}`}><ArchiveIcon /><span>Archive</span></TableActionButton>
+                                            </>}
+                                            {canRestore && <TableActionButton onClick={() => toggleArchive(user)} dismissTooltipOnClick disabled={!isBrowserOnline} variant="positive" className="inline-flex min-h-9 w-fit items-center justify-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-emerald-700 transition-colors hover:bg-emerald-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none" label={isBrowserOnline ? 'Restore' : 'Restoring requires a connection'} aria-label={`Restore ${user.name}`}><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg><span>Restore</span></TableActionButton>}
+                                        </div>
+                                    )}
+                                </article>
+                            );
+                        })}
+                    </div>
+                    <div className="hidden md:block">
                      <table className="main-data-table w-full text-left border-separate border-spacing-0 table-fixed min-w-275">
                         <thead className="sticky top-0 z-20 shadow-sm">
                             <tr className="bg-gray-900 dark:bg-gray-700 text-white uppercase tracking-wider">
@@ -898,22 +990,8 @@ const UserList = () => {
                                 ))
                             ) : currentFilteredUsers.length === 0 ? (
                                 <tr>
-                                    <td colSpan="7" className="px-6 py-12 text-center">
-                                        <div className="mx-auto max-w-md rounded-2xl p-8">
-                                            <div className={`mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full border ${showArchived ? 'bg-orange-50 border-orange-200 text-orange-600 dark:bg-orange-900/20 dark:border-orange-800 dark:text-orange-400' : 'bg-gray-100 border-gray-200 text-gray-500 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300'}`}>
-                                                {showArchived ? (
-                                                    <ArchiveIcon className="w-6 h-6" />
-                                                ) : (
-                                                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
-                                                )}
-                                            </div>
-                                            <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
-                                                {showArchived ? 'No archived users yet' : (isOfflineLoadError && users.length === 0 ? 'No users available' : (usersLoadError ? usersLoadError.title : 'No active users found'))}
-                                            </h3>
-                                            <p className="mt-1 text-xs font-medium text-gray-500 dark:text-gray-400">
-                                                                {showArchived ? 'Archived accounts will appear here once you archive a user.' : (isOfflineLoadError && users.length === 0 ? 'User records will appear here once loaded.' : (usersLoadError?.message || (users.some((u) => u.isArchived) ? 'No active users found. You may have archived users; click View Archive.' : 'Try changing your search keyword or add a new user account.')))}
-                                            </p>
-                                        </div>
+                                    <td colSpan="7" className="px-4 py-4">
+                                        <ContextualEmptyState {...userEmptyState} className="mx-auto max-w-xl rounded-xl border border-slate-200 bg-white" />
                                     </td>
                                 </tr>
                             ) : (
@@ -1017,10 +1095,11 @@ const UserList = () => {
                             )}
                         </tbody>
                      </table>
+                    </div>
                 </div>
 
                 {/* Pagination Controls */}
-                <div className="flex shrink-0 flex-col items-start gap-3 border-t border-slate-300 bg-transparent px-5 py-3 sm:flex-row sm:items-center sm:justify-between dark:border-gray-700">
+                <div className="flex shrink-0 flex-col items-start gap-3 border-t border-slate-300 bg-transparent px-2 py-3 md:flex-row md:items-center md:justify-between md:px-5 dark:border-gray-700">
                         <div className="text-xs text-gray-500 dark:text-gray-400 font-medium">
                             Showing <span className="font-semibold text-gray-900 dark:text-white">{currentFilteredUsers.length === 0 ? 0 : indexOfFirstItem + 1}</span> to <span className="font-semibold text-gray-900 dark:text-white">{Math.min(indexOfLastItem, currentFilteredUsers.length)}</span> of <span className="font-semibold text-gray-900 dark:text-white">{currentFilteredUsers.length}</span> {showArchived ? 'archived users' : 'active users'}
                         </div>
@@ -1032,7 +1111,7 @@ const UserList = () => {
             {/* Modal */}
             {isModalOpen && (
                  <div className="app-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-                    <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-sm md:max-w-md max-h-[88vh] overflow-hidden animate-in fade-in zoom-in-95 duration-200 flex flex-col">
+                    <div onClick={(e) => e.stopPropagation()} className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-sm md:max-w-md max-h-[88vh] overflow-hidden animate-in fade-in zoom-in-95 duration-200 flex flex-col">
                         <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 flex justify-between items-center shrink-0">
                             <div className="flex items-center gap-2">
                                 <div className="text-gray-900 dark:text-white">
@@ -1068,6 +1147,10 @@ const UserList = () => {
                                     <input 
                                         type="text" 
                                         required
+                                        name="name"
+                                        data-validation-key="name"
+                                        aria-invalid={Boolean(fieldErrors.name)}
+                                        aria-describedby={fieldErrors.name ? 'user-name-error' : undefined}
                                         value={formData.name}
                                         onChange={e => {
                                             const val = e.target.value;
@@ -1080,7 +1163,7 @@ const UserList = () => {
                                         className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
                                         placeholder="John Doe"
                                     />
-                                    {fieldErrors.name && <p className="text-rose-500 text-[11px] mt-1">{fieldErrors.name}</p>}
+                                    {fieldErrors.name && <p id="user-name-error" role="alert" className="text-rose-500 text-[11px] mt-1">{fieldErrors.name}</p>}
                                 </div>
                             </div>
 
@@ -1089,6 +1172,10 @@ const UserList = () => {
                                     <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 tracking-wider mb-1">Display Name</label>
                                     <input
                                         type="text"
+                                        name="displayName"
+                                        data-validation-key="displayName"
+                                        aria-invalid={Boolean(fieldErrors.displayName)}
+                                        aria-describedby={fieldErrors.displayName ? 'user-display-name-error' : undefined}
                                         value={formData.displayName}
                                         onChange={e => {
                                             setFieldErrors(prev => ({ ...prev, displayName: '' }));
@@ -1099,7 +1186,7 @@ const UserList = () => {
                                         placeholder="Optional display name"
                                     />
                                     <p className="text-[10px] text-gray-400 mt-1">Optional. Full name will be used if left blank.</p>
-                                    {fieldErrors.displayName && <p className="text-rose-500 text-[11px] mt-1">{fieldErrors.displayName}</p>}
+                                    {fieldErrors.displayName && <p id="user-display-name-error" role="alert" className="text-rose-500 text-[11px] mt-1">{fieldErrors.displayName}</p>}
                                 </div>
                             </div>
                             
@@ -1152,6 +1239,10 @@ const UserList = () => {
                                     <input 
                                         type="email" 
                                         required
+                                        name="email"
+                                        data-validation-key="email"
+                                        aria-invalid={Boolean(fieldErrors.email)}
+                                        aria-describedby={fieldErrors.email ? 'user-email-error' : undefined}
                                         value={formData.email}
                                         onChange={e => {
                                             setFieldErrors(prev => ({ ...prev, email: '' }));
@@ -1160,12 +1251,16 @@ const UserList = () => {
                                         className="w-full p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-medium focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-500 outline-none text-gray-900 dark:text-white"
                                         placeholder="user@example.com"
                                     />
-                                    {fieldErrors.email && <p className="text-rose-500 text-[11px] mt-1">{fieldErrors.email}</p>}
+                                    {fieldErrors.email && <p id="user-email-error" role="alert" className="text-rose-500 text-[11px] mt-1">{fieldErrors.email}</p>}
                                 </div>
                                 <div>
                                     <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400  tracking-wider mb-1">Phone Number</label>
                                     <input 
                                         type="text" 
+                                        name="phone"
+                                        data-validation-key="phone"
+                                        aria-invalid={Boolean(fieldErrors.phone)}
+                                        aria-describedby={fieldErrors.phone ? 'user-phone-error' : undefined}
                                         value={formData.phone}
                                         onChange={e => {
                                             // Allow only digits, limit to 11
@@ -1181,7 +1276,7 @@ const UserList = () => {
                                     {formData.phone && formData.phone.length !== 11 && (
                                         <p className="text-rose-500 text-[11px] mt-1">Phone number must be exactly 11 digits.</p>
                                     )}
-                                    {fieldErrors.phone && <p className="text-rose-500 text-[11px] mt-1">{fieldErrors.phone}</p>}
+                                    {fieldErrors.phone && <p id="user-phone-error" role="alert" className="text-rose-500 text-[11px] mt-1">{fieldErrors.phone}</p>}
                                 </div>
                             </div>
 
@@ -1192,6 +1287,10 @@ const UserList = () => {
                                     <input 
                                         type="text" 
                                         readOnly={modalMode === 'add'}
+                                        name="username"
+                                        data-validation-key="username"
+                                        aria-invalid={Boolean(fieldErrors.username)}
+                                        aria-describedby={fieldErrors.username ? 'user-username-error' : undefined}
                                         value={formData.username}
                                         onChange={e => {
                                             const val = e.target.value.toLowerCase().replace(/[^a-z0-9_.]/g, '');
@@ -1203,7 +1302,7 @@ const UserList = () => {
                                     />
                                     {modalMode === 'add' && <p className="text-[10px] text-gray-400 mt-1">Auto-generated.</p>}
                                     {modalMode === 'edit' && <p className="text-[10px] text-gray-400 mt-1">Alphanumeric, underscores and dots allowed. Cannot be changed for new users.</p>}
-                                    {fieldErrors.username && <p className="text-rose-500 text-[11px] mt-1">{fieldErrors.username}</p>}
+                                    {fieldErrors.username && <p id="user-username-error" role="alert" className="text-rose-500 text-[11px] mt-1">{fieldErrors.username}</p>}
                                 </div>
                                 <div>
                                     <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400  tracking-wider mb-1">
@@ -1212,6 +1311,10 @@ const UserList = () => {
                                     <div className="relative">
                                         <input 
                                             type={modalMode === 'add' ? "text" : "password"} // Show text for auto-gen password
+                                            name="password"
+                                            data-validation-key="password"
+                                            aria-invalid={Boolean(fieldErrors.password)}
+                                            aria-describedby={fieldErrors.password ? 'user-password-error' : undefined}
                                             value={formData.password}
                                             onChange={e => {
                                                 setFieldErrors(prev => ({ ...prev, password: '' }));
@@ -1243,7 +1346,7 @@ const UserList = () => {
                                     </div>
                                     {modalMode === 'add' && <p className="text-[10px] text-gray-400 mt-1">Auto-generated secure password.</p>}
                                     {modalMode === 'edit' && <p className="text-[10px] text-gray-400 mt-1">Leave blank to keep existing password.</p>}
-                                    {fieldErrors.password && <p className="text-rose-500 text-[11px] mt-1">{fieldErrors.password}</p>}
+                                    {fieldErrors.password && <p id="user-password-error" role="alert" className="text-rose-500 text-[11px] mt-1">{fieldErrors.password}</p>}
                                     {modalMode === 'edit' && formData.password && (
                                         <div className="mt-2 rounded-lg border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-800 p-2">
                                             <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-300 mb-1.5">Password Requirements</p>
@@ -1283,6 +1386,10 @@ const UserList = () => {
                                     <div className="relative">
                                         <input
                                             type="text"
+                                            name="pin"
+                                            data-validation-key="pin"
+                                            aria-invalid={Boolean(fieldErrors.pin)}
+                                            aria-describedby={fieldErrors.pin ? 'user-pin-error' : undefined}
                                             inputMode="numeric"
                                             pattern="[0-9]{6}"
                                             placeholder="123456"
@@ -1320,7 +1427,7 @@ const UserList = () => {
                                     </div>
                                     {modalMode === 'add' && <p className="text-[10px] text-gray-400 mt-1">Auto-generated 6-digit PIN.</p>}
                                     {modalMode === 'edit' && <p className="text-[10px] text-gray-400 mt-1">Leave blank to retain current PIN or enter a new 6‑digit code.</p>}
-                                    {fieldErrors.pin && <p className="text-rose-500 text-[11px] mt-1">{fieldErrors.pin}</p>}
+                                    {fieldErrors.pin && <p id="user-pin-error" role="alert" className="text-rose-500 text-[11px] mt-1">{fieldErrors.pin}</p>}
                                 </div>
                             </div>
 
@@ -1340,7 +1447,7 @@ const UserList = () => {
             {/* Archive Confirmation Modal */}
             {isArchiveModalOpen && userToArchive && (
                 <div className="app-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-                    <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-sm md:max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+                    <div onClick={(e) => e.stopPropagation()} className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-sm md:max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
                         <div className="p-6 text-center">
                             <div className={`mx-auto flex items-center justify-center mb-4 ${userToArchive.isArchived ? 'text-emerald-600' : 'text-orange-600'}`}>
                                 {userToArchive.isArchived ? (

@@ -1,4 +1,5 @@
 import React from 'react';
+import { normalizeProductText } from '../utils/productTextNormalization';
 
 const PRESET_PLACEHOLDERS = {
     brand: 'e.g. Boysen',
@@ -49,16 +50,21 @@ const ProductAttributeFields = ({ definitions = [], values = {}, onChange, rende
         const displayName = getDisplayName(definition);
         const common = {
             id: `product-attribute-${definition.key}`,
+            name: definition.key,
+            'data-validation-key': definition.key,
             value: values[definition.key] ?? '',
             required: Boolean(definition.required),
             onChange: (event) => update(definition.key, event.target.value),
+            onBlur: (!definition.type || definition.type === 'text')
+                ? (event) => update(definition.key, normalizeProductText(event.target.value))
+                : undefined,
             placeholder: getAttributePlaceholder(definition),
         };
 
         return <div key={definition.key}>
             <label htmlFor={common.id} className="mb-1 block text-[10px] font-semibold text-gray-500 dark:text-gray-400">{displayName}{definition.required && <span className="ml-1 text-red-400">*</span>}</label>
             {definition.type === 'select' ? <select {...common} className={inputClassName}><option value="">Select {displayName}...</option>{(definition.options || []).map((option) => <option key={option} value={option}>{option}</option>)}</select>
-                : definition.type === 'number_unit' ? <div className="flex overflow-hidden rounded-lg border border-gray-200 bg-white focus-within:ring-2 focus-within:ring-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:focus-within:ring-gray-500"><input {...common} type="number" step="any" className="min-w-0 flex-1 border-0 bg-transparent p-2 text-xs font-medium text-gray-900 placeholder:text-gray-400 outline-none focus:ring-0 dark:text-white dark:placeholder:text-gray-400"/><span className="flex shrink-0 items-center border-l border-gray-200 bg-slate-50 px-3 text-xs font-medium text-gray-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300">{definition.unit}</span></div>
+                : definition.type === 'number_unit' ? <div className="app-input-group flex overflow-hidden rounded-lg border border-gray-200 bg-white focus-within:ring-2 focus-within:ring-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:focus-within:ring-gray-500"><input {...common} type="number" step="any" className="min-w-0 flex-1 border-0 bg-transparent p-2 text-xs font-medium text-gray-900 placeholder:text-gray-400 outline-none focus:ring-0 dark:text-white dark:placeholder:text-gray-400"/><span className="flex shrink-0 items-center border-l border-gray-200 bg-slate-50 px-3 text-xs font-medium text-gray-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300">{definition.unit}</span></div>
                 : (
                     <input {...common} type={definition.type === 'number' ? 'number' : 'text'} step={definition.type === 'number' ? 'any' : undefined} className={inputClassName}/>
                 )}

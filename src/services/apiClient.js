@@ -1,3 +1,5 @@
+import { consumePendingValidationSubmissionScope } from '../utils/formValidationNavigation';
+
 const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
 const TOKEN_KEY = 'authToken';
@@ -32,6 +34,7 @@ const clearClientSessionState = () => {
 };
 
 export const apiRequest = async (path, options = {}) => {
+  const validationScope = consumePendingValidationSubmissionScope();
   const token = getAuthToken();
   const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
   const headers = {
@@ -84,6 +87,12 @@ export const apiRequest = async (path, options = {}) => {
     const error = new Error(message);
     error.status = response.status;
     error.isConnectionFailure = false;
+    error.validationErrors = body?.fieldErrors || body?.validationErrors || body?.errors || null;
+    if (error.validationErrors && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('app:field-validation', {
+        detail: { errors: error.validationErrors, scope: validationScope },
+      }));
+    }
     throw error;
   }
 

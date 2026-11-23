@@ -226,6 +226,7 @@ const buildReceiptLines = (payload = {}) => {
   const isOrderConfirmation = receipt.documentType === 'order-confirmation';
   const isOrderList = receipt.documentType === 'order-list';
   const isDraftOrderList = receipt.documentType === 'order-list-draft';
+  const isLedgerFunded = receipt.collectionSource === 'special_order_ledger';
   const isProductOnlyList = isOrderList || isDraftOrderList;
   const usesOrderItemLayout = isOrderConfirmation || isOrderList;
   const isVoidedConfirmation = isOrderConfirmation
@@ -258,6 +259,10 @@ const buildReceiptLines = (payload = {}) => {
       appendCenteredText(lines, '*** VOIDED ***');
     }
   }
+  if (isLedgerFunded && !isOrderConfirmation) {
+    lines.push('');
+    appendCenteredText(lines, 'TRANSACTION SLIP');
+  }
 
   if (isOrderList) {
     appendCenteredText(lines, 'ORDER LIST');
@@ -268,7 +273,7 @@ const buildReceiptLines = (payload = {}) => {
 
   lines.push('');
   lines.push(separator);
-  if (!isDraftOrderList) appendField(lines, usesOrderItemLayout ? 'Transaction ID' : 'Receipt No', receipt.id);
+  if (!isDraftOrderList) appendField(lines, usesOrderItemLayout || isLedgerFunded ? 'Transaction ID' : 'Receipt No', receipt.id);
   if (!isProductOnlyList && receipt.transactionReference) {
     appendField(lines, 'Transaction Ref', receipt.transactionReference);
   }
@@ -286,7 +291,8 @@ const buildReceiptLines = (payload = {}) => {
     appendField(lines, 'Time', receiptDateTime.time);
   }
   appendField(lines, 'Cashier', receipt.cashier || '');
-  if (!isDraftOrderList) appendField(lines, isOrderList ? 'Payment Type' : 'Method', receipt.paymentMethod || 'Cash');
+  if (!isDraftOrderList) appendField(lines, receipt.collectionSource === 'special_order_ledger' ? 'Payment Source' : isOrderList ? 'Payment Type' : 'Method',
+    receipt.collectionSource === 'special_order_ledger' ? 'Special Order payment history' : receipt.paymentMethod || 'Cash');
   if (!isProductOnlyList && receipt.customerName) {
     appendField(lines, 'Customer', receipt.customerName);
   }
@@ -308,6 +314,16 @@ const buildReceiptLines = (payload = {}) => {
 
     if (isDraftOrderList) {
       appendPair(lines, `Qty: ${Number(item?.qty || 0)}`, `Unit: ${String(item?.sellingUnit || '').trim() || '-'}`);
+      if (item?.batchPickNotice) appendField(lines, 'Batch note', item.batchPickNotice);
+      for (const pick of Array.isArray(item?.batchPicks) ? item.batchPicks : []) {
+        const verificationStatus = String(pick?.status || 'provisional').toLowerCase() === 'verified'
+          ? 'PHYSICALLY CHECKED - PROVISIONAL'
+          : 'PROVISIONAL - NOT RESERVED';
+        appendField(lines, 'Batch Reference', `${pick.batchReference || 'Reference unavailable'} (${verificationStatus})`);
+        if (pick.lotNumber) appendField(lines, 'Manufacturer Lot No.', pick.lotNumber);
+        appendField(lines, 'Expiry Date', pick.expiryDate);
+        appendField(lines, 'Pick Qty', `${Number(pick.quantity || 0)} ${String(item?.sellingUnit || '').trim()}`);
+      }
     } else if (usesOrderItemLayout) {
       appendItemPriceColumns(lines, item);
     } else {
@@ -329,8 +345,14 @@ const buildReceiptLines = (payload = {}) => {
   }
 
   lines.push(separator);
-  appendPair(lines, 'Net:', formatReceiptAmount(receipt.netAmount || 0));
-  appendPair(lines, 'VAT:', formatReceiptAmount(receipt.vatAmount || 0));
+  if (receipt.vatCalculationStatus === 'not_calculated') {
+    appendPair(lines, 'VAT Class:', receipt.taxTreatment === 'vat_zero_rated' ? 'VAT Zero-Rated' : 'VAT-Rated');
+    appendPair(lines, 'Net:', 'Not calculated');
+    appendPair(lines, 'VAT:', 'Not calculated');
+  } else {
+    appendPair(lines, 'Net:', formatReceiptAmount(receipt.netAmount || 0));
+    appendPair(lines, 'VAT:', formatReceiptAmount(receipt.vatAmount || 0));
+  }
   appendPair(lines, 'Gross:', formatReceiptAmount(receipt.grossAmount || 0));
   appendPair(lines, 'TOTAL:', formatReceiptAmount(receipt.total || 0));
 
@@ -382,7 +404,7 @@ const buildReceiptLines = (payload = {}) => {
   appendCenteredText(lines, 'THANK YOU!');
   appendCenteredText(lines, isOrderConfirmation
     ? 'For transaction reference only.'
-    : 'Please keep this receipt.');
+    : isLedgerFunded ? 'Keep this transaction slip.' : 'Please keep this receipt.');
   lines.push('');
   return lines;
 };
@@ -414,6 +436,15 @@ $data = Get-Content -LiteralPath $JsonPath -Raw -Encoding UTF8 | ConvertFrom-Jso
 $lines = @($data.lines)
 $printerName = [string]$data.printerName
 $contentWidthChars = [int]$data.contentWidthChars
+$centeredHeaderLineCount = [Math]::Max(0, [Math]::Min([int]$data.centeredHeaderLineCount, $lines.Count))
+$centeredLineIndexes = if ($data.centeredLineIndexes) { @($data.centeredLineIndexes | ForEach-Object { [int]$_ }) } else { @() }
+$fullWidthSeparatorLineIndexes = if ($data.fullWidthSeparatorLineIndexes) { @($data.fullWidthSeparatorLineIndexes | ForEach-Object { [int]$_ }) } else { @() }
+$alignedTextLineLookup = @{}
+foreach ($alignedTextLine in @($data.alignedTextLines)) {
+  if ($null -ne $alignedTextLine -and $null -ne $alignedTextLine.lineIndex) {
+    $alignedTextLineLookup[[string]([int]$alignedTextLine.lineIndex)] = $alignedTextLine
+  }
+}
 
 Write-Timing 'PRINTER_RESOLUTION_STARTED'
 $document = New-Object System.Drawing.Printing.PrintDocument
@@ -447,7 +478,7 @@ if ($paperWidth -le 0) {
 }
 $document.DefaultPageSettings.Margins = New-Object System.Drawing.Printing.Margins(4, 4, 5, 5)
 
-$font = New-Object System.Drawing.Font('Consolas', 7.25)
+$font = New-Object System.Drawing.Font('Consolas', 7.25, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Point)
 $brush = [System.Drawing.Brushes]::Black
 $lineHeight = 12
 $paperHeight = [Math]::Max(300, (($lines.Count + 3) * $lineHeight))
@@ -457,6 +488,11 @@ $script:layoutMetrics = $null
 try {
   $document.add_PrintPage({
       param($sender, $e)
+
+      # Thermal paper cannot reproduce the gray edge pixels produced by
+      # antialiased GDI text. Use a grid-fitted, single-bit glyph mask so the
+      # Windows queue receives crisp black text instead of softened edges.
+      $e.Graphics.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::SingleBitPerPixelGridFit
 
       if ($contentWidthChars -gt 0) {
           $contentSample = '0' * $contentWidthChars
@@ -472,14 +508,95 @@ try {
           $x = $e.MarginBounds.Left
       }
       $y = $e.MarginBounds.Top
-      foreach ($line in $lines) {
-          $text = [string]$line
-          if ([string]::IsNullOrEmpty($text)) {
-              $y += $lineHeight
-              continue
+      $printableArea = $e.PageSettings.PrintableArea
+      if ($printableArea.Width -le 0) {
+          $printableArea = $e.MarginBounds
+      }
+      $usableLeft = [Math]::Max($printableArea.Left, $e.MarginBounds.Left)
+      $usableRight = [Math]::Min(($printableArea.Left + $printableArea.Width), $e.MarginBounds.Right)
+      if ($usableRight -le $usableLeft) {
+          $usableLeft = $e.MarginBounds.Left
+          $usableRight = $e.MarginBounds.Right
+      }
+      $usableWidth = $usableRight - $usableLeft
+      if ($contentWidthChars -le 0) {
+          $x = [single]$usableLeft
+      }
+      $centeredHeaderFont = $font
+      $createdCenteredHeaderFont = $false
+      if ($centeredHeaderLineCount -gt 0) {
+          $headerMaxWidth = 0
+          for ($headerIndex = 0; $headerIndex -lt $centeredHeaderLineCount; $headerIndex++) {
+              $headerText = [string]$lines[$headerIndex]
+              if (-not [string]::IsNullOrEmpty($headerText)) {
+                  $headerMaxWidth = [Math]::Max($headerMaxWidth, $e.Graphics.MeasureString($headerText, $font).Width)
+              }
           }
-          $e.Graphics.DrawString($text, $font, $brush, $x, $y)
-          $y += $lineHeight
+
+          # Keep long store details on one centered line while leaving the
+          # quotation body and its existing type size unchanged.
+          $headerSafeWidth = $printableArea.Width * 0.94
+          if ($headerMaxWidth -gt $headerSafeWidth -and $headerMaxWidth -gt 0) {
+              $headerFontSize = [Math]::Max(5.5, $font.Size * ($headerSafeWidth / $headerMaxWidth))
+              $centeredHeaderFont = New-Object System.Drawing.Font('Consolas', [single]$headerFontSize, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Point)
+              $createdCenteredHeaderFont = $true
+          }
+      }
+      $lineIndex = 0
+      try {
+          foreach ($line in $lines) {
+              $text = [string]$line
+              if ([string]::IsNullOrEmpty($text)) {
+                  $y += $lineHeight
+                  $lineIndex++
+                  continue
+              }
+              if ($fullWidthSeparatorLineIndexes -contains $lineIndex) {
+                  $dashWidth = $e.Graphics.MeasureString('-', $font).Width
+                  $dashCount = [Math]::Max(3, [int][Math]::Floor(($usableWidth * 0.96) / $dashWidth))
+                  $separatorText = '-' * $dashCount
+                  $e.Graphics.DrawString($separatorText, $font, $brush, [single]$usableLeft, $y)
+              } elseif ($alignedTextLineLookup.ContainsKey([string]$lineIndex)) {
+                  $alignedLine = $alignedTextLineLookup[[string]$lineIndex]
+                  $leftText = [string]$alignedLine.leftText
+                  $rightText = [string]$alignedLine.rightText
+                  $pairFont = $font
+                  $createdPairFont = $false
+                  $pairSafeWidth = $usableWidth * 0.96
+                  $pairWidth = $e.Graphics.MeasureString($leftText, $font).Width + $e.Graphics.MeasureString($rightText, $font).Width + $e.Graphics.MeasureString('  ', $font).Width
+                  if ($pairWidth -gt $pairSafeWidth -and $pairWidth -gt 0) {
+                      $pairFontSize = [Math]::Max(5.5, $font.Size * ($pairSafeWidth / $pairWidth))
+                      $pairFont = New-Object System.Drawing.Font('Consolas', [single]$pairFontSize, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Point)
+                      $createdPairFont = $true
+                  }
+                  try {
+                      $rightTextWidth = $e.Graphics.MeasureString($rightText, $pairFont).Width
+                      $rightX = [single]($usableRight - $rightTextWidth)
+                      $e.Graphics.DrawString($leftText, $pairFont, $brush, [single]$usableLeft, $y)
+                      $e.Graphics.DrawString($rightText, $pairFont, $brush, $rightX, $y)
+                  } finally {
+                      if ($createdPairFont) {
+                          $pairFont.Dispose()
+                      }
+                  }
+              } elseif ($lineIndex -lt $centeredHeaderLineCount) {
+                  $headerTextWidth = $e.Graphics.MeasureString($text, $centeredHeaderFont).Width
+                  $headerX = [single]($printableArea.Left + (($printableArea.Width - $headerTextWidth) / 2))
+                  $e.Graphics.DrawString($text, $centeredHeaderFont, $brush, $headerX, $y)
+              } elseif ($centeredLineIndexes -contains $lineIndex) {
+                  $centeredTextWidth = $e.Graphics.MeasureString($text, $font).Width
+                  $centeredX = [single]($printableArea.Left + (($printableArea.Width - $centeredTextWidth) / 2))
+                  $e.Graphics.DrawString($text, $font, $brush, $centeredX, $y)
+              } else {
+                  $e.Graphics.DrawString($text, $font, $brush, $x, $y)
+              }
+              $y += $lineHeight
+              $lineIndex++
+          }
+      } finally {
+          if ($createdCenteredHeaderFont) {
+              $centeredHeaderFont.Dispose()
+          }
       }
 
       $e.HasMorePages = $false
@@ -515,9 +632,34 @@ const printWithPowerShell = async (payload = {}, timingId = createPrintTimingId(
   const contentWidthChars = Array.isArray(payload.lines) && payload.lines.length > 0
     ? null
     : DEFAULT_WIDTH_CHARS;
+  const centeredHeaderLineCount = Number.isInteger(payload.centeredHeaderLineCount)
+    ? Math.max(0, Math.min(payload.centeredHeaderLineCount, lines.length))
+    : 0;
+  const normalizeLineIndexes = (indexes) => Array.isArray(indexes)
+    ? [...new Set(indexes.filter((index) => Number.isInteger(index) && index >= 0 && index < lines.length))]
+    : [];
+  const centeredLineIndexes = normalizeLineIndexes(payload.centeredLineIndexes);
+  const fullWidthSeparatorLineIndexes = normalizeLineIndexes(payload.fullWidthSeparatorLineIndexes);
+  const alignedTextLines = Array.isArray(payload.alignedTextLines)
+    ? payload.alignedTextLines
+      .filter((line) => Number.isInteger(line?.lineIndex) && line.lineIndex >= 0 && line.lineIndex < lines.length)
+      .map((line) => ({
+        lineIndex: line.lineIndex,
+        leftText: String(line.leftText ?? ''),
+        rightText: String(line.rightText ?? ''),
+      }))
+    : [];
   fs.writeFileSync(
     tempFilePath,
-    JSON.stringify({ lines, printerName, contentWidthChars }, null, 2),
+    JSON.stringify({
+      lines,
+      printerName,
+      contentWidthChars,
+      centeredHeaderLineCount,
+      centeredLineIndexes,
+      fullWidthSeparatorLineIndexes,
+      alignedTextLines,
+    }, null, 2),
     'utf8',
   );
   logPrintTiming(timingId, 'RECEIPT_JSON_WRITTEN');

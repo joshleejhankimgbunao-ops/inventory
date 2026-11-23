@@ -1,4 +1,4 @@
-import React, { createContext, useState, useEffect, useMemo, useContext, useRef } from 'react';
+import React, { createContext, useState, useEffect, useMemo, useContext, useRef, useCallback } from 'react';
 import { getStockStatus } from '../utils/recommendationLogic';
 import { showToast } from '../utils/toastHelper';
 import { useAuth } from './AuthContext';
@@ -49,10 +49,18 @@ const INVENTORY_FALLBACK = {
     addToSyncQueue: () => {},
     isOnline: true,
     isInventoryLoading: false,
+    inventoryLoadError: null,
+    retryInventory: () => {},
     isCategoriesLoading: false,
     isTransactionsLoading: false,
+    transactionsError: '',
+    retryTransactions: () => {},
     isInventoryLogsLoading: false,
+    inventoryLogsError: null,
+    retryInventoryLogs: () => {},
     isActivityLogsLoading: false,
+    activityLogsError: null,
+    retryActivityLogs: () => {},
     isPageDataLoading: false,
 };
 
@@ -121,7 +129,18 @@ export const InventoryProvider = ({ children }) => {
     // 1. Inventory State (backend-first)
     const [inventory, setInventory] = useState([]);
     const [isInventoryLoading, setIsInventoryLoading] = useState(true);
+    const [inventoryLoadError, setInventoryLoadError] = useState(null);
+    const [inventoryRetryVersion, setInventoryRetryVersion] = useState(0);
+    const retryInventory = () => {
+        setIsInventoryLoading(true);
+        setInventoryLoadError(null);
+        setInventoryRetryVersion((version) => version + 1);
+    };
     const inventoryRef = useRef([]);
+    const inventoryRequestSequenceRef = useRef(0);
+    const transactionsRequestSequenceRef = useRef(0);
+    const activityLogsRequestSequenceRef = useRef(0);
+    const inventoryLogsRequestSequenceRef = useRef(0);
 
     useEffect(() => {
         inventoryRef.current = inventory;
@@ -141,17 +160,21 @@ export const InventoryProvider = ({ children }) => {
 
             if (isMounted) {
                 setIsInventoryLoading(true);
+                setInventoryLoadError(null);
             }
 
+            const requestSequence = ++inventoryRequestSequenceRef.current;
             try {
                 const remoteProducts = await listProductsApi();
-                if (isMounted && Array.isArray(remoteProducts)) {
+                if (isMounted && requestSequence === inventoryRequestSequenceRef.current && Array.isArray(remoteProducts)) {
                     setInventory(remoteProducts);
+                    setInventoryLoadError(null);
                 }
-            } catch {
+            } catch (error) {
                 // Keep the latest in-memory inventory when backend is unavailable.
+                if (isMounted && requestSequence === inventoryRequestSequenceRef.current && inventoryRef.current.length === 0) setInventoryLoadError(error);
             } finally {
-                if (isMounted) {
+                if (isMounted && requestSequence === inventoryRequestSequenceRef.current) {
                     setIsInventoryLoading(false);
                 }
             }
@@ -162,74 +185,83 @@ export const InventoryProvider = ({ children }) => {
         return () => {
             isMounted = false;
         };
-    }, [userRole, currentAuthUsername]);
+    }, [userRole, currentAuthUsername, inventoryRetryVersion]);
 
      // Categories State
     const [categories, setCategories] = useState([]);
     const [isCategoriesLoading, setIsCategoriesLoading] = useState(true);
     const [categoriesError, setCategoriesError] = useState(null);
+    const categoriesRequestSequenceRef = useRef(0);
+    const categoriesRefreshTimerRef = useRef(null);
 
-     const fetchCategories = async () => {
-         const token = getAuthToken();
-         if (!token) return;
-         setIsCategoriesLoading(true);
-         setCategoriesError(null);
-         try {
-             const remoteCategories = await listCategoriesApi();
-            setCategories(Array.isArray(remoteCategories) ? remoteCategories : []);
-         } catch (error) {
-             console.error("Failed to fetch categories:", error);
-            setCategoriesError(error);
-         } finally {
-            setIsCategoriesLoading(false);
-         }
-     };
+    const fetchCategories = useCallback(async () => {
+        const token = getAuthToken();
+        if (!token) return;
+        const requestSequence = ++categoriesRequestSequenceRef.current;
+        setIsCategoriesLoading(true);
+        setCategoriesError(null);
+        try {
+            const remoteCategories = await listCategoriesApi();
+            if (requestSequence === categoriesRequestSequenceRef.current) {
+                setCategories(Array.isArray(remoteCategories) ? remoteCategories : []);
+                setCategoriesError(null);
+            }
+        } catch (error) {
+            console.error("Failed to fetch categories:", error);
+            if (requestSequence === categoriesRequestSequenceRef.current) setCategoriesError(error);
+        } finally {
+            if (requestSequence === categoriesRequestSequenceRef.current) setIsCategoriesLoading(false);
+        }
+    }, []);
 
      useEffect(() => {
         let isMounted = true;
-
-        const loadRemoteCategories = async () => {
-            const token = getAuthToken();
-            if (!token) {
-                if (isMounted) {
-                    setIsCategoriesLoading(false);
-                }
-                return;
+        const scheduleRefresh = () => {
+            window.clearTimeout(categoriesRefreshTimerRef.current);
+            categoriesRefreshTimerRef.current = window.setTimeout(() => {
+                if (isMounted) void fetchCategories();
+            }, 100);
+        };
+        const onCategoriesUpdated = (event) => {
+            let payload = {};
+            try { payload = JSON.parse(event?.data || '{}'); } catch { /* Ignore malformed event data. */ }
+            if (['category.archived', 'category.deleted', 'category.renamed'].includes(payload.reason)) {
+                const affectedName = payload.previousName || payload.name || 'A category';
+                showToast('Category Updated', `${affectedName} is no longer available for new selections. Review any open category filters or forms.`, 'warning', `category-unavailable-${payload.categoryId || payload.reason}`);
             }
-
-            if (isMounted) {
-                setIsCategoriesLoading(true);
-                setCategoriesError(null);
+            if (payload.reason === 'category.renamed') {
+                setInventoryLoadError(null);
+                setIsInventoryLoading(true);
+                setInventoryRetryVersion((version) => version + 1);
             }
-
-            try {
-                const remoteCategories = await listCategoriesApi();
-                if (isMounted) {
-                    setCategories(Array.isArray(remoteCategories) ? remoteCategories : []);
-                }
-            } catch (error) {
-                console.error("Failed to fetch categories:", error);
-                if (isMounted) {
-                    setCategoriesError(error);
-                }
-            } finally {
-                if (isMounted) {
-                    setIsCategoriesLoading(false);
-                }
-            }
+            scheduleRefresh();
         };
 
-        loadRemoteCategories();
+        void fetchCategories();
+        const unsubscribeCategories = subscribeRealtimeEvent('categories.updated', onCategoriesUpdated);
+        const unsubscribeResync = subscribeRealtimeEvent('realtime.resync', scheduleRefresh);
 
         return () => {
             isMounted = false;
+            window.clearTimeout(categoriesRefreshTimerRef.current);
+            categoriesRequestSequenceRef.current += 1;
+            unsubscribeCategories();
+            unsubscribeResync();
         };
-    }, [userRole, currentAuthUsername]);
+    }, [userRole, currentAuthUsername, fetchCategories]);
 
      // 2. Transactions State (backend-first)
     const [transactions, setTransactions] = useState([]);
     const [transactionsCacheOwner, setTransactionsCacheOwner] = useState('');
     const [isTransactionsLoading, setIsTransactionsLoading] = useState(true);
+    const [transactionsError, setTransactionsError] = useState('');
+    const [transactionsRetryVersion, setTransactionsRetryVersion] = useState(0);
+
+    const retryTransactions = () => {
+        setIsTransactionsLoading(true);
+        setTransactionsError('');
+        setTransactionsRetryVersion((version) => version + 1);
+    };
 
      useEffect(() => {
         let isMounted = true;
@@ -241,6 +273,7 @@ export const InventoryProvider = ({ children }) => {
                     setTransactions([]);
                     setTransactionsCacheOwner('');
                     setIsTransactionsLoading(false);
+                    setTransactionsError('');
                 }
                 return;
             }
@@ -251,24 +284,35 @@ export const InventoryProvider = ({ children }) => {
                 setTransactions([]);
                 setTransactionsCacheOwner('');
                 setIsTransactionsLoading(true);
-                setTransactions(readTransactionsCache(transactionsCacheScope));
+                setTransactionsError('');
+                const cachedTransactions = readTransactionsCache(transactionsCacheScope);
+                setTransactions(cachedTransactions);
                 setTransactionsCacheOwner(transactionsCacheScope);
             }
 
+            const requestSequence = ++transactionsRequestSequenceRef.current;
             try {
                 const remoteTransactions = await listSalesHistoryViewApi(true);
-                if (isMounted && Array.isArray(remoteTransactions)) {
+                if (!Array.isArray(remoteTransactions)) {
+                    throw new Error('Sales history response is invalid.');
+                }
+                if (isMounted && requestSequence === transactionsRequestSequenceRef.current) {
                     setTransactions(remoteTransactions);
                     setTransactionsCacheOwner(transactionsCacheScope);
+                    setTransactionsError('');
                 }
             } catch {
                 // Keep last known cached values when history API is temporarily unavailable.
-                if (isMounted) {
-                    setTransactions(readTransactionsCache(transactionsCacheScope));
+                if (isMounted && requestSequence === transactionsRequestSequenceRef.current) {
+                    const cachedTransactions = readTransactionsCache(transactionsCacheScope);
+                    setTransactions(cachedTransactions);
                     setTransactionsCacheOwner(transactionsCacheScope);
+                    setTransactionsError(cachedTransactions.length
+                        ? 'Sales transaction records could not be refreshed; showing saved data.'
+                        : 'Sales transaction records could not be loaded.');
                 }
             } finally {
-                if (isMounted) {
+                if (isMounted && requestSequence === transactionsRequestSequenceRef.current) {
                     setIsTransactionsLoading(false);
                 }
             }
@@ -279,7 +323,7 @@ export const InventoryProvider = ({ children }) => {
         return () => {
             isMounted = false;
         };
-    }, [userRole, currentAuthUsername, currentAuthUserId, transactionsCacheScope]);
+    }, [userRole, currentAuthUsername, currentAuthUserId, transactionsCacheScope, transactionsRetryVersion]);
 
     useEffect(() => {
         if (!transactionsCacheScope || transactionsCacheOwner !== transactionsCacheScope || !getAuthToken()) {
@@ -306,9 +350,11 @@ export const InventoryProvider = ({ children }) => {
         let inventoryRefreshPending = false;
         let isActivityLogsRefreshInFlight = false;
         let isInventoryLogsRefreshInFlight = false;
+        let activityLogsRefreshPending = false;
+        let inventoryLogsRefreshPending = false;
 
         const shouldShowStockAlerts = () => {
-            return userRole === ROLES.SUPER_ADMIN || userRole === ROLES.ADMIN;
+            return userRole === ROLES.SUPER_ADMIN || userRole === ROLES.ADMIN || userRole === ROLES.CASHIER;
         };
 
         const showStockTransitionAlerts = (previousInventory, latestInventory) => {
@@ -367,9 +413,10 @@ export const InventoryProvider = ({ children }) => {
             }
 
             isRefreshInFlight = true;
+            const requestSequence = ++transactionsRequestSequenceRef.current;
             try {
                 const remoteTransactions = await listSalesHistoryViewApi(true);
-                if (!disposed && Array.isArray(remoteTransactions)) {
+                if (!disposed && requestSequence === transactionsRequestSequenceRef.current && Array.isArray(remoteTransactions)) {
                     setTransactions(remoteTransactions);
                     setTransactionsCacheOwner(transactionsCacheScope);
                 }
@@ -377,6 +424,7 @@ export const InventoryProvider = ({ children }) => {
                 // Ignore transient failures; reconnection/fallback handles eventual consistency.
             } finally {
                 isRefreshInFlight = false;
+                if (!disposed && requestSequence === transactionsRequestSequenceRef.current) setIsTransactionsLoading(false);
                 if (transactionRefreshPending && !disposed) {
                     transactionRefreshPending = false;
                     void refreshTransactions();
@@ -396,20 +444,24 @@ export const InventoryProvider = ({ children }) => {
             }
 
             isInventoryRefreshInFlight = true;
+            const requestSequence = ++inventoryRequestSequenceRef.current;
 
             try {
                 const previousInventory = inventoryRef.current;
                 const remoteProducts = await listProductsApi();
-                if (!disposed && Array.isArray(remoteProducts)) {
+                if (!disposed && requestSequence === inventoryRequestSequenceRef.current && Array.isArray(remoteProducts)) {
                     setInventory(remoteProducts);
+                    setInventoryLoadError(null);
                     if (notifyTransitions) {
                         showStockTransitionAlerts(previousInventory, remoteProducts);
                     }
                 }
-            } catch {
+            } catch (error) {
                 // Ignore transient failures; client will retry on next realtime event.
+                if (requestSequence === inventoryRequestSequenceRef.current && inventoryRef.current.length === 0) setInventoryLoadError(error);
             } finally {
                 isInventoryRefreshInFlight = false;
+                if (!disposed && requestSequence === inventoryRequestSequenceRef.current) setIsInventoryLoading(false);
                 if (inventoryRefreshPending && !disposed) {
                     inventoryRefreshPending = false;
                     void refreshInventory({ notifyTransitions });
@@ -422,38 +474,56 @@ export const InventoryProvider = ({ children }) => {
         };
 
         const refreshActivityLogs = async () => {
-            if (isActivityLogsRefreshInFlight || disposed) {
+            if (disposed) return;
+            if (isActivityLogsRefreshInFlight) {
+                activityLogsRefreshPending = true;
                 return;
             }
 
             isActivityLogsRefreshInFlight = true;
+            const requestSequence = ++activityLogsRequestSequenceRef.current;
             try {
                 const remoteLogs = await listActivityLogsApi(200);
-                if (!disposed && Array.isArray(remoteLogs)) {
+                if (!disposed && requestSequence === activityLogsRequestSequenceRef.current && Array.isArray(remoteLogs)) {
                     setActivityLogs(remoteLogs);
+                    setActivityLogsError(null);
                 }
             } catch {
                 // Ignore transient failures for realtime log refresh.
             } finally {
                 isActivityLogsRefreshInFlight = false;
+                if (!disposed && requestSequence === activityLogsRequestSequenceRef.current) setIsActivityLogsLoading(false);
+                if (activityLogsRefreshPending && !disposed) {
+                    activityLogsRefreshPending = false;
+                    void refreshActivityLogs();
+                }
             }
         };
 
         const refreshInventoryLogs = async () => {
-            if (isInventoryLogsRefreshInFlight || disposed) {
+            if (disposed) return;
+            if (isInventoryLogsRefreshInFlight) {
+                inventoryLogsRefreshPending = true;
                 return;
             }
 
             isInventoryLogsRefreshInFlight = true;
+            const requestSequence = ++inventoryLogsRequestSequenceRef.current;
             try {
                 const remoteLogs = await listInventoryLogsApi(200);
-                if (!disposed && Array.isArray(remoteLogs)) {
+                if (!disposed && requestSequence === inventoryLogsRequestSequenceRef.current && Array.isArray(remoteLogs)) {
                     setInventoryLogs(remoteLogs);
+                    setInventoryLogsError(null);
                 }
             } catch {
                 // Ignore transient failures for realtime log refresh.
             } finally {
                 isInventoryLogsRefreshInFlight = false;
+                if (!disposed && requestSequence === inventoryLogsRequestSequenceRef.current) setIsInventoryLogsLoading(false);
+                if (inventoryLogsRefreshPending && !disposed) {
+                    inventoryLogsRefreshPending = false;
+                    void refreshInventoryLogs();
+                }
             }
         };
 
@@ -493,6 +563,13 @@ export const InventoryProvider = ({ children }) => {
      // 3. Inventory Logs State (backend-first)
      const [inventoryLogs, setInventoryLogs] = useState([]);
     const [isInventoryLogsLoading, setIsInventoryLogsLoading] = useState(true);
+    const [inventoryLogsError, setInventoryLogsError] = useState(null);
+    const [inventoryLogsRetryVersion, setInventoryLogsRetryVersion] = useState(0);
+    const retryInventoryLogs = () => {
+        setIsInventoryLogsLoading(true);
+        setInventoryLogsError(null);
+        setInventoryLogsRetryVersion((version) => version + 1);
+    };
 
      useEffect(() => {
         let isMounted = true;
@@ -508,17 +585,21 @@ export const InventoryProvider = ({ children }) => {
 
             if (isMounted) {
                 setIsInventoryLogsLoading(true);
+                setInventoryLogsError(null);
             }
 
+            const requestSequence = ++inventoryLogsRequestSequenceRef.current;
             try {
                 const remoteLogs = await listInventoryLogsApi(200);
-                if (isMounted && Array.isArray(remoteLogs)) {
+                if (isMounted && requestSequence === inventoryLogsRequestSequenceRef.current && Array.isArray(remoteLogs)) {
                     setInventoryLogs(remoteLogs);
+                    setInventoryLogsError(null);
                 }
-            } catch {
+            } catch (error) {
                 // Non-admin users may not have access to log endpoints.
+                if (isMounted && requestSequence === inventoryLogsRequestSequenceRef.current) setInventoryLogsError(error);
             } finally {
-                if (isMounted) {
+                if (isMounted && requestSequence === inventoryLogsRequestSequenceRef.current) {
                     setIsInventoryLogsLoading(false);
                 }
             }
@@ -529,7 +610,7 @@ export const InventoryProvider = ({ children }) => {
         return () => {
             isMounted = false;
         };
-    }, [userRole, currentAuthUsername]);
+    }, [userRole, currentAuthUsername, inventoryLogsRetryVersion]);
 
      // 3.1 Sync Queue State (Offline Config)
      const [syncQueue, setSyncQueue] = useState([]);
@@ -686,6 +767,13 @@ export const InventoryProvider = ({ children }) => {
      // 4. Activity Logs (backend-first)
      const [activityLogs, setActivityLogs] = useState([]);
     const [isActivityLogsLoading, setIsActivityLogsLoading] = useState(true);
+    const [activityLogsError, setActivityLogsError] = useState(null);
+    const [activityLogsRetryVersion, setActivityLogsRetryVersion] = useState(0);
+    const retryActivityLogs = () => {
+        setIsActivityLogsLoading(true);
+        setActivityLogsError(null);
+        setActivityLogsRetryVersion((version) => version + 1);
+    };
 
      useEffect(() => {
         let isMounted = true;
@@ -695,23 +783,28 @@ export const InventoryProvider = ({ children }) => {
             if (!token) {
                 if (isMounted) {
                     setIsActivityLogsLoading(false);
+                    setActivityLogsError(null);
                 }
                 return;
             }
 
             if (isMounted) {
                 setIsActivityLogsLoading(true);
+                setActivityLogsError(null);
             }
 
+            const requestSequence = ++activityLogsRequestSequenceRef.current;
             try {
                 const remoteLogs = await listActivityLogsApi(200);
-                if (isMounted && Array.isArray(remoteLogs)) {
+                if (isMounted && requestSequence === activityLogsRequestSequenceRef.current && Array.isArray(remoteLogs)) {
                     setActivityLogs(remoteLogs);
+                    setActivityLogsError(null);
                 }
-            } catch {
-                // Non-admin users may not have access to activity log endpoints.
+            } catch (error) {
+                // Preserve any already loaded rows and expose a retry state when none are available.
+                if (isMounted && requestSequence === activityLogsRequestSequenceRef.current) setActivityLogsError(error);
             } finally {
-                if (isMounted) {
+                if (isMounted && requestSequence === activityLogsRequestSequenceRef.current) {
                     setIsActivityLogsLoading(false);
                 }
             }
@@ -722,7 +815,7 @@ export const InventoryProvider = ({ children }) => {
         return () => {
             isMounted = false;
         };
-    }, [userRole, currentAuthUsername]);
+    }, [userRole, currentAuthUsername, activityLogsRetryVersion]);
 
      useEffect(() => {
         if (!preferredSuperAdminName || normalizeName(preferredSuperAdminName) === 'admin user') {
@@ -945,10 +1038,18 @@ export const InventoryProvider = ({ children }) => {
             addToSyncQueue,
             isOnline,
             isInventoryLoading,
+            inventoryLoadError,
+            retryInventory,
             isCategoriesLoading,
             isTransactionsLoading,
+            transactionsError,
+            retryTransactions,
             isInventoryLogsLoading,
+            inventoryLogsError,
+            retryInventoryLogs,
             isActivityLogsLoading,
+            activityLogsError,
+            retryActivityLogs,
             isPageDataLoading
         }}>
             {children}

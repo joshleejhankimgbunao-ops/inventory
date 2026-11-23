@@ -19,7 +19,7 @@ const getPageItems = (currentPage, totalPages) => {
 
 const PAGE_SIZE_OPTIONS = [10, 15, 25, 50, 100];
 
-const Pagination = ({ currentPage, totalPages, onPageChange, pageSize, onPageSizeChange }) => {
+const Pagination = ({ currentPage, totalPages, onPageChange, pageSize, onPageSizeChange, pageSizeOptions = PAGE_SIZE_OPTIONS }) => {
     const [pageInput, setPageInput] = useState('');
     const [isPageInputInvalid, setIsPageInputInvalid] = useState(false);
     const pageInputRef = useRef(null);
@@ -70,7 +70,7 @@ const Pagination = ({ currentPage, totalPages, onPageChange, pageSize, onPageSiz
                         aria-label="Rows per page"
                         className="h-8 rounded-lg border border-gray-200 bg-white px-2 text-xs font-semibold text-gray-700 outline-none transition-colors hover:border-gray-300 focus:border-gray-900 focus:ring-2 focus:ring-gray-900 focus:ring-offset-2 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:hover:border-gray-500 dark:focus:border-gray-300 dark:focus:ring-gray-300 dark:focus:ring-offset-gray-900"
                     >
-                        {PAGE_SIZE_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+                        {pageSizeOptions.map((option) => <option key={option} value={option}>{option}</option>)}
                     </select>
                 </label>
             )}

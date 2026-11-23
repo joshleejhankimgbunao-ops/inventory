@@ -114,11 +114,16 @@ export const createSpecialOrderTransactionPdf = ({ order = {}, transaction = {},
 
   const details = [
     ['Special Order Reference', specialOrderReference],
-    ['Transaction / Receipt No.', transaction.id],
+    [transaction.collectionSource === 'special_order_ledger' ? 'Transaction No.' : 'Transaction / Receipt No.', transaction.id],
     ['Customer', customerName],
     ['Order Date', formatDate(order.createdAt)],
     ['Completion Date', formatDate(transaction.date || order.completedAt, true)],
-    ['Status', order.status || 'Completed'],
+    ...(transaction.vatCalculationStatus === 'not_calculated' ? [
+      ['VAT Classification', transaction.taxTreatment === 'vat_zero_rated' ? 'VAT Zero-Rated' : 'VAT-Rated'],
+      ['VAT Amount', 'Not calculated'],
+    ] : []),
+    ['Status', order.status === 'Completed' && transaction.specialOrderFulfillmentStatus === 'Administrative Closure'
+      ? 'Administratively Completed' : order.status || 'Completed'],
     ['Processed By', transaction.cashier],
   ].filter(([, value]) => value !== null && value !== undefined && String(value).trim());
 
@@ -164,7 +169,8 @@ export const createSpecialOrderTransactionPdf = ({ order = {}, transaction = {},
   }
 
   const paymentRows = [
-    ['Payment Method', formatLabel(transaction.paymentMethod)],
+    [transaction.collectionSource === 'special_order_ledger' ? 'Payment Source' : 'Payment Method',
+      transaction.collectionSource === 'special_order_ledger' ? 'Special Order payment history' : formatLabel(transaction.paymentMethod)],
     ['Payment Status', transaction.paymentStatus],
     ...(hasSavedNumber(transaction.amountPaid) ? [['Amount Paid', formatMoney(transaction.amountPaid)]] : []),
     ...(hasSavedNumber(transaction.remainingBalance ?? transaction.balance)

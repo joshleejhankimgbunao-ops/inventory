@@ -64,7 +64,7 @@ const dispatchEventToSubscribers = (eventName, event) => {
 };
 
 const bindEventDispatcher = (eventName) => {
-  if (!eventSource || dispatchers.has(eventName) || eventName === REALTIME_RESYNC_EVENT) {
+  if (!eventSource || dispatchers.has(eventName)) {
     return;
   }
 
@@ -243,7 +243,8 @@ export const resumeRealtime = () => {
 
 export const stopRealtime = () => {
   shouldStayConnected = false;
-  hasConnectedOnce = false;
+  // Keep the successful-connection marker while subscribers still exist. A
+  // later resume (for example after re-authentication) must resync their data.
   clearReconnectTimer();
   cancelTicketRequest();
   closeEventSource();
