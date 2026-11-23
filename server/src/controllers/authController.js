@@ -7,6 +7,7 @@ const { writeActivityLog } = require('../services/logService');
 const { revokeRealtimeSession, revokeRealtimeUser, publishUsersUpdated } = require('../services/realtimeService');
 const { getJwtSecret } = require('../config/security');
 const { normalizeHumanReadable } = require('../../../shared/textNormalization.cjs');
+const { MAX_AVATAR_IMAGE_BYTES, validateImageSource } = require('../utils/imageSourceValidation');
 
 const RESET_RESPONSE_MESSAGE = 'If the account exists, a reset link has been sent.';
 
@@ -257,7 +258,12 @@ const updateMyProfile = async (req, res, next) => {
     const nextUsername = req.body?.username ? normalizeValue(req.body.username) : user.username;
     const nextEmail = req.body?.email ? normalizeValue(req.body.email) : user.email;
     const nextPhone = req.body?.phone !== undefined ? String(req.body.phone).trim() : user.phone;
-    const nextAvatarUrl = req.body?.avatarUrl !== undefined ? String(req.body.avatarUrl).trim() : user.avatarUrl;
+    const savedAvatarUrl = String(user.avatarUrl || '').trim();
+    const nextAvatarUrl = req.body?.avatarUrl !== undefined
+      ? (typeof req.body.avatarUrl === 'string' && req.body.avatarUrl.trim() === savedAvatarUrl
+        ? user.avatarUrl
+        : validateImageSource(req.body.avatarUrl, { maxBytes: MAX_AVATAR_IMAGE_BYTES, fieldName: 'Profile image' }))
+      : user.avatarUrl;
 
     if (!nextUsername) {
       return res.status(400).json({ message: 'username is required.' });
@@ -508,7 +514,10 @@ const updateUserByUsername = async (req, res, next) => {
     }
 
     if (req.body?.avatarUrl !== undefined) {
-      user.avatarUrl = String(req.body.avatarUrl).trim();
+      const savedAvatarUrl = String(user.avatarUrl || '').trim();
+      user.avatarUrl = typeof req.body.avatarUrl === 'string' && req.body.avatarUrl.trim() === savedAvatarUrl
+        ? user.avatarUrl
+        : validateImageSource(req.body.avatarUrl, { maxBytes: MAX_AVATAR_IMAGE_BYTES, fieldName: 'Profile image' });
     }
 
     if (req.body?.preferences !== undefined && req.body?.preferences !== null) {
@@ -737,6 +746,11 @@ const register = async (req, res, next) => {
       return res.status(400).json({ message: 'A valid email is required.' });
     }
 
+    const normalizedAvatarUrl = validateImageSource(avatarUrl, {
+      maxBytes: MAX_AVATAR_IMAGE_BYTES,
+      fieldName: 'Profile image',
+    });
+
     const lookup = [{ username: normalizedUsername }];
 
     lookup.push({ email: normalizedEmail });
@@ -771,7 +785,7 @@ const register = async (req, res, next) => {
       username: normalizedUsername,
       email: normalizedEmail,
       phone: normalizedPhone,
-      avatarUrl: avatarUrl ? String(avatarUrl).trim() : '',
+      avatarUrl: normalizedAvatarUrl,
       password: hashed,
       pinHash: pin ? await bcrypt.hash(pin, 10) : undefined,
       role: assignedRole,

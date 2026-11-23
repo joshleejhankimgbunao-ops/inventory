@@ -470,3 +470,44 @@ test('product editing accepts and persists a blank Product Name', async () => {
     assert.equal(response.body.sku, existing.sku);
   }});
 });
+
+test('Product Master accepts validated legacy data-URL images and rejects spoofed image content', async () => {
+  const category = { name: 'Electrical', isActive: true, attributeSchemaVersion: 1, productAttributes: [] };
+  const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const validImage = `data:image/png;base64,${pngBytes.toString('base64')}`;
+  await withProductStubs({ category, action: async () => {
+    const response = makeResponse();
+    await createProduct(makeRequest({
+      name: 'Wire', sku: 'ELC-097', category: 'Electrical', price: 10, imageUrl: validImage,
+    }), response, assert.fail);
+    assert.equal(response.statusCode, 201);
+    assert.equal(response.body.imageUrl, validImage);
+  }});
+
+  await withProductStubs({ category, action: async () => {
+    const response = makeResponse();
+    await createProduct(makeRequest({
+      name: 'Wire', sku: 'ELC-096', category: 'Electrical', price: 10,
+      imageUrl: `data:image/png;base64,${Buffer.from([0xff, 0xd8, 0xff]).toString('base64')}`,
+    }), response, (error) => {
+      response.statusCode = error.status;
+      response.body = { message: error.message };
+    });
+    assert.equal(response.statusCode, 400);
+    assert.match(response.body.message, /content does not match/i);
+  }});
+});
+
+test('Product Master leaves an unchanged legacy image reference intact during other product edits', async () => {
+  const category = { name: 'Electrical', isActive: true, attributeSchemaVersion: 1, productAttributes: [] };
+  const existing = makeProduct({
+    _id: 'legacy-image-product',
+    imageUrl: 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=',
+  });
+  await withProductStubs({ category, existing, action: async () => {
+    const response = makeResponse();
+    await updateProduct(makeRequest({ name: 'Renamed Wire', imageUrl: existing.imageUrl }, existing._id), response, assert.fail);
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body.imageUrl, existing.imageUrl);
+  }});
+});

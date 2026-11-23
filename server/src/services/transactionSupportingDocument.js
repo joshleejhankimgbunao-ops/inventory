@@ -1,12 +1,12 @@
 const fs = require('fs/promises');
 const path = require('path');
 const { randomUUID } = require('crypto');
-const { R2StorageError, isObjectNotFoundError, r2Storage } = require('./r2StorageService');
+const { R2StorageError, isLocalStorageAllowed, isObjectNotFoundError, r2Storage } = require('./r2StorageService');
 
 const PREFIX = 'transaction-supporting-documents/';
 const LOCAL_DIRECTORY = path.resolve(__dirname, '../../uploads/transaction-supporting-documents');
 const validKey = (key) => /^[a-f0-9-]+\.(jpg|png)$/i.test(String(key || ''));
-const localAllowed = () => process.env.NODE_ENV !== 'production';
+const localAllowed = () => isLocalStorageAllowed();
 
 const getImageType = (file) => {
   const bytes = file?.buffer;
@@ -50,7 +50,7 @@ const uploadDocument = async (file, { storage = r2Storage, allowLocal = localAll
 const removeDocument = async (key, { storage = r2Storage, allowLocal = localAllowed() } = {}) => {
   if (!validKey(key)) return;
   if (storage.isConfigured()) return storage.deleteObject(`${PREFIX}${key}`);
-  if (!allowLocal) return;
+  if (!allowLocal) throw new R2StorageError('Cloud storage is required to delete supporting documents in this environment.', { code: 'R2_NOT_CONFIGURED' });
   try { await fs.unlink(path.join(LOCAL_DIRECTORY, key)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
 };
 

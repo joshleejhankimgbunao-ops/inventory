@@ -584,7 +584,7 @@ const ProductList = () => {
             return;
         }
 
-        if (!file.type.startsWith('image/')) {
+        if (!['image/jpeg', 'image/png', 'image/webp'].includes(String(file.type || '').toLowerCase())) {
             showToast('Invalid Image', 'Please select a JPG, PNG, or WebP image.', 'error', 'product-image');
             event.target.value = '';
             return;
@@ -1990,7 +1990,7 @@ const ProductList = () => {
                                         <input
                                             ref={productImageInputRef}
                                             type="file"
-                                            accept="image/*"
+                                            accept="image/jpeg,image/png,image/webp"
                                             onChange={handleProductImageChange}
                                             className="hidden"
                                         />

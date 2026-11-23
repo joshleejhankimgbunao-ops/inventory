@@ -11,7 +11,7 @@ const { writeActivityLog } = require('../services/logService');
 const { publishCreditTransactionsUpdated, publishSpecialOrderUpdated } = require('../services/realtimeService');
 const { parseStrictWholeNumber } = require('../utils/numericValidation');
 const { isMoneyInputTooLarge, parseSafeMoneyToCentavos } = require('../utils/moneyValidation');
-const { R2StorageError, isObjectNotFoundError, r2Storage } = require('../services/r2StorageService');
+const { R2StorageError, isLocalStorageAllowed, isObjectNotFoundError, r2Storage } = require('../services/r2StorageService');
 const { normalizeCreditPaymentMethod } = require('../utils/paymentMethodNormalization');
 const { buildCustomerOverdueHistory } = require('../services/creditOverdueHistory');
 const {
@@ -59,7 +59,7 @@ const getProofImageMetadata = (file) => {
   };
 };
 
-const isLocalProofStorageAllowed = () => process.env.NODE_ENV !== 'production';
+const isLocalProofStorageAllowed = () => isLocalStorageAllowed();
 
 const toProofObjectKey = (storageKey) => `${PAYMENT_PROOF_PREFIX}${storageKey}`;
 
@@ -140,7 +140,9 @@ const removeStoredProof = async (storageKey, {
   }
 
   if (!allowLocalStorage) {
-    return;
+    throw new R2StorageError('Cloud storage is required to delete payment proofs in this environment.', {
+      code: 'R2_NOT_CONFIGURED',
+    });
   }
 
   try {

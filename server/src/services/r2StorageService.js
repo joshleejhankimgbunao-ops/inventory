@@ -13,6 +13,10 @@ const REQUIRED_R2_ENVIRONMENT_VARIABLES = Object.freeze([
   'R2_SECRET_ACCESS_KEY',
 ]);
 
+// Persistent local storage is intentionally available only in explicit local
+// development. Staging, test, and production fail closed without R2.
+const isLocalStorageAllowed = (environment = process.env) => environment.NODE_ENV === 'development';
+
 class R2StorageError extends Error {
   constructor(message, { cause = null, code = 'R2_STORAGE_ERROR', status = 503 } = {}) {
     super(message);
@@ -52,6 +56,23 @@ const normalizeKey = (key, bucketName = '') => {
   return normalized;
 };
 
+const isValidR2Endpoint = (endpoint) => {
+  try {
+    const parsed = new URL(String(endpoint || ''));
+    return parsed.protocol === 'https:'
+      && Boolean(parsed.hostname)
+      && !parsed.username
+      && !parsed.password
+      && !parsed.search
+      && !parsed.hash
+      && (!parsed.pathname || parsed.pathname === '/');
+  } catch {
+    return false;
+  }
+};
+
+const isValidR2BucketName = (bucketName) => /^(?!.*\.\.)[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(String(bucketName || ''));
+
 const isObjectNotFoundError = (error) => {
   const cause = error?.cause || error;
   const code = String(cause?.name || cause?.Code || cause?.code || '');
@@ -68,6 +89,9 @@ const getR2Configuration = (environment = process.env) => {
     secretAccessKey: String(environment.R2_SECRET_ACCESS_KEY || '').trim(),
   };
 
+  const validEndpoint = isValidR2Endpoint(config.endpoint);
+  const validBucketName = isValidR2BucketName(config.bucketName);
+
   const missing = REQUIRED_R2_ENVIRONMENT_VARIABLES.filter((name) => {
     const property = {
       R2_ENDPOINT: 'endpoint',
@@ -75,6 +99,8 @@ const getR2Configuration = (environment = process.env) => {
       R2_ACCESS_KEY_ID: 'accessKeyId',
       R2_SECRET_ACCESS_KEY: 'secretAccessKey',
     }[name];
+    if (name === 'R2_ENDPOINT') return !validEndpoint;
+    if (name === 'R2_BUCKET_NAME') return !validBucketName;
     return !config[property];
   });
 
@@ -202,5 +228,8 @@ module.exports = {
   createR2StorageService,
   getR2Configuration,
   isObjectNotFoundError,
+  isLocalStorageAllowed,
+  isValidR2BucketName,
+  isValidR2Endpoint,
   r2Storage,
 };

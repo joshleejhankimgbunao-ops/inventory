@@ -620,11 +620,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                         <select
                             value={dateRange}
                             onChange={(e) => { clearTopSellingTooltipPosition(); setDateRange(e.target.value); }}
-                            className="appearance-none px-3.5 py-2 rounded-lg text-xs font-medium transition-colors hover:bg-slate-800 cursor-pointer pr-9 border border-slate-700 shadow-sm"
-                            style={{
-                                backgroundColor: '#111827',
-                                color: '#ffffff'
-                            }}
+                            className="dashboard-date-range-select appearance-none bg-[#111827] px-3.5 py-2 rounded-lg text-xs font-medium text-white transition-colors hover:bg-slate-800 open:bg-slate-800 cursor-pointer pr-9 border border-slate-700 shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
                         >
                             <option value="today">Today</option>
                             <option value="week">This Week</option>

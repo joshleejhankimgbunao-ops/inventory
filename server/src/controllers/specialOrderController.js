@@ -41,10 +41,10 @@ const { normalizeHumanReadable } = require('../../../shared/textNormalization.cj
 const { isValidTransactionReferenceNumber, TRANSACTION_REFERENCE_MAX_LENGTH, TRANSACTION_REFERENCE_NUMERIC_MESSAGE } = require('../../../shared/transactionReference.cjs');
 const { uploadDocument, removeDocument } = require('../services/transactionSupportingDocument');
 const { randomUUID } = require('crypto');
-const { uploadQuotationImage, removeQuotationImage, getQuotationImage, inspectImage, MAX_FILE_SIZE } = require('../services/specialOrderQuotationImage');
+const { uploadQuotationImage, removeQuotationImage, getQuotationImage, inspectImage, snapshotProductMasterImage, MAX_FILE_SIZE } = require('../services/specialOrderQuotationImage');
 const { isObjectNotFoundError } = require('../services/r2StorageService');
 const { normalizeLagunaDeliveryFields } = require('../utils/lagunaFulfillment');
-const { productImageSources, createProductImageReference, parseProductDataImage } = require('../utils/specialOrderProductImages');
+const { productImageSources, parseProductDataImage } = require('../utils/specialOrderProductImages');
 const { getProductDisplayName } = require('../utils/productDisplayName');
 const { normalizeCreditPaymentMethod } = require('../utils/paymentMethodNormalization');
 const { addManilaCalendarDays, startOfManilaCalendarDay } = require('../utils/manilaCalendar');
@@ -947,7 +947,9 @@ const createSpecialOrder = async (req, res, next) => {
           if (!product || !productImageSources(product).some((entry) => entry.imageIndex === selection.imageIndex)) {
             throw Object.assign(new Error('The selected product image is no longer available. Refresh the product and retry.'), { status: 409 });
           }
-          images.push(createProductImageReference(product, selection));
+          const imageSnapshot = await snapshotProductMasterImage(product, selection.imageIndex);
+          uploadedInitialImages.push(imageSnapshot);
+          images.push(imageSnapshot);
         }
         initialImagesByItem.set(itemId, images);
       }

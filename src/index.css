@@ -2354,7 +2354,7 @@ html.dark .recharts-tooltip-item {
 :is(
   input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="hidden"]):not([type="image"]):not([type="color"]):not([class~="border-0"]):not([class~="bg-transparent"]),
   input.login-input,
-  select:not(.recommendation-filter-select):not([class~="bg-gray-900"]):not([class~="bg-slate-900"]):not([class~="bg-[#111827]"]),
+  select:not(.recommendation-filter-select):not(.dashboard-date-range-select):not([class~="bg-gray-900"]):not([class~="bg-slate-900"]):not([class~="bg-[#111827]"]),
   textarea:not([class~="border-0"]):not([class~="bg-transparent"])
 ) {
   background-color: var(--app-field-bg) !important;
@@ -2369,7 +2369,7 @@ html.dark .recharts-tooltip-item {
   :is(
     input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="hidden"]):not([type="image"]):not([type="color"]):not([class~="border-0"]):not([class~="bg-transparent"]),
     input.login-input,
-    select:not(.recommendation-filter-select):not([class~="bg-gray-900"]):not([class~="bg-slate-900"]):not([class~="bg-[#111827]"]),
+    select:not(.recommendation-filter-select):not(.dashboard-date-range-select):not([class~="bg-gray-900"]):not([class~="bg-slate-900"]):not([class~="bg-[#111827]"]),
     textarea:not([class~="border-0"]):not([class~="bg-transparent"])
   ):hover:not(:disabled):not([readonly]):not([aria-readonly="true"]) {
     background-color: var(--app-field-hover-bg) !important;
@@ -2380,7 +2380,7 @@ html.dark .recharts-tooltip-item {
 :is(
   input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="hidden"]):not([type="image"]):not([type="color"]):not([class~="border-0"]):not([class~="bg-transparent"]),
   input.login-input,
-  select:not(.recommendation-filter-select):not([class~="bg-gray-900"]):not([class~="bg-slate-900"]):not([class~="bg-[#111827]"]),
+  select:not(.recommendation-filter-select):not(.dashboard-date-range-select):not([class~="bg-gray-900"]):not([class~="bg-slate-900"]):not([class~="bg-[#111827]"]),
   textarea:not([class~="border-0"]):not([class~="bg-transparent"])
 ):focus {
   background-color: var(--app-field-focus-bg) !important;
@@ -2392,7 +2392,7 @@ html.dark .recharts-tooltip-item {
 :is(
   input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="hidden"]):not([type="image"]):not([type="color"]):not([class~="border-0"]):not([class~="bg-transparent"]),
   input.login-input,
-  select:not(.recommendation-filter-select):not([class~="bg-gray-900"]):not([class~="bg-slate-900"]):not([class~="bg-[#111827]"]),
+  select:not(.recommendation-filter-select):not(.dashboard-date-range-select):not([class~="bg-gray-900"]):not([class~="bg-slate-900"]):not([class~="bg-[#111827]"]),
   textarea:not([class~="border-0"]):not([class~="bg-transparent"])
 ):focus-visible {
   box-shadow: 0 0 0 3px var(--app-field-focus-ring) !important;
@@ -2406,7 +2406,7 @@ html.dark .recharts-tooltip-item {
   cursor: default;
 }
 
-:is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="hidden"]):not([type="image"]):not([type="color"]), select, textarea):disabled {
+:is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="hidden"]):not([type="image"]):not([type="color"]), select:not(.dashboard-date-range-select), textarea):disabled {
   background-color: var(--app-field-disabled-bg) !important;
   border-color: var(--app-field-border) !important;
   color: var(--app-field-disabled-text) !important;
@@ -2551,4 +2551,14 @@ html.dark :where(form[data-validation-submitted="true"], [data-validation-scope]
 
 html.dark .form-validation-error-message {
   color: #fda4af;
+}
+
+.dashboard-date-range-select:open {
+  background-color: #1e293b;
+  color: #ffffff;
+}
+
+.dashboard-date-range-select option {
+  background-color: #111827;
+  color: #ffffff;
 }

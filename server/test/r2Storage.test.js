@@ -3,6 +3,8 @@ const test = require('node:test');
 const {
   R2StorageError,
   createR2StorageService,
+  getR2Configuration,
+  isLocalStorageAllowed,
 } = require('../src/services/r2StorageService');
 
 // The controller publishes realtime events in the application. Stub that service
@@ -92,6 +94,22 @@ test('R2 service sends private object operations to the configured bucket', asyn
   assert.equal(commands[0].ContentType, 'image/jpeg');
   assert.equal(service.getConfiguration().accessKeyId, '[configured]');
   assert.equal(service.getConfiguration().secretAccessKey, '[configured]');
+});
+
+test('R2 configuration requires an HTTPS endpoint and a valid bucket identifier', () => {
+  const invalidEndpoint = getR2Configuration({ ...configuredEnvironment, R2_ENDPOINT: 'http://example.r2.cloudflarestorage.com' });
+  assert.equal(invalidEndpoint.configured, false);
+  assert.ok(invalidEndpoint.missing.includes('R2_ENDPOINT'));
+  const invalidBucket = getR2Configuration({ ...configuredEnvironment, R2_BUCKET_NAME: 'invalid_bucket' });
+  assert.equal(invalidBucket.configured, false);
+  assert.ok(invalidBucket.missing.includes('R2_BUCKET_NAME'));
+});
+
+test('local storage fallback is available only in explicit development mode', () => {
+  assert.equal(isLocalStorageAllowed({ NODE_ENV: 'development' }), true);
+  assert.equal(isLocalStorageAllowed({ NODE_ENV: 'test' }), false);
+  assert.equal(isLocalStorageAllowed({ NODE_ENV: 'production' }), false);
+  assert.equal(isLocalStorageAllowed({}), false);
 });
 
 test('R2 configuration removes an accidental bucket path and new keys never repeat the bucket name', async () => {
@@ -198,6 +216,7 @@ test('payment proof is persisted to R2 before the Paid-state operation', async (
     get: () => '',
   }, response, assert.fail, {
     findTransaction: async () => transaction,
+    findSale: async () => null,
     ensureOwnership: async () => {},
     persistProof: async (input) => proofStorage.persistProofOfPayment(input, {
       storage,
@@ -228,6 +247,7 @@ test('R2 upload failure prevents the Paid-state operation', async () => {
     get: () => '',
   }, response, assert.fail, {
     findTransaction: async () => ({ remainingBalance: 100, paymentHistory: [] }),
+    findSale: async () => null,
     ensureOwnership: async () => {},
     persistProof: async () => {
       throw new R2StorageError('Cloud storage request failed.');
@@ -261,6 +281,7 @@ test('database failure after an upload attempts R2 payment-proof cleanup', async
     get: () => '',
   }, response, (error) => nextErrors.push(error), {
     findTransaction: async () => ({ remainingBalance: 100, paymentHistory: [] }),
+    findSale: async () => null,
     ensureOwnership: async () => {},
     persistProof: async (input) => proofStorage.persistProofOfPayment(input, {
       storage,

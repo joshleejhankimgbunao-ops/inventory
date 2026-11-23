@@ -1,13 +1,13 @@
 const fs = require('fs/promises');
 const path = require('path');
 const { randomUUID } = require('crypto');
-const { R2StorageError, isObjectNotFoundError, r2Storage } = require('./r2StorageService');
+const { R2StorageError, isLocalStorageAllowed, isObjectNotFoundError, r2Storage } = require('./r2StorageService');
 
 const PREFIX = 'sale-void-proofs/';
 const MAX_SIZE = 5 * 1024 * 1024;
 const LOCAL_DIRECTORY = path.resolve(__dirname, '../../uploads/sale-void-proofs');
 const validKey = (key) => /^[a-f0-9-]+\.(jpg|png|pdf)$/i.test(String(key || ''));
-const localAllowed = () => process.env.NODE_ENV !== 'production';
+const localAllowed = () => isLocalStorageAllowed();
 
 const detectedType = (buffer) => {
   if (!Buffer.isBuffer(buffer)) return null;
@@ -79,7 +79,7 @@ const uploadProof = async (file, { storage = r2Storage, allowLocal = localAllowe
 const removeProof = async (key, { storage = r2Storage, allowLocal = localAllowed() } = {}) => {
   if (!validKey(key)) return false;
   if (storage.isConfigured()) return storage.deleteObject(`${PREFIX}${key}`);
-  if (!allowLocal) return false;
+  if (!allowLocal) throw new R2StorageError('Cloud storage is required to delete Sale Void proofs in this environment.', { code: 'R2_NOT_CONFIGURED' });
   try {
     await fs.unlink(path.join(LOCAL_DIRECTORY, key));
     return true;

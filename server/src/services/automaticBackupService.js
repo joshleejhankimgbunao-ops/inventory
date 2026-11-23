@@ -2,7 +2,7 @@ const fs = require('fs/promises');
 const path = require('path');
 const Setting = require('../models/Setting');
 const { generateSystemBackup } = require('./systemBackupService');
-const { R2StorageError, r2Storage } = require('./r2StorageService');
+const { R2StorageError, isLocalStorageAllowed, r2Storage } = require('./r2StorageService');
 
 const AUTOMATIC_BACKUP_DIRECTORY = path.resolve(__dirname, '../../backups');
 const AUTOMATIC_BACKUP_FILE_PREFIX = 'automatic-inventory-backup-';
@@ -125,7 +125,7 @@ const formatBackupFileTimestamp = (date = new Date()) => {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 };
 
-const isLocalAutomaticBackupStorageAllowed = () => process.env.NODE_ENV !== 'production';
+const isLocalAutomaticBackupStorageAllowed = () => isLocalStorageAllowed();
 
 const toAutomaticBackupObjectKey = (fileName) => `${AUTOMATIC_BACKUP_R2_PREFIX}${fileName}`;
 

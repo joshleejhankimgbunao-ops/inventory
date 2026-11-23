@@ -17,6 +17,7 @@ const {
 } = require('../services/automaticBackupService');
 const { isObjectNotFoundError } = require('../services/r2StorageService');
 const { normalizeHumanReadable } = require('../../../shared/textNormalization.cjs');
+const { MAX_SETTINGS_IMAGE_BYTES, validateImageSource } = require('../utils/imageSourceValidation');
 
 const EMAIL_RULE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const BACKUP_TIME_RULE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
@@ -271,7 +272,12 @@ const updateSettings = async (req, res, next) => {
     if ('adminDisplayName' in payload) payload.adminDisplayName = normalizeHumanReadable(payload.adminDisplayName);
     if ('adminFullName' in payload) payload.adminFullName = normalizeHumanReadable(payload.adminFullName);
     if ('adminContactNumber' in payload && typeof payload.adminContactNumber === 'string') payload.adminContactNumber = payload.adminContactNumber.replace(/\D/g, '').slice(0, 11);
-    if ('avatar' in payload) payload.avatar = normalizeString(payload.avatar);
+    if ('avatar' in payload) {
+      const savedAvatar = String(settings.avatar || '').trim();
+      payload.avatar = typeof payload.avatar === 'string' && payload.avatar.trim() === savedAvatar
+        ? settings.avatar
+        : validateImageSource(payload.avatar, { maxBytes: MAX_SETTINGS_IMAGE_BYTES, fieldName: 'Settings image' });
+    }
 
     if ('lowStockAlert' in payload) {
       const lowStockAlert = parseStrictWholeNumber(payload.lowStockAlert, { max: 100 });

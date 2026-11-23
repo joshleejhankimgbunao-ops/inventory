@@ -27,6 +27,7 @@ const {
 } = require('../services/expiryBatchAllocationService');
 const { isMoneyInputTooLarge, parseSafeMoney } = require('../utils/moneyValidation');
 const { normalizeHumanReadable } = require('../../../shared/textNormalization.cjs');
+const { MAX_PRODUCT_IMAGE_BYTES, validateImageSource } = require('../utils/imageSourceValidation');
 const { applyLegacyCompatibility, getEffectiveDefinitions, plainAttributes, validateProductAttributeValues } = require('../utils/productAttributes');
 const { buildProductConfigurationIdentity, productConfigurationInput, productConfigurationsConflict } = require('../utils/productConfigurationIdentity');
 const { addProductRecommendation, editProductRecommendationBasis, removeProductRecommendation } = require('./recommendationController');
@@ -370,7 +371,10 @@ const createProduct = async (req, res, next) => {
     const color = normalizeHumanReadable(req.body?.color);
     const size = normalizeString(req.body?.size);
     const supplierName = normalizeHumanReadable(req.body?.supplierName);
-    const imageUrl = normalizeString(req.body?.imageUrl);
+    const imageUrl = validateImageSource(req.body?.imageUrl, {
+      maxBytes: MAX_PRODUCT_IMAGE_BYTES,
+      fieldName: 'Product image',
+    });
     const hasStock = Object.prototype.hasOwnProperty.call(req.body || {}, 'stock');
     const stock = hasStock ? parseStrictWholeNumber(req.body.stock) : 0;
     const price = parseSafeMoney(req.body?.price);
@@ -844,7 +848,16 @@ const updateProduct = async (req, res, next) => {
     if (req.body?.color !== undefined) payload.color = normalizeHumanReadable(req.body.color);
     if (req.body?.size !== undefined) payload.size = normalizeString(req.body.size);
     if (req.body?.supplierName !== undefined) payload.supplierName = normalizeHumanReadable(req.body.supplierName);
-    if (req.body?.imageUrl !== undefined) payload.imageUrl = normalizeString(req.body.imageUrl);
+    if (req.body?.imageUrl !== undefined) {
+      const submittedImage = typeof req.body.imageUrl === 'string' ? req.body.imageUrl.trim() : req.body.imageUrl;
+      const savedImage = String(existing.imageUrl || '').trim();
+      payload.imageUrl = submittedImage === savedImage
+        ? existing.imageUrl
+        : validateImageSource(submittedImage, {
+          maxBytes: MAX_PRODUCT_IMAGE_BYTES,
+          fieldName: 'Product image',
+        });
+    }
     if (req.body?.isActive !== undefined) payload.isActive = Boolean(req.body.isActive);
 
     if (req.body?.sellingUnit !== undefined) {
