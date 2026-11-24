@@ -84,6 +84,14 @@ const parseReferenceSequence = (reference) => {
 const backfillMissingExpiryBatchReferences = async () => {
   await Promise.all([ExpiryBatchReferenceCounter.init(), ExpiryBatch.init()]);
 
+  // Normal restarts have no migration work. Check that first so we avoid
+  // reading and parsing every existing reference on each server startup.
+  const missing = await ExpiryBatch.find(missingReferenceFilter)
+    .select('_id createdAt receivedAt')
+    .sort({ createdAt: 1, _id: 1 })
+    .lean();
+  if (missing.length === 0) return { assigned: 0 };
+
   const existing = await ExpiryBatch.find({ batchReference: { $type: 'string', $ne: '' } })
     .select('_id batchReference')
     .lean();
@@ -93,10 +101,6 @@ const backfillMissingExpiryBatchReferences = async () => {
     maximumByDate.set(businessDate, Math.max(maximumByDate.get(businessDate) || 0, sequence));
   }
 
-  const missing = await ExpiryBatch.find(missingReferenceFilter)
-    .select('_id createdAt receivedAt')
-    .sort({ createdAt: 1, _id: 1 })
-    .lean();
   const byDate = new Map();
   for (const batch of missing) {
     const businessDate = getManilaBusinessDate(getBatchCreationDate(batch));

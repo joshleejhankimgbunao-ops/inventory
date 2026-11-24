@@ -156,7 +156,7 @@ const Login = ({ onLogin }) => {
     }
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setErrorShake(false);
 
@@ -167,8 +167,7 @@ const Login = ({ onLogin }) => {
 
     setIsLoading(true);
 
-    setTimeout(async () => {
-      try {
+    try {
         const response = await loginApi(email, password, needsPin ? pin : undefined);
 
         if (response?.requiresPin) {
@@ -247,10 +246,9 @@ const Login = ({ onLogin }) => {
           'error',
           'login-result'
         );
-      } finally {
-        setIsLoading(false);
-      }
-    }, 800);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // Auto-submit when PIN is complete

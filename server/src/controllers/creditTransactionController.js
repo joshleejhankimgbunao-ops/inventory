@@ -418,6 +418,33 @@ const listCreditTransactions = async (req, res, next) => {
   }
 };
 
+// Compact, read-only projection for Dashboard cards and due alerts. Those views
+// need only balance, due date, status, and linked-sale lifecycle; returning the
+// full payment history and customer/order details adds substantial JSON work.
+const getCreditTransactionsDashboardSnapshot = async (req, res, next) => {
+  try {
+    const query = { isArchived: false };
+    if (req.user?.role === 'cashier') {
+      const cashierSales = await Sale.find({ cashier: req.user._id }).select('_id').lean();
+      query.orderId = { $in: cashierSales.map((sale) => sale._id) };
+    }
+
+    const rows = await CreditTransaction.find(query)
+      .select('remainingBalance dueDate status orderId')
+      .populate({ path: 'orderId', select: 'status' })
+      .lean();
+
+    return res.json(rows.map((row) => ({
+      remainingBalance: Number(row.remainingBalance || 0),
+      dueDate: row.dueDate || null,
+      status: row.status || '',
+      saleStatus: row.orderId?._id ? getSaleStatus(row.orderId) : null,
+    })));
+  } catch (error) {
+    return next(error);
+  }
+};
+
 const getCustomerOverdueHistory = async (req, res, next, dependencies = {}) => {
   try {
     const findTransactions = dependencies.findTransactions || (async (user) => {
@@ -1246,6 +1273,7 @@ const getCreditCancellationProof = async (req, res, next, dependencies = {}) => 
 
 module.exports = {
   listCreditTransactions,
+  getCreditTransactionsDashboardSnapshot,
   getCustomerOverdueHistory,
   getCreditTransactionsSummary,
   getCreditTransactionById,

@@ -7,7 +7,7 @@ import { useAuth } from '../context/AuthContext';
 import { useInventory } from '../context/InventoryContext';
 import { ROLES, canAccess } from '../constants/roles';
 import { listUsersApi } from '../services/authApi';
-import { getPendingSaleVoidRequestCountApi, getUnreadActivityCountApi, listCreditTransactionsApi, markActivityLogsReadApi } from '../services/inventoryApi';
+import { getPendingSaleVoidRequestCountApi, getUnreadActivityCountApi, getCreditTransactionsDashboardSnapshotApi, markActivityLogsReadApi } from '../services/inventoryApi';
 import { subscribeRealtimeEvent } from '../services/realtimeClient';
 import { showToast } from '../utils/toastHelper';
 import { getPendingVoidRequestAlertSessionKey } from '../utils/pendingVoidRequests';
@@ -40,24 +40,29 @@ const Partners = lazy(() => import('./Partners'));
 const SpecialOrders = lazy(() => import('./SpecialOrders'));
 const CreditTransactions = lazy(() => import('./CreditTransactions'));
 
-// Prefetch all page chunks when browser is idle (after initial render)
-const prefetchPages = () => {
-  const pages = [
-    () => import('./DashboardHome'),
-    () => import('./PointOfSale'),
-    () => import('./Inventory'),
-    () => import('./ProductList'),
-    () => import('./UserList'),
-    () => import('./Reports'),
-    () => import('./Recommendation'),
-    () => import('./Settings'),
-    () => import('./Profile'),
-    () => import('./History'),
-    () => import('./Partners'),
-    () => import('./SpecialOrders'),
-        () => import('./CreditTransactions'),
-  ];
-  pages.forEach(load => load());
+// Prefetch a route chunk when navigation intent is visible or activated.
+const pagePrefetchers = {
+  '/dashboard': () => import('./DashboardHome'),
+  '/pos': () => import('./PointOfSale'),
+  '/inventory': () => import('./Inventory'),
+  '/product-list': () => import('./ProductList'),
+  '/users': () => import('./UserList'),
+  '/reports': () => import('./Reports'),
+  '/recommendations': () => import('./Recommendation'),
+  '/settings': () => import('./Settings'),
+  '/profile': () => import('./Profile'),
+  '/history': () => import('./History'),
+  '/partners': () => import('./Partners'),
+  '/special-orders': () => import('./SpecialOrders'),
+  '/credit-transactions': () => import('./CreditTransactions'),
+};
+const prefetchedPagePaths = new Set();
+const prefetchPage = (path) => {
+  const normalizedPath = String(path || '').split('?')[0];
+  const loadPage = pagePrefetchers[normalizedPath];
+  if (!loadPage || prefetchedPagePaths.has(normalizedPath)) return;
+  prefetchedPagePaths.add(normalizedPath);
+  loadPage().catch(() => prefetchedPagePaths.delete(normalizedPath));
 };
 
 
@@ -103,62 +108,35 @@ const Dashboard = ({ onLogout }) => {
 
   // Handle Navigation and Close Menu
   const handleNavigation = (path) => {
-      // Force update location and state
+      prefetchPage(path);
       navigate(path);
       // We don't need to manually set activeMenu because it is derived from location.pathname
   };
 
-    const { userRole, appSettings, currentUserName, isDarkMode, setIsDarkMode, isAdminOrAbove, roleNames, currentUserAvatar, currentAuthUsername, currentAuthUserId, mustChangeCredentials, isAuthBootstrapLoading } = useAuth();
+    const { userRole, appSettings, currentUserName, isDarkMode, setIsDarkMode, isAdminOrAbove, roleNames, currentUserAvatar, currentAuthUsername, currentAuthUserId, mustChangeCredentials, isSessionHydrating } = useAuth();
   // we rely on the context's currentUserAvatar which already handles
   // super‑admin/appSettings and any avatar stored on a user record.
   const { 
     activityLogs, setActivityLogs,
     isActivityLogsLoading, activityLogsError, retryActivityLogs,
+    ensureActivityLogs,
     processedInventory, 
+        ensureInventoryImages,
         isPageDataLoading
   } = useInventory();
+
+  useEffect(() => {
+    if (['Point of Sale', 'Inventory', 'Product Master List', 'Recommendation', 'Special Orders'].includes(activeMenu)) {
+      void ensureInventoryImages();
+    }
+  }, [activeMenu, ensureInventoryImages]);
 
     const [backendUsers, setBackendUsers] = useState([]);
   const [pendingVoidRequestCount, setPendingVoidRequestCount] = useState(0);
   const [unreadActivityCount, setUnreadActivityCount] = useState(0);
   const pendingVoidAlertCheckedRef = React.useRef(false);
-        const [isBackendUsersLoading, setIsBackendUsersLoading] = useState(true);
-
     const ACTIVITY_LOG_ONE_TIME_RESET_KEY = 'activityLogOneTimeResetDone';
-
-    useEffect(() => {
-        let isMounted = true;
-
-        const loadUsers = async () => {
-            if (isMounted) {
-                setIsBackendUsersLoading(true);
-            }
-
-            try {
-                const users = await listUsersApi();
-                if (!isMounted) {
-                    return;
-                }
-                setBackendUsers(Array.isArray(users) ? users : []);
-            } catch {
-                if (isMounted) {
-                    setBackendUsers([]);
-                }
-            } finally {
-                if (isMounted) {
-                    setIsBackendUsersLoading(false);
-                }
-            }
-        };
-
-        loadUsers();
-
-        return () => {
-            isMounted = false;
-        };
-    }, []);
-
-    const isRouteContentLoading = isAuthBootstrapLoading || isPageDataLoading || isBackendUsersLoading;
+    const isRouteContentLoading = isSessionHydrating;
 
   useEffect(() => {
     pendingVoidAlertCheckedRef.current = false;
@@ -292,19 +270,6 @@ const Dashboard = ({ onLogout }) => {
   }, [currentAuthUserId, currentAuthUsername, userRole]);
   
   
-  // Request Desktop Notification Permission (User-Interactive Toast)
-  useEffect(() => {
-    // Prefetch all page chunks when browser is idle
-    if ('requestIdleCallback' in window) {
-      const idleId = requestIdleCallback(() => prefetchPages(), { timeout: 2000 });
-      return () => cancelIdleCallback(idleId);
-    } else {
-      // Fallback: prefetch after 1s
-      const timer = setTimeout(prefetchPages, 1000);
-      return () => clearTimeout(timer);
-    }
-  }, []);
-
     useEffect(() => {
         if (!mustChangeCredentials) {
             return;
@@ -398,6 +363,7 @@ const Dashboard = ({ onLogout }) => {
 
   // Activity Log Modal State
   const [isActivityLogOpen, setIsActivityLogOpen] = useState(false);
+  const usersLoadedRef = React.useRef(false);
   const [actLogSearch, setActLogSearch] = useState('');
     const [debouncedActLogSearch, setDebouncedActLogSearch] = useState('');
   const [actLogUserFilter, setActLogUserFilter] = useState('All');
@@ -410,6 +376,33 @@ const Dashboard = ({ onLogout }) => {
     const activityLogLoadMoreTriggerRef = React.useRef(null);
     const activityLogLoadTimerRef = React.useRef(null);
     const isActivityLogLoadInFlightRef = React.useRef(false);
+
+    useEffect(() => {
+        if (isActivityLogOpen) ensureActivityLogs();
+    }, [isActivityLogOpen, currentAuthUserId, currentAuthUsername, userRole, ensureActivityLogs]);
+
+    useEffect(() => {
+        if (userRole !== ROLES.SUPER_ADMIN) {
+            usersLoadedRef.current = false;
+            setBackendUsers([]);
+            return undefined;
+        }
+        if (!isActivityLogOpen || usersLoadedRef.current) return undefined;
+
+        let isMounted = true;
+        listUsersApi()
+            .then((users) => {
+                if (!isMounted) return;
+                setBackendUsers(Array.isArray(users) ? users : []);
+                usersLoadedRef.current = true;
+            })
+            .catch(() => {
+                if (isMounted) setBackendUsers([]);
+            });
+        return () => {
+            isMounted = false;
+        };
+    }, [isActivityLogOpen, userRole]);
 
     useEffect(() => {
         if (sessionStorage.getItem(ACTIVITY_LOG_ONE_TIME_RESET_KEY) === 'true') {
@@ -669,6 +662,7 @@ const Dashboard = ({ onLogout }) => {
   
   // When activity log is opened, mark notifications as read
   const handleOpenActivityLog = () => {
+    ensureActivityLogs();
     setIsActivityLogOpen(true);
     setIsProfileMenuOpen(false);
     setActLogSearch('');
@@ -866,7 +860,7 @@ const Dashboard = ({ onLogout }) => {
             }
 
             try {
-                const rows = await listCreditTransactionsApi({ status: 'All' });
+                const rows = await getCreditTransactionsDashboardSnapshotApi();
                 if (!isMounted || !Array.isArray(rows)) {
                     return;
                 }
@@ -1319,6 +1313,8 @@ const Dashboard = ({ onLogout }) => {
                                 handleNavigation(item.path);
                                 setIsMobileMenuOpen(false);
                             }}
+                            onPointerEnter={() => prefetchPage(item.path)}
+                            onFocus={() => prefetchPage(item.path)}
                             className={`group relative flex w-full items-center rounded-lg border text-sm font-medium leading-none outline-none transition-[background-color,border-color,color] duration-200 ease-in-out ${isSidebarExpanded ? 'h-9 gap-2 px-2' : 'h-10 justify-center px-0'} ${
                             isActive
                                 ? 'border-slate-700/70 bg-slate-800/60 text-white before:absolute before:inset-y-1.5 before:left-0 before:w-0.5 before:rounded-r-sm before:bg-[#FC0D2C]'

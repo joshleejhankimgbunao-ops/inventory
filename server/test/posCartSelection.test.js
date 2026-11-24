@@ -224,7 +224,7 @@ test('collapsed Current Order rail exposes existing quotation and review actions
   const currentOrder = pos.slice(pos.indexOf('/* Right Side: Cart / Order Summary */'), pos.indexOf('/* Quotation Input Modal */'));
   const quotation = currentOrder.indexOf('content="Prepare Quotation"');
   const review = currentOrder.indexOf('content="Review Order"');
-  const expand = currentOrder.indexOf('content="Current Order"', currentOrder.indexOf('content="Review Order"'));
+  const expand = currentOrder.indexOf('content="Show Current Order"', currentOrder.indexOf('content="Review Order"'));
 
   assert.ok(quotation >= 0 && review > quotation && expand > review);
   assert.match(currentOrder, /onClick=\{\(event\) => \{ event\.stopPropagation\(\); runCartAction\(handleGenerateQuotation\); \}\}[\s\S]*?disabled=\{cart\.length === 0\}[\s\S]*?aria-label="Prepare Quotation"/);
@@ -232,7 +232,7 @@ test('collapsed Current Order rail exposes existing quotation and review actions
   assert.match(currentOrder, /<RecordActionIcon name="file-plus" className="h-5 w-5 shrink-0" \/>/);
   assert.match(currentOrder, /<RecordActionIcon name="clipboard-check" className="h-5 w-5 shrink-0" \/>/);
   assert.match(icons, /'file-plus':/);
-  assert.match(icons, /'clipboard-list':/);
+  assert.match(icons, /'clipboard-check':/);
   assert.match(currentOrder, /runCartAction\(handleGenerateQuotation\)/);
   assert.match(currentOrder, /runCartAction\(openOrderList\)/);
   assert.match(currentOrder, /if \(!event\.target\.closest\?\.\('\[data-current-order-rail-action\]'\)\) setIsCurrentOrderCollapsed\(false\)/);

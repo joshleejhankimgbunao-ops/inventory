@@ -38,7 +38,7 @@ const SpecialOrderStockOperation = require('../src/models/SpecialOrderStockOpera
 const SpecialOrder = require('../src/models/SpecialOrder');
 const SpecialOrderQuotation = require('../src/models/SpecialOrderQuotation');
 const { writeActivityLog: writeBestEffortActivityLog, writeInventoryLog: writeBestEffortInventoryLog } = require('../src/services/logService');
-const { correctExpiryBatchDate, createProduct, listProducts, listExpiryBatches, listExpiryBatchMonitoring, reconcileProductExpiryBatches, verifyExpiryBatchesAndAddStock, updateProduct, updateProductStock } = require('../src/controllers/productController');
+const { correctExpiryBatchDate, createProduct, listProducts, listProductImages, listExpiryBatches, listExpiryBatchMonitoring, reconcileProductExpiryBatches, verifyExpiryBatchesAndAddStock, updateProduct, updateProductStock } = require('../src/controllers/productController');
 const { allocateUnreservedBatches, consumeReservedExpiryBatches, getExpiryBatchAvailability, restoreSaleBatches, selectAllocations } = require('../src/services/expiryBatchAllocationService');
 const { applyStockOperation, getStockAvailability } = require('../src/services/specialOrderStockService');
 const { __test: { consumePhaseFiveStock, validateSpecialOrderBatchVerifications } } = require('../src/controllers/specialOrderController');
@@ -156,9 +156,14 @@ const invokeStock = async (id, body, user = actor) => {
   await updateProductStock(req, res, (error) => { throw error; });
   return res;
 };
-const invokeProductsList = async (user = actor) => {
+const invokeProductsList = async (user = actor, query = {}) => {
   const res = response();
-  await listProducts({ user }, res, (error) => { throw error; });
+  await listProducts({ user, query }, res, (error) => { throw error; });
+  return res;
+};
+const invokeProductImagesList = async (user = actor) => {
+  const res = response();
+  await listProductImages({ user }, res, (error) => { throw error; });
   return res;
 };
 const invokeBatchList = async (id, query = {}, user = actor) => {
@@ -454,6 +459,27 @@ test('tracked Stock-In records distinct expiry batches and merges matching label
   assert.ok(listed.body.batches.every((batch) => /^BT-\d{8}-\d{3,}$/.test(batch.batchReference)));
   const monitored = (await invokeExpiryMonitoring()).body.batches.filter((batch) => batch.productId === productId);
   assert.ok(monitored.every((batch) => /^BT-\d{8}-\d{3,}$/.test(batch.batchReference)));
+});
+
+test('product listing can omit image payloads and retrieves legacy image references separately', async () => {
+  const imageDataUrl = 'data:image/png;base64,AAECAwQFBgc=';
+  const product = await Product.create({
+    name: 'Image Payload Check', sku: 'IMAGE-PAYLOAD-CHECK', category: 'General',
+    price: 10, stock: 2, sellingUnit: 'pcs', imageUrl: imageDataUrl,
+  });
+
+  const compact = (await invokeProductsList(actor, { includeImages: 'false' })).body
+    .find((row) => String(row._id) === String(product._id));
+  assert.equal(Object.prototype.hasOwnProperty.call(compact, 'imageUrl'), false);
+
+  const full = (await invokeProductsList()).body
+    .find((row) => String(row._id) === String(product._id));
+  assert.equal(full.imageUrl, imageDataUrl);
+
+  const imageReferences = await invokeProductImagesList();
+  assert.deepEqual(imageReferences.body.find((row) => row.id === String(product._id)), {
+    id: String(product._id), code: product.sku, imageUrl: imageDataUrl,
+  });
 });
 
 test('tracked Stock-In responses fail closed for missing-period and unreconciled products while untracked availability stays aggregate-based', async () => {
@@ -1199,14 +1225,14 @@ test('variant edits preserve expiry configuration and the immutable initial rece
   const before = created.body.toObject();
   const updated = await invoke({
     price: 222,
-    imageUrl: 'variant-only.jpg',
+    imageUrl: 'https://images.example.test/variant-only.jpg',
     expiryTrackingEnabled: true,
     initialStockBatch: { expiryDate: '2030-01-01', lotNumber: 'UNSAFE-EDIT' },
     expectedUpdatedAt: before.updatedAt,
   }, String(before._id));
   assert.equal(updated.statusCode, 200);
   assert.equal(updated.body.price, 222);
-  assert.equal(updated.body.imageUrl, 'variant-only.jpg');
+  assert.equal(updated.body.imageUrl, 'https://images.example.test/variant-only.jpg');
   assert.equal(updated.body.stock, 37);
   assert.equal(updated.body.sellingUnit, 'can');
   assert.equal(updated.body.expiryTrackingEnabled, true);

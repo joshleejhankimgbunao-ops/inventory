@@ -1956,8 +1956,14 @@ const PointOfSale = () => {
                 transactionReference: savedSale?.transactionReference || null,
             };
             try {
-                const remoteProducts = await listProductsApi();
-                if (Array.isArray(remoteProducts)) setInventory(remoteProducts);
+                const remoteProducts = await listProductsApi({ includeImages: false });
+                if (Array.isArray(remoteProducts)) {
+                    const cachedImages = new Map(sourceInventory.map((product) => [String(product.code || ''), String(product.imageUrl || '')]));
+                    setInventory(remoteProducts.map((product) => ({
+                        ...product,
+                        imageUrl: product.imageUrl || cachedImages.get(String(product.code || '')) || '',
+                    })));
+                }
             } catch (refreshError) {
                 console.warn('Sale finalized, but inventory refresh failed:', refreshError);
             }

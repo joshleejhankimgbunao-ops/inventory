@@ -314,11 +314,16 @@ const buildInventoryLogDetails = ({ productName, stockDelta, adjustmentReason, s
 
 const listProducts = async (req, res, next) => {
   try {
-    const products = await Product.find().sort({ createdAt: -1 }).lean();
+    const includeImages = String(req.query?.includeImages || 'true').trim().toLowerCase() !== 'false';
+    const productQuery = Product.find().sort({ createdAt: -1 });
+    if (!includeImages) productQuery.select('-imageUrl');
+    const products = await productQuery.lean();
     const reconciledTracked = products.filter((product) => product.expiryTrackingEnabled
       && product.expiryTrackingPeriodId && product.expiryBatchReconciled);
     const batchRows = reconciledTracked.length
-      ? await ExpiryBatch.find({ $or: reconciledTracked.map((product) => activeBatchFilter(product)) }).lean() : [];
+      ? await ExpiryBatch.find({ $or: reconciledTracked.map((product) => activeBatchFilter(product)) })
+        .select('product remainingQuantity reservedQuantity expiryDate')
+        .lean() : [];
     const batchesByProduct = new Map();
     for (const batch of batchRows) {
       const key = String(batch.product);
@@ -351,6 +356,19 @@ const listProducts = async (req, res, next) => {
         && (!product.expiryTrackingPeriodId || !product.expiryBatchReconciled)) availableToSell = 0;
       return withoutPurchaseCost({ ...product, availableToSell }, req.user);
     }));
+  } catch (error) {
+    return next(error);
+  }
+};
+
+const listProductImages = async (req, res, next) => {
+  try {
+    const products = await Product.find().select('_id sku imageUrl').lean();
+    return res.json(products.map((product) => ({
+      id: String(product._id),
+      code: String(product.sku || ''),
+      imageUrl: String(product.imageUrl || ''),
+    })));
   } catch (error) {
     return next(error);
   }
@@ -1894,6 +1912,7 @@ module.exports = {
   normalizeSku,
   validateSku,
   listProducts,
+  listProductImages,
   createProduct,
   removeProductRecommendation,
   archiveSelectedVariants,

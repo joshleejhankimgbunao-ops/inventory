@@ -1,12 +1,13 @@
 /* global require, module */
 const express = require('express');
-const { addProductRecommendation, editProductRecommendationBasis, archiveSelectedVariants, createProduct, correctExpiryBatchDate, listExpiryBatches, listExpiryBatchMonitoring, reconcileProductExpiryBatches, verifyExpiryBatchesAndAddStock, listProducts, removeProductRecommendation, updateProduct, updateProductStock } = require('../controllers/productController');
+const { addProductRecommendation, editProductRecommendationBasis, archiveSelectedVariants, createProduct, correctExpiryBatchDate, listExpiryBatches, listExpiryBatchMonitoring, reconcileProductExpiryBatches, verifyExpiryBatchesAndAddStock, listProducts, listProductImages, removeProductRecommendation, updateProduct, updateProductStock } = require('../controllers/productController');
 const { requireAuth, authorizeRoles } = require('../middleware/authMiddleware');
 const { listActiveRecommendationProducts, reviewProductRecommendation } = require('../controllers/recommendationController');
 
 const router = express.Router();
 
 router.get('/', requireAuth, listProducts);
+router.get('/images', requireAuth, listProductImages);
 router.get('/recommendations/active', requireAuth, listActiveRecommendationProducts);
 router.get('/expiry-batches/monitoring', requireAuth, listExpiryBatchMonitoring);
 router.post('/', requireAuth, authorizeRoles('superadmin', 'admin'), createProduct);

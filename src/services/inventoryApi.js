@@ -112,9 +112,14 @@ const mapUiProductToApi = (product) => ({
   ...(product.clientRequestId ? { clientRequestId: product.clientRequestId } : {}),
 });
 
-export const listProductsApi = async () => {
-  const products = await apiRequest('/api/products');
+export const listProductsApi = async ({ includeImages = true } = {}) => {
+  const products = await apiRequest(`/api/products${includeImages ? '' : '?includeImages=false'}`);
   return Array.isArray(products) ? products.map(mapApiProductToUi) : [];
+};
+
+export const listProductImagesApi = async () => {
+  const images = await apiRequest('/api/products/images');
+  return Array.isArray(images) ? images : [];
 };
 
 export const listActiveRecommendationProductsApi = async () => {
@@ -508,6 +513,11 @@ export const listCreditTransactionsApi = async ({ status = 'All', search = '', i
 
 export const getCreditTransactionsSummaryApi = async () => {
   return apiRequest('/api/credit-transactions/summary');
+};
+
+export const getCreditTransactionsDashboardSnapshotApi = async () => {
+  const rows = await apiRequest('/api/credit-transactions/dashboard-snapshot');
+  return Array.isArray(rows) ? rows : [];
 };
 
 export const getCustomerOverdueHistoryApi = async () => {

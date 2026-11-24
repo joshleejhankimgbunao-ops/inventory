@@ -4,6 +4,7 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
 const TOKEN_KEY = 'authToken';
 export const AUTH_SESSION_EXPIRED_EVENT = 'auth:session-expired';
+const inFlightGetRequests = new Map();
 
 export const getAuthToken = () => {
   return sessionStorage.getItem(TOKEN_KEY);
@@ -33,9 +34,8 @@ const clearClientSessionState = () => {
   clearAuthToken();
 };
 
-export const apiRequest = async (path, options = {}) => {
+const performApiRequest = async (path, options = {}, token = getAuthToken()) => {
   const validationScope = consumePendingValidationSubmissionScope();
-  const token = getAuthToken();
   const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
   const headers = {
     ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
@@ -97,6 +97,30 @@ export const apiRequest = async (path, options = {}) => {
   }
 
   return body;
+};
+
+export const apiRequest = async (path, options = {}) => {
+  const method = String(options.method || 'GET').toUpperCase();
+  const token = getAuthToken();
+  const canShareInFlightGet = method === 'GET'
+    && !options.signal
+    && !options.body
+    && !options.headers
+    && Object.keys(options).every((key) => key === 'method');
+
+  if (!canShareInFlightGet) return performApiRequest(path, options, token);
+
+  const key = JSON.stringify([token || '', path]);
+  const existingRequest = inFlightGetRequests.get(key);
+  if (existingRequest) return existingRequest;
+
+  const request = performApiRequest(path, options, token);
+  inFlightGetRequests.set(key, request);
+  try {
+    return await request;
+  } finally {
+    if (inFlightGetRequests.get(key) === request) inFlightGetRequests.delete(key);
+  }
 };
 
 export const apiBlobRequest = async (path, options = {}) => {

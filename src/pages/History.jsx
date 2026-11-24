@@ -38,7 +38,7 @@ const mobileHistoryActionClass = {
 const History = () => {
     const location = useLocation();
     const historyListRef = useRef(null);
-    const { userRole, currentUserName, appSettings, isAdminOrAbove, ROLES } = useAuth();
+    const { userRole, currentUserName, currentAuthUserId, currentAuthUsername, appSettings, isAdminOrAbove, ROLES } = useAuth();
     const { 
         transactions, 
         setTransactions, 
@@ -51,6 +51,7 @@ const History = () => {
         isInventoryLogsLoading,
         inventoryLogsError,
         retryInventoryLogs,
+        ensureInventoryLogs,
     } = useInventory();
 
     const currentUser = currentUserName;
@@ -60,7 +61,11 @@ const History = () => {
     const [isCreditLoading, setIsCreditLoading] = useState(true);
     const [creditHistoryError, setCreditHistoryError] = useState(null);
     const [creditRetryVersion, setCreditRetryVersion] = useState(0);
-    const retryCreditHistory = () => setCreditRetryVersion((version) => version + 1);
+    const creditHistoryLoadedRef = useRef(false);
+    const retryCreditHistory = () => {
+        creditHistoryLoadedRef.current = false;
+        setCreditRetryVersion((version) => version + 1);
+    };
 
     const getProcessorRoleLabel = (trx) => {
         const role = String(trx?.cashierRole || '').trim().toLowerCase();
@@ -85,6 +90,10 @@ const History = () => {
     };
 
     const [activeTab, setActiveTab] = useState('sales');
+
+    useEffect(() => {
+        if (activeTab === 'inventory') ensureInventoryLogs();
+    }, [activeTab, currentAuthUserId, currentAuthUsername, userRole, ensureInventoryLogs]);
     const [searchTerm, setSearchTerm] = useState('');
     const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
     const [salesRecordView, setSalesRecordView] = useState('ALL');
@@ -130,6 +139,7 @@ const History = () => {
     }, [searchTerm]);
 
     useEffect(() => {
+        if (activeTab !== 'credit' || creditHistoryLoadedRef.current) return undefined;
         let isMounted = true;
         const loadCredits = async () => {
             setIsCreditLoading(true);
@@ -139,6 +149,7 @@ const History = () => {
                 if (isMounted) {
                     setCreditTransactions(Array.isArray(rows) ? rows : []);
                     setCreditHistoryError(null);
+                    creditHistoryLoadedRef.current = true;
                 }
             } catch (error) {
                 if (isMounted) setCreditHistoryError(error);
@@ -155,11 +166,13 @@ const History = () => {
         return () => {
             isMounted = false;
         };
-    }, [creditRetryVersion]);
+    }, [activeTab, creditRetryVersion]);
 
     useEffect(() => {
         let refreshTimer = null;
         const scheduleCreditRefresh = () => {
+            creditHistoryLoadedRef.current = false;
+            if (activeTab !== 'credit') return;
             if (refreshTimer) window.clearTimeout(refreshTimer);
             refreshTimer = window.setTimeout(() => {
                 refreshTimer = null;
@@ -173,7 +186,7 @@ const History = () => {
             unsubscribeCredit();
             unsubscribeResync();
         };
-    }, []);
+    }, [activeTab]);
 
     // Get unique list of processors (users) from transactions
     const uniqueProcessors = useMemo(() => {

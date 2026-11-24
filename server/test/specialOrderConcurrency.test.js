@@ -55,6 +55,7 @@ require.cache[quotationImagePath] = {
   exports: {
     ...quotationImages,
     uploadQuotationImage: (file) => quotationImages.uploadQuotationImage(file, { storage: memoryStorage, allowLocal: false }),
+    snapshotProductMasterImage: (product, imageIndex) => quotationImages.snapshotProductMasterImage(product, imageIndex, { storage: memoryStorage, allowLocal: false }),
     removeQuotationImage: (key) => quotationImages.removeQuotationImage(key, { storage: memoryStorage, allowLocal: false }),
     getQuotationImage: (key) => quotationImages.getQuotationImage(key, { storage: memoryStorage, allowLocal: false }),
   },
@@ -66,6 +67,10 @@ require.cache[creditProofPath] = {
   exports: {
     ...creditProofController,
     persistProofOfPayment: (value) => creditProofController.persistProofOfPayment(value, { storage: memoryStorage, allowLocalStorage: false }),
+    markCreditTransactionFullyPaid: (req, res, next) => creditProofController.markCreditTransactionFullyPaid(req, res, next, {
+      persistProof: (value) => creditProofController.persistProofOfPayment(value, { storage: memoryStorage, allowLocalStorage: false }),
+      removeProof: (key) => creditProofController.removeStoredProof(key, { storage: memoryStorage, allowLocalStorage: false }),
+    }),
     removeStoredProof: (key) => creditProofController.removeStoredProof(key, { storage: memoryStorage, allowLocalStorage: false }),
     getStoredProof: (key) => creditProofController.getStoredProof(key, { storage: memoryStorage, allowLocalStorage: false }),
   },
@@ -178,11 +183,14 @@ const directQuotationForm = (body, photoCounts = {}) => {
   }
   return form;
 };
+const quotationTotalCentavos = (order) => Math.round(Number(order?.quotation?.total || 0) * 100);
+const halfOfQuotationTotal = (order) => (Math.round(quotationTotalCentavos(order) / 2) / 100).toFixed(2);
+const finalPaymentAmount = (order) => ((quotationTotalCentavos(order) - Math.round(quotationTotalCentavos(order) / 2)) / 100).toFixed(2);
 
 const orderFixture = async () => SpecialOrder.create({
   orderNumber: `SO-${new mongoose.Types.ObjectId()}`, customerName: 'Legacy Customer',
   itemName: 'Custom item', quantity: 3, sellingPrice: 0.1, purchaseCost: 0.05,
-  items: [{ itemName: 'Custom item', description: 'Agreed specification', quantity: 3, sellingPrice: 0.1, purchaseCost: 0.05 }],
+  items: [{ itemName: 'Custom item', description: 'Agreed specification', sellingUnit: 'piece', quantity: 3, sellingPrice: 0.1, purchaseCost: 0.05 }],
   status: 'In Progress', createdBy: owner._id,
 });
 const prepare = async (order) => {
@@ -861,7 +869,7 @@ test('direct generation atomically creates one awaiting quotation and snapshot u
     quotationFirst: true, generateQuotation: true, clientRequestId: `direct-generate:${new mongoose.Types.ObjectId()}`,
     customerId: String(customer._id), customerName: customer.name,
     quotationDetails: { attentionName: '', attentionPosition: '', authorizedSignatoryName: 'Direct Signatory' },
-    items: [{ itemId: randomUUID(), itemName: 'Direct custom item', quantity: 100, sellingPrice: 1.25 }, { itemId: randomUUID(), itemName: 'Another line', quantity: 10, sellingPrice: 2 }],
+    items: [{ itemId: randomUUID(), itemName: 'Direct custom item', sellingUnit: 'piece', quantity: 100, sellingPrice: 1.25 }, { itemId: randomUUID(), itemName: 'Another line', sellingUnit: 'box', quantity: 10, sellingPrice: 2 }],
   };
   const photoCounts = { [body.items[0].itemId]: 3, [body.items[1].itemId]: 1 };
   const results = await Promise.all(Array.from({ length: 3 }, () => api('/special-orders', { method: 'POST', form: directQuotationForm(body, photoCounts) })));
@@ -905,7 +913,7 @@ test('invalid or failed direct generation rolls back parent, quotation and logs,
   const body = {
     quotationFirst: true, generateQuotation: true, clientRequestId: `direct-rollback:${new mongoose.Types.ObjectId()}`,
     customerId: String(customer._id), customerName: customer.name,
-    quotationDetails: { authorizedSignatoryName: '' }, items: [{ itemId: randomUUID(), itemName: 'Rollback item', quantity: 1, sellingPrice: 1 }],
+    quotationDetails: { authorizedSignatoryName: '' }, items: [{ itemId: randomUUID(), itemName: 'Rollback item', sellingUnit: 'piece', quantity: 1, sellingPrice: 1 }],
   };
   const before = { orders: await SpecialOrder.countDocuments(), quotes: await Quotation.countDocuments(), logs: await ActivityLog.countDocuments(), sales: await Sale.countDocuments() };
   const beforeImages = storedImages.size;
@@ -939,7 +947,7 @@ test('invalid or failed direct generation rolls back parent, quotation and logs,
 test('direct quotation creation allows optional photos and rejects excess, corrupt, and unassociated uploads', async () => {
   const customer = await Partner.create({ type: 'customer', name: 'Image Validation Customer' });
   const body = { quotationFirst: true, generateQuotation: true, clientRequestId: `optional-photo:${new mongoose.Types.ObjectId()}`, customerId: String(customer._id), customerName: customer.name,
-    quotationDetails: { authorizedSignatoryName: 'Signer' }, items: [{ itemId: randomUUID(), itemName: 'Product', quantity: 1, sellingPrice: 10 }] };
+    quotationDetails: { authorizedSignatoryName: 'Signer' }, items: [{ itemId: randomUUID(), itemName: 'Product', sellingUnit: 'piece', quantity: 1, sellingPrice: 10 }] };
   const itemId = body.items[0].itemId;
   const beforeImages = storedImages.size;
   const withoutPhotos = await api('/special-orders', { method: 'POST', form: directQuotationForm(body, { [itemId]: 0 }) });
@@ -960,7 +968,7 @@ test('direct quotation creation allows optional photos and rejects excess, corru
   assert.equal(storedImages.size, beforeImages);
 });
 
-test('quotation creation references selected Product Master images without uploading or mutating them', async () => {
+test('quotation creation snapshots selected Product Master images into independent immutable assets', async () => {
   const { product, body } = await phaseOneFixture();
   const productImage = `data:image/png;base64,${tinyPng.toString('base64')}`;
   await Product.updateOne({ _id: product._id }, { $set: { imageUrl: productImage } });
@@ -972,18 +980,27 @@ test('quotation creation references selected Product Master images without uploa
 
   assert.equal(result.status, 201, JSON.stringify(result));
   const savedImage = result.body.quotation.items[0].images[0];
-  assert.equal(String(savedImage.sourceProductId), String(product._id));
-  assert.equal(savedImage.sourceImageIndex, 0);
-  assert.equal(result.body.quotation.documentSnapshot.items[0].images[0].sourceProductId, String(product._id));
-  assert.equal(storedImages.size, beforeStoredImages, 'a Product Master image reference does not create a second stored image');
+  assert.ok(savedImage.key);
+  assert.equal(savedImage.sourceProductId, null, 'the saved quotation uses its independent image snapshot, not a live product reference');
+  assert.equal(savedImage.sourceImageIndex, null);
+  assert.equal(result.body.quotation.documentSnapshot.items[0].images[0].key, savedImage.key);
+  assert.equal(storedImages.size, beforeStoredImages + 1, 'the quotation stores an independent image snapshot');
   assert.equal((await Product.findById(product._id)).imageUrl, productImage, 'quotation image handling leaves the Product Master image unchanged');
+  assert.deepEqual(storedImages.get(`special-order-quotation-images/${savedImage.key}`), tinyPng);
 
-  const response = await fetch(`${baseUrl}/api/special-orders/${result.body._id}/quotations/${result.body.quotation._id}/items/${itemId}/images/${encodeURIComponent(savedImage.key)}`, {
+  const imageRoute = `/special-orders/${result.body._id}/quotations/${result.body.quotation._id}/items/${itemId}/images/${encodeURIComponent(savedImage.key)}`;
+  const response = await fetch(`${baseUrl}/api${imageRoute}`, {
     headers: { Authorization: `Bearer ${jwt.sign({ id: String(owner._id) }, process.env.JWT_SECRET)}` },
   });
   assert.equal(response.status, 200);
   assert.match(response.headers.get('content-type'), /image\/png/);
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), tinyPng);
+  await Product.updateOne({ _id: product._id }, { $set: { imageUrl: '' } });
+  const afterProductImageRemoval = await fetch(`${baseUrl}/api${imageRoute}`, {
+    headers: { Authorization: `Bearer ${jwt.sign({ id: String(owner._id) }, process.env.JWT_SECRET)}` },
+  });
+  assert.equal(afterProductImageRemoval.status, 200);
+  assert.deepEqual(Buffer.from(await afterProductImageRemoval.arrayBuffer()), tinyPng, 'a later Product Master image change does not affect the saved quotation snapshot');
 
   const multipleImageData = `data:image/png;base64,${tinyPng.toString('base64')}`;
   await Product.collection.updateOne({ _id: product._id }, { $set: { images: [multipleImageData, multipleImageData] } });
@@ -991,10 +1008,14 @@ test('quotation creation references selected Product Master images without uploa
   const multipleRequest = { ...body, clientRequestId: `multiple-product-image-references:${new mongoose.Types.ObjectId()}`, items: [{
     ...body.items[0], itemId: multipleItemId, photoSelections: [{ type: 'product', imageIndex: 0 }, { type: 'product', imageIndex: 1 }],
   }] };
+  const beforeMultipleSnapshots = storedImages.size;
   const multiple = await api('/special-orders', { method: 'POST', form: directQuotationForm(multipleRequest, { [multipleItemId]: 0 }) });
   assert.equal(multiple.status, 201, JSON.stringify(multiple));
-  assert.deepEqual(multiple.body.quotation.items[0].images.map((image) => image.sourceImageIndex), [0, 1]);
+  assert.equal(storedImages.size, beforeMultipleSnapshots + 2);
+  assert.equal(new Set(multiple.body.quotation.items[0].images.map((image) => image.key)).size, 2);
+  assert.ok(multiple.body.quotation.items[0].images.every((image) => image.sourceProductId === null && image.sourceImageIndex === null));
 
+  await Product.updateOne({ _id: product._id }, { $set: { imageUrl: productImage } });
   const removedItemId = randomUUID();
   const removedRequest = { ...body, clientRequestId: `product-image-removed:${new mongoose.Types.ObjectId()}`, items: [{ ...body.items[0], itemId: removedItemId, photoSelections: [] }] };
   const removed = await api('/special-orders', { method: 'POST', form: directQuotationForm(removedRequest, { [removedItemId]: 0 }) });
@@ -1058,7 +1079,7 @@ test('discarding an unissued draft item cleans up only its unreferenced photos',
   const key = quotation.items[0].images[0].key;
   const revised = await api(`/special-orders/${order._id}/quotations/${quotation._id}`, { method: 'PATCH', body: {
     quotationDetails: quotation.quotationDetails,
-    items: [{ itemId: randomUUID(), itemName: 'New item', quantity: 1, unitPrice: 1 }],
+    items: [{ itemId: randomUUID(), itemName: 'New item', sellingUnit: 'piece', quantity: 1, unitPrice: 1 }],
   } });
   assert.equal(revised.status, 200);
   assert.equal(revised.body.items[0].images.length, 0);
@@ -1196,13 +1217,13 @@ const phaseOneFixture = async () => {
     fulfillment: { method: 'Store Pickup', preferredDate: '2026-12-01' },
     items: [
       { itemId: randomUUID(), itemType: 'inventory', inventoryProduct: String(product._id), sku: product.sku, itemName: 'Untrusted client name', sellingUnit: 'wrong unit', quantity: 2, sellingPrice: 125.25 },
-      { itemId: randomUUID(), itemType: 'custom', itemName: 'Requested Custom Item', description: 'Custom specification', sellingUnit: '', quantity: 3, sellingPrice: 10.1 },
+      { itemId: randomUUID(), itemType: 'custom', itemName: 'Requested Custom Item', description: 'Custom specification', sellingUnit: 'piece', quantity: 3, sellingPrice: 10.1 },
     ],
   };
   return { customer, product, body };
 };
 
-test('Phase 1 mixed quotation accepts an optional custom unit while preserving SKU units, snapshots, photos and pickup', async () => {
+test('Phase 1 mixed quotation requires and preserves the custom selling unit, SKU units, snapshots, photos and pickup', async () => {
   const { product, body } = await phaseOneFixture();
   const results = await Promise.all([1, 2].map(() => api('/special-orders', { method: 'POST', form: directQuotationForm(body) })));
   assert.deepEqual(results.map((result) => result.status).sort(), [200, 201]);
@@ -1225,8 +1246,8 @@ test('Phase 1 mixed quotation accepts an optional custom unit while preserving S
   assert.equal(quotation.items[0].unitPrice, 125.25);
   assert.equal(quotation.items[1].itemType, 'custom');
   assert.equal(quotation.items[1].inventoryProduct, null);
-  assert.equal(quotation.items[1].sellingUnit, '');
-  assert.equal(quotation.documentSnapshot.items[1].sellingUnit, '');
+  assert.equal(quotation.items[1].sellingUnit, 'piece');
+  assert.equal(quotation.documentSnapshot.items[1].sellingUnit, 'piece');
   assert.deepEqual(quotation.items.map((item) => item.images.length), [1, 1]);
   assert.equal(quotation.total, 280.8);
   assert.equal(quotation.documentSnapshot.fulfillment.method, 'Store Pickup');
@@ -1259,6 +1280,8 @@ test('Phase 1 rejects SKU mismatch, inactive product, unauthorized override, mis
   const exemptCustomer = await Partner.create({ type: 'customer', name: 'Exempt Customer', taxTreatment: 'exempt', isVatExempt: true });
   assert.equal((await request({ customerId: String(exemptCustomer._id), customerName: exemptCustomer.name, taxTreatment: 'standard' })).status, 400);
   assert.equal((await request({ items: [{ ...body.items[0], sku: 'OTHER-SKU' }, body.items[1]] })).status, 400);
+  assert.equal((await request({ items: [body.items[0], { ...body.items[1], sellingUnit: '' }] })).status, 400,
+    'new custom quotation items must include a selling unit');
   assert.equal((await request({ items: [{ ...body.items[0], sellingPrice: 120 }, body.items[1]] })).status, 403);
   assert.equal((await request({ items: [{ ...body.items[0], sellingPrice: 120 }, body.items[1]] }, admin)).status, 400);
   assert.equal((await request({ fulfillment: { method: 'Free Delivery', addressLine: '123 Main St', barangay: 'Biñan', cityMunicipality: 'Cabuyao', province: 'Cavite' } })).status, 400);
@@ -1371,7 +1394,9 @@ const downPaymentForm = ({ requestId = `phase4-payment:${randomUUID()}`, amount 
   if (saleDocument) form.append('document', invalidSaleDocument ? new Blob(['not an image'], { type: 'image/png' }) : photoBlob(), 'sale-document.png');
   return form;
 };
-const downPayment = (order, values = {}, user = admin) => api(`/special-orders/${order._id}/payments/down-payment`, { user, method: 'POST', form: downPaymentForm(values) });
+const downPayment = (order, values = {}, user = admin) => api(`/special-orders/${order._id}/payments/down-payment`, {
+  user, method: 'POST', form: downPaymentForm({ ...values, amount: Object.hasOwn(values, 'amount') ? values.amount : halfOfQuotationTotal(order) }),
+});
 const additionalPayment = (order, values = {}, user = admin) => api(`/special-orders/${order._id}/payments`, { user, method: 'POST', form: downPaymentForm(values) });
 const creditFinalPaymentForm = ({ amount, requestId = `special-order-credit-final:${randomUUID()}`, proofCount = 1 } = {}) => {
   const form = new FormData();
@@ -1550,11 +1575,12 @@ test('Phase 4 payment records immutable approved total, proofs, balances and aut
   const { product, body } = await phaseOneFixture();
   const order = await acceptedStockOrder(body);
   const requestId = `phase4-full:${randomUUID()}`;
-  const paid = await downPayment(order, { requestId, amount: '0.01', method: 'GCash', reference: 'GC-123', proofCount: 3 });
+  const paid = await downPayment(order, { requestId, method: 'GCash', reference: 'GC-123', proofCount: 3 });
   assert.equal(paid.status, 201, JSON.stringify(paid));
   assert.equal(paid.body.ledger.approvedTotalCentavos, 28080);
-  assert.equal(paid.body.ledger.amountPaidCentavos, 1);
-  assert.equal(paid.body.ledger.remainingBalanceCentavos, 28079);
+  assert.equal(paid.body.ledger.downPaymentPercentage, 50);
+  assert.equal(paid.body.ledger.amountPaidCentavos, 14040);
+  assert.equal(paid.body.ledger.remainingBalanceCentavos, 14040);
   assert.equal(paid.body.ledger.status, 'Partially Paid');
   assert.equal(paid.body.ledger.payments[0].type, 'down_payment');
   assert.equal(paid.body.ledger.payments[0].method, 'gcash');
@@ -1565,7 +1591,7 @@ test('Phase 4 payment records immutable approved total, proofs, balances and aut
   assert.equal(paid.body.availability.items[0].allocatedToOrder, 2);
   assert.equal((await Product.findById(product._id)).stock, 12);
   assert.equal((await Product.findById(product._id)).reservedStock, 2);
-  assert.equal((await downPayment(order, { requestId, amount: '0.01', proofCount: 0 })).body.replayed, true);
+  assert.equal((await downPayment(order, { requestId, proofCount: 0 })).body.replayed, true);
   assert.equal((await downPayment(order, { requestId: `phase4-other:${randomUUID()}` })).status, 409);
   assert.equal((await PaymentLedger.findOne({ specialOrder: order._id })).payments.length, 1);
   assert.equal((await StockReservation.findOne({ specialOrder: order._id })).history.length, 1);
@@ -1580,30 +1606,26 @@ test('Special Order reference-only down payment and later payments retain balanc
   const { body } = await phaseOneFixture();
   const order = await acceptedStockOrder(body);
   const initialId = `reference-only-down:${randomUUID()}`;
-  const initial = await downPayment(order, { requestId: initialId, amount: '10.00', method: 'gcash', reference: '  GC-001  ', proofCount: 0 });
+  const initial = await downPayment(order, { requestId: initialId, method: 'gcash', reference: '  GC-001  ', proofCount: 0 });
   assert.equal(initial.status, 201, JSON.stringify(initial));
   assert.equal(initial.body.ledger.payments[0].reference, 'GC-001');
   assert.deepEqual(initial.body.ledger.payments[0].proofs, []);
   assert.equal((await downPayment(order, { requestId: initialId, proofCount: 0 })).body.replayed, true);
-  const partialId = `reference-only-partial:${randomUUID()}`;
-  const partial = await additionalPayment(order, { requestId: partialId, amount: '20.00', method: 'gcash', reference: 'GC-002', proofCount: 0 });
-  assert.equal(partial.status, 201, JSON.stringify(partial));
-  assert.equal(partial.body.ledger.remainingBalanceCentavos, 25080);
-  assert.equal((await additionalPayment(order, { requestId: partialId, amount: '20.00', method: 'gcash', reference: 'GC-002', proofCount: 0 })).body.replayed, true);
   for (const reference of ['', '   ']) {
-    const missing = await additionalPayment(order, { amount: '1.00', method: 'gcash', reference, proofCount: 0 });
+    const missing = await additionalPayment(order, { amount: '140.40', method: 'gcash', reference, proofCount: 0 });
     assert.equal(missing.status, 400);
     assert.match(missing.body.message, /payment reference/i);
   }
-  const final = await additionalPayment(order, { amount: '250.80', method: 'cheque', reference: 'CH-003', proofCount: 0 });
+  const finalRequest = { requestId: `reference-only-final:${randomUUID()}`, amount: '140.40', method: 'cheque', reference: 'CH-003', proofCount: 0 };
+  const final = await additionalPayment(order, finalRequest);
   assert.equal(final.status, 201, JSON.stringify(final));
   assert.equal(final.body.ledger.status, 'Fully Paid');
   assert.equal(final.body.ledger.amountPaidCentavos, 28080);
   assert.equal(final.body.ledger.remainingBalanceCentavos, 0);
-  assert.deepEqual(final.body.ledger.payments.map((payment) => payment.proofs.length), [0, 0, 0]);
+  assert.deepEqual(final.body.ledger.payments.map((payment) => payment.proofs.length), [0, 0]);
   const history = await api(`/special-orders/${order._id}/payments`);
   assert.equal(history.status, 200);
-  assert.deepEqual(history.body.ledger.payments.map((payment) => payment.reference), ['GC-001', 'GC-002', 'CH-003']);
+  assert.deepEqual(history.body.ledger.payments.map((payment) => payment.reference), ['GC-001', 'CH-003']);
   assert.equal((await api(`/special-orders/${order._id}/payments/${initialId}/proofs/0`)).status, 404);
   assert.equal(await Sale.countDocuments({ specialOrderId: order._id }), 0);
 });
@@ -1612,7 +1634,7 @@ test('cash payment references and notes survive retries without consuming number
   const { body } = await phaseOneFixture();
   const order = await acceptedStockOrder(body);
   const initialId = `cash-down:${randomUUID()}`;
-  const initialRequest = { requestId: initialId, amount: '10.00', reference: '', notes: 'Paid at the counter', proofCount: 0 };
+  const initialRequest = { requestId: initialId, reference: '', notes: 'Paid at the counter', proofCount: 0 };
   const initial = await downPayment(order, initialRequest);
   assert.equal(initial.status, 201, JSON.stringify(initial));
   const first = initial.body.ledger.payments[0];
@@ -1625,7 +1647,7 @@ test('cash payment references and notes survive retries without consuming number
   const [, day, sequence] = first.internalReference.split('-');
   const counterKey = `PAY-${day}`;
   const originalSave = PaymentLedger.prototype.save;
-  const retryRequest = { requestId: `cash-retry:${randomUUID()}`, amount: '2.00', reference: '', notes: 'Partial payment', proofCount: 1 };
+  const retryRequest = { requestId: `cash-retry:${randomUUID()}`, amount: '140.40', reference: '', notes: 'Final payment', proofCount: 1 };
   PaymentLedger.prototype.save = async function (...args) {
     if (String(this.specialOrder) === String(order._id)) throw new Error('Injected ledger failure');
     return originalSave.apply(this, args);
@@ -1640,18 +1662,23 @@ test('cash payment references and notes survive retries without consuming number
   assert.equal(references[0], `PAY-${day}-${String(Number(sequence) + 1).padStart(4, '0')}`);
   const history = await api(`/special-orders/${order._id}/payments`);
   assert.equal(history.body.ledger.payments.length, 2);
-  assert.equal(history.body.ledger.payments[1].notes, 'Partial payment');
+  assert.equal(history.body.ledger.payments[1].notes, 'Final payment');
   assert.equal(history.body.ledger.payments[1].proofs.length, 1);
   const { body: otherBody } = await phaseOneFixture();
   const otherOrder = await acceptedStockOrder(otherBody);
+  assert.equal((await downPayment(otherOrder, { reference: '', proofCount: 0 })).status, 201);
+  const { body: thirdBody } = await phaseOneFixture();
+  const thirdOrder = await acceptedStockOrder(thirdBody);
+  assert.equal((await downPayment(thirdOrder, { reference: '', proofCount: 0 })).status, 201);
+  const sequenceBeforeParallelPayments = (await SpecialOrderCounter.findById(counterKey)).sequence;
   const parallel = await Promise.all([
-    additionalPayment(order, { amount: '1.00', reference: '', proofCount: 0 }),
-    downPayment(otherOrder, { amount: '1.00', reference: '', proofCount: 0 }),
+    additionalPayment(otherOrder, { amount: finalPaymentAmount(otherOrder), reference: '', proofCount: 0 }),
+    additionalPayment(thirdOrder, { amount: finalPaymentAmount(thirdOrder), reference: '', proofCount: 0 }),
   ]);
   assert.ok(parallel.every((result) => result.status === 201));
   const concurrentRefs = parallel.map((result) => result.body.ledger.payments.at(-1).internalReference);
   assert.equal(new Set(concurrentRefs).size, 2);
-  assert.deepEqual(concurrentRefs.sort(), [2, 3].map((offset) => `PAY-${day}-${String(Number(sequence) + offset).padStart(4, '0')}`));
+  assert.deepEqual(concurrentRefs.sort(), [1, 2].map((offset) => `PAY-${day}-${String(sequenceBeforeParallelPayments + offset).padStart(4, '0')}`));
 });
 
 test('non-cash evidence and explicit cheque clearance are required independently of notes', async () => {
@@ -1666,21 +1693,24 @@ test('non-cash evidence and explicit cheque clearance are required independently
   assert.equal(initial.body.ledger.payments[0].internalReference, '');
   assert.equal(initial.body.ledger.payments[0].chequeCleared, true);
   assert.equal(initial.body.ledger.payments[0].notes, 'Cleared by bank');
-  assert.equal((await additionalPayment(order, { method: 'bank transfer', reference: '', proofCount: 0, notes: 'Not evidence' })).status, 400);
-  assert.equal((await additionalPayment(order, { method: 'cheque', reference: 'CH-2', proofCount: 0, chequeCleared: false })).status, 400);
+  assert.equal((await additionalPayment(order, { amount: '140.40', method: 'bank transfer', reference: '', proofCount: 0, notes: 'Not evidence' })).status, 400);
+  assert.equal((await additionalPayment(order, { amount: '140.40', method: 'cheque', reference: 'CH-2', proofCount: 0, chequeCleared: false })).status, 400);
   for (const payment of [
     { method: 'gcash', reference: '', proofCount: 1 },
     { method: 'bank transfer', reference: 'BANK-1', proofCount: 0 },
     { method: 'other', otherMethod: 'Voucher', reference: '', proofCount: 1 },
   ]) {
-    const result = await additionalPayment(order, payment);
+    const { body: nextBody } = await phaseOneFixture();
+    const nextOrder = await acceptedStockOrder(nextBody);
+    assert.equal((await downPayment(nextOrder, { proofCount: 0 })).status, 201);
+    const result = await additionalPayment(nextOrder, { ...payment, amount: halfOfQuotationTotal(nextOrder) });
     assert.equal(result.status, 201, JSON.stringify(result));
     assert.equal(result.body.ledger.payments.at(-1).internalReference, '');
     assert.equal(result.body.ledger.payments.at(-1).notes, '');
   }
-  assert.equal((await additionalPayment(order, { method: 'gcash', reference: 'GC-2', proofCount: 0, notes: 'x'.repeat(501) })).status, 400);
+  assert.equal((await additionalPayment(order, { amount: '140.40', method: 'gcash', reference: 'GC-2', proofCount: 0, notes: 'x'.repeat(501) })).status, 400);
   const history = await api(`/special-orders/${order._id}/payments`);
-  assert.equal(history.body.ledger.payments.length, 4);
+  assert.equal(history.body.ledger.payments.length, 1);
   assert.equal(history.body.ledger.payments[0].notes, 'Cleared by bank');
 });
 
@@ -1693,7 +1723,7 @@ test('shared external payment references remain separate from payment identities
   const [firstOrder, secondOrder, cashOrder] = await Promise.all([createCustomOrder(), createCustomOrder(), createCustomOrder()]);
   const externalReference = `BANK-SHARED-${randomUUID()}`;
   const sharedRequestId = `shared-payment:${randomUUID()}`;
-  const down = { requestId: sharedRequestId, amount: '1.00', method: 'bank transfer', reference: externalReference, proofCount: 0 };
+  const down = { requestId: sharedRequestId, amount: '15.15', method: 'bank transfer', reference: externalReference, proofCount: 0 };
   const downResults = await Promise.all([downPayment(firstOrder, down), downPayment(secondOrder, down)]);
   assert.ok(downResults.every((result) => result.status === 201), JSON.stringify(downResults));
   const firstPayment = downResults[0].body.ledger.payments[0];
@@ -1703,11 +1733,11 @@ test('shared external payment references remain separate from payment identities
   assert.notEqual(firstPayment.id, secondPayment.id);
   assert.equal((await downPayment(firstOrder, down)).body.replayed, true);
 
-  const cash = await downPayment(cashOrder, { amount: '1.00', reference: '', proofCount: 0 });
+  const cash = await downPayment(cashOrder, { reference: '', proofCount: 0 });
   assert.equal(cash.status, 201, JSON.stringify(cash));
   assert.match(cash.body.ledger.payments[0].internalReference, /^PAY-\d{8}-\d{4,}$/);
 
-  const final = { amount: '29.30', method: 'bank transfer', reference: externalReference, proofCount: 0 };
+  const final = { amount: '15.15', method: 'bank transfer', reference: externalReference, proofCount: 0 };
   const firstRequest = { ...final, requestId: `final-first:${randomUUID()}`, invoiceNumber: '951001' };
   const firstFinal = await additionalPayment(firstOrder, firstRequest);
   const secondFinal = await additionalPayment(secondOrder, { ...final, requestId: `final-second:${randomUUID()}`, invoiceNumber: '951002' });
@@ -1747,7 +1777,7 @@ test('POS and Special Order invoice writes serialize without duplicating sales o
   const { body, product } = await phaseOneFixture();
   body.items = [body.items[1]];
   const order = await acceptedStockOrder(body);
-  assert.equal((await downPayment(order, { amount: '1.00', proofCount: 0 })).status, 201);
+  assert.equal((await downPayment(order, { proofCount: 0 })).status, 201);
   const stockBefore = (await Product.findById(product._id)).stock;
   const invoiceNumber = '951990';
   const pos = (requestId, referenceNumber = invoiceNumber) => api('/sales', { method: 'POST', body: {
@@ -1756,7 +1786,7 @@ test('POS and Special Order invoice writes serialize without duplicating sales o
   } });
   const [posResult, specialResult] = await Promise.all([
     pos(`invoice-pos:${randomUUID()}`),
-    additionalPayment(order, { amount: '29.30', method: 'cash', proofCount: 0, invoiceNumber, requestId: `invoice-special:${randomUUID()}` }),
+    additionalPayment(order, { amount: '15.15', method: 'cash', proofCount: 0, invoiceNumber, requestId: `invoice-special:${randomUUID()}` }),
   ]);
   assert.deepEqual([posResult.status, specialResult.status].sort(), [201, 409], JSON.stringify([posResult, specialResult]));
   assert.equal(await Sale.countDocuments({ 'transactionReference.referenceNumber': invoiceNumber }), 1);
@@ -1794,15 +1824,15 @@ test('Special Order payment history preserves legacy blank references and reject
   assert.equal(history.status, 200);
   assert.equal(history.body.ledger.payments[0].reference, '');
   assert.equal((await downPayment(order, { requestId, reference: '', proofCount: 0 })).body.replayed, true);
+  assert.equal((await additionalPayment(order, { amount: finalPaymentAmount(order), invalidProof: true })).status, 400);
   const partialId = `legacy-partial:${randomUUID()}`;
-  assert.equal((await additionalPayment(order, { requestId: partialId, amount: '1.00', proofCount: 0 })).status, 201);
+  assert.equal((await additionalPayment(order, { requestId: partialId, amount: finalPaymentAmount(order), proofCount: 0 })).status, 201);
   await PaymentLedger.updateOne({ specialOrder: order._id }, { $set: { 'payments.1.reference': '', 'payments.1.internalReference': '' } });
-  assert.equal((await additionalPayment(order, { requestId: partialId, amount: '1.00', reference: '', proofCount: 0 })).body.replayed, true);
+  assert.equal((await additionalPayment(order, { requestId: partialId, amount: finalPaymentAmount(order), reference: '', proofCount: 0 })).body.replayed, true);
   const invalidType = downPaymentForm({ amount: '1.00', reference: 'VALID' });
   invalidType.delete('proofs');
   invalidType.append('proofs', new Blob(['plain text'], { type: 'text/plain' }), 'proof.txt');
   assert.equal((await api(`/special-orders/${order._id}/payments`, { user: admin, method: 'POST', form: invalidType })).status, 400);
-  assert.equal((await additionalPayment(order, { amount: '1.00', invalidProof: true })).status, 400);
   assert.equal((await PaymentLedger.findOne({ specialOrder: order._id })).payments.length, 2);
 });
 
@@ -1810,26 +1840,23 @@ test('Special Order collections use each ledger payment date and fail closed on 
   const { body } = await phaseOneFixture();
   const order = await acceptedStockOrder(body);
   const firstId = `collection-down:${randomUUID()}`;
-  const secondId = `collection-partial:${randomUUID()}`;
   const finalId = `collection-final:${randomUUID()}`;
-  assert.equal((await downPayment(order, { requestId: firstId, amount: '10.00', proofCount: 0 })).status, 201);
-  assert.equal((await additionalPayment(order, { requestId: secondId, amount: '20.00', proofCount: 0 })).status, 201);
-  assert.equal((await additionalPayment(order, { requestId: finalId, amount: '250.80', proofCount: 0 })).status, 201);
+  assert.equal((await downPayment(order, { requestId: firstId, proofCount: 0 })).status, 201);
+  assert.equal((await additionalPayment(order, { requestId: finalId, amount: finalPaymentAmount(order), proofCount: 0 })).status, 201);
   const firstDate = new Date('2026-09-01T03:00:00.000Z');
-  const secondDate = new Date('2026-10-01T03:00:00.000Z');
   const finalDate = new Date('2026-10-15T03:00:00.000Z');
-  await PaymentLedger.updateOne({ specialOrder: order._id }, { $set: { 'payments.0.recordedAt': firstDate, 'payments.1.recordedAt': secondDate, 'payments.2.recordedAt': finalDate } });
+  await PaymentLedger.updateOne({ specialOrder: order._id }, { $set: { 'payments.0.recordedAt': firstDate, 'payments.1.recordedAt': finalDate } });
   assert.equal((await api('/special-orders/collections', { user: admin })).status, 403);
   assert.equal((await api('/special-orders/collections', { user: owner })).status, 403);
   const result = await api('/special-orders/collections', { user: superadmin });
   assert.equal(result.status, 200, JSON.stringify(result));
   const events = result.body.events.filter((event) => event.specialOrderId === String(order._id));
-  assert.deepEqual(events.map((event) => event.amountCentavos), [1000, 2000, 25080]);
-  assert.deepEqual(events.map((event) => event.recordedAt), [firstDate.toISOString(), secondDate.toISOString(), finalDate.toISOString()]);
+  assert.deepEqual(events.map((event) => event.amountCentavos), [14040, 14040]);
+  assert.deepEqual(events.map((event) => event.recordedAt), [firstDate.toISOString(), finalDate.toISOString()]);
   assert.equal(await Sale.countDocuments({ specialOrderId: order._id }), 0);
   await PaymentLedger.updateOne({ specialOrder: order._id }, { $set: { 'payments.1.requestId': firstId } });
   assert.equal((await api('/special-orders/collections', { user: superadmin })).status, 409);
-  await PaymentLedger.updateOne({ specialOrder: order._id }, { $set: { 'payments.1.requestId': secondId } });
+  await PaymentLedger.updateOne({ specialOrder: order._id }, { $set: { 'payments.1.requestId': finalId } });
   assert.equal((await api('/special-orders/collections', { user: superadmin })).status, 200);
 });
 
@@ -1841,7 +1868,7 @@ test('Phase 4 partial stock, duplicate SKUs, and earlier optional holds retain t
   const early = await stockRequest(order, 'Reserve', `phase4-optional:${randomUUID()}`);
   assert.equal(early.status, 200);
   assert.equal(early.body.items[0].allocatedToOrder, 3);
-  const paid = await downPayment(order, { amount: '2.00', method: 'Cheque' });
+  const paid = await downPayment(order, { method: 'Cheque' });
   assert.equal(paid.status, 201, JSON.stringify(paid));
   assert.equal(paid.body.availability.items[0].orderedQuantity, 6);
   assert.equal(paid.body.availability.items[0].allocatedToOrder, 3);
@@ -1858,7 +1885,7 @@ test('Phase 4 records a confirmed payment with zero available stock and a visibl
   const { product, body } = await phaseOneFixture();
   await Product.updateOne({ _id: product._id }, { $set: { stock: 0 } });
   const order = await acceptedStockOrder(body);
-  const paid = await downPayment(order, { amount: '0.01' });
+  const paid = await downPayment(order);
   assert.equal(paid.status, 201, JSON.stringify(paid));
   assert.equal(paid.body.ledger.reservationAtPayment[0].reservedQuantity, 0);
   assert.equal(paid.body.ledger.reservationAtPayment[0].shortageQuantity, 2);
@@ -1907,11 +1934,11 @@ test('Phase 4 supports all five methods, rejects oversized proof, and leaves leg
   for (const method of methods) {
     const { body } = await phaseOneFixture();
     const order = await acceptedStockOrder(body);
-    const result = await downPayment(order, { method, otherMethod: method === 'Other' ? 'Cash Deposit Slip' : '', amount: '1.25' }, superadmin);
+    const result = await downPayment(order, { method, otherMethod: method === 'Other' ? 'Cash Deposit Slip' : '' }, superadmin);
     assert.equal(result.status, 201, `${method}: ${JSON.stringify(result)}`);
     assert.equal(result.body.ledger.payments[0].method.toLowerCase(), method.toLowerCase());
     if (method === 'Other') assert.equal(result.body.ledger.payments[0].otherMethod, 'Cash Deposit Slip');
-    assert.equal(result.body.ledger.remainingBalanceCentavos, result.body.ledger.approvedTotalCentavos - 125);
+    assert.equal(result.body.ledger.remainingBalanceCentavos, result.body.ledger.approvedTotalCentavos - Math.round(result.body.ledger.approvedTotalCentavos / 2));
   }
   const { body } = await phaseOneFixture();
   const order = await acceptedStockOrder(body);
@@ -1922,7 +1949,7 @@ test('Phase 4 supports all five methods, rejects oversized proof, and leaves leg
   oversized.append('proofs', new Blob([Buffer.alloc(5 * 1024 * 1024 + 1)], { type: 'image/png' }), 'oversized.png');
   assert.equal((await api(`/special-orders/${order._id}/payments/down-payment`, { user: admin, method: 'POST', form: oversized })).status, 400);
   const legacy = await orderFixture();
-  assert.equal((await downPayment(legacy)).status, 409);
+  assert.equal((await downPayment(legacy, { amount: '1.00' })).status, 409);
   assert.equal((await api(`/special-orders/${legacy._id}/payments`)).body.ledger, null);
 });
 
@@ -1933,8 +1960,8 @@ test('Phase 4 concurrent duplicate payments commit once; competing stock sale ca
   const order = await acceptedStockOrder(body);
   const requestId = `phase4-concurrent:${randomUUID()}`;
   const [first, second] = await Promise.all([
-    downPayment(order, { requestId, amount: '1.00' }),
-    downPayment(order, { requestId, amount: '1.00' }),
+    downPayment(order, { requestId }),
+    downPayment(order, { requestId }),
   ]);
   assert.deepEqual([first.status, second.status].sort(), [200, 201]);
   assert.equal(await PaymentLedger.countDocuments({ specialOrder: order._id }), 1);
@@ -1953,7 +1980,7 @@ test('Phase 4 payment racing with normal POS checkout preserves physical-versus-
   body.items[0].quantity = 1;
   const order = await acceptedStockOrder(body);
   const [payment, sale] = await Promise.all([
-    downPayment(order, { amount: '1.00' }),
+    downPayment(order),
     api('/sales', { method: 'POST', body: { items: [{ productId: String(product._id), quantity: 1 }], paymentMethod: 'cash', cashTendered: '125.25', referenceNumber: String(Date.now()), clientRequestId: `phase4-race-sale:${randomUUID()}` } }),
   ]);
   assert.equal(payment.status, 201, JSON.stringify(payment));
@@ -2101,31 +2128,26 @@ test('Phase 3 simultaneous POS checkout and reserve have one stock winner, and a
   assert.equal((await Product.findById(product._id)).reservedStock, after.reservedStock);
 });
 
-test('Phase 5A records multiple partial payments and a separate cheque settlement without creating a sale', async () => {
+test('Phase 5A records one down payment and one final settlement without creating a sale', async () => {
   const { product, body } = await phaseOneFixture();
   const order = await acceptedStockOrder(body);
   const creditsBefore = await CreditTransaction.countDocuments();
-  const initial = await downPayment(order, { amount: '10.00', method: 'cash', requestId: `phase5a-down:${randomUUID()}` });
+  const initial = await downPayment(order, { method: 'cash', requestId: `phase5a-down:${randomUUID()}` });
   assert.equal(initial.status, 201, JSON.stringify(initial));
   assert.equal((await additionalPayment(order, { amount: '1.00' }, other)).status, 403);
-  const firstId = `phase5a-partial:${randomUUID()}`;
-  const first = await additionalPayment(order, { requestId: firstId, amount: '20.00', method: 'GCash', reference: 'GC-5A', proofCount: 2 });
-  assert.equal(first.status, 201, JSON.stringify(first));
-  assert.equal(first.body.ledger.remainingBalanceCentavos, 25080);
-  const second = await additionalPayment(order, { amount: '0.01', method: 'Bank Transfer' });
-  assert.equal(second.status, 201, JSON.stringify(second));
-  assert.equal(second.body.ledger.status, 'Partially Paid');
   const finalId = `phase5a-final:${randomUUID()}`;
-  const final = await additionalPayment(order, { requestId: finalId, amount: '250.79', method: 'cheque', reference: 'CH-5A', proofCount: 3 });
+  assert.equal((await additionalPayment(order, { amount: '20.00', method: 'GCash', reference: 'GC-5A', proofCount: 2 })).status, 400,
+    'an extra partial payment is rejected before final settlement');
+  const final = await additionalPayment(order, { requestId: finalId, amount: '140.40', method: 'cheque', reference: 'CH-5A', proofCount: 3 });
   assert.equal(final.status, 201, JSON.stringify(final));
   assert.equal(final.body.ledger.status, 'Fully Paid');
   assert.equal(final.body.ledger.amountPaidCentavos, 28080);
   assert.equal(final.body.ledger.remainingBalanceCentavos, 0);
-  assert.deepEqual(final.body.ledger.payments.map((payment) => payment.type), ['down_payment', 'partial_payment', 'partial_payment', 'final_payment']);
-  assert.deepEqual(final.body.ledger.payments.map((payment) => payment.method), ['cash', 'gcash', 'bank transfer', 'cheque']);
-  assert.deepEqual(final.body.ledger.payments.map((payment) => payment.proofs.length), [1, 2, 1, 3]);
+  assert.deepEqual(final.body.ledger.payments.map((payment) => payment.type), ['down_payment', 'final_payment']);
+  assert.deepEqual(final.body.ledger.payments.map((payment) => payment.method), ['cash', 'cheque']);
+  assert.deepEqual(final.body.ledger.payments.map((payment) => payment.proofs.length), [1, 3]);
   const tokenFor = (user) => ({ Authorization: `Bearer ${jwt.sign({ id: String(user._id) }, process.env.JWT_SECRET)}` });
-  for (const requestId of [firstId, finalId]) {
+  for (const requestId of [finalId]) {
     const proof = await fetch(`${baseUrl}/api/special-orders/${order._id}/payments/${requestId}/proofs/0`, { headers: tokenFor(owner) });
     assert.equal(proof.status, 200);
     assert.deepEqual(Buffer.from(await proof.arrayBuffer()), tinyPng);
@@ -2141,18 +2163,18 @@ test('Phase 5A records multiple partial payments and a separate cheque settlemen
 test('Phase 5A payment retries and competing collectors cannot duplicate events or overpay', async () => {
   const { body } = await phaseOneFixture();
   const order = await acceptedStockOrder(body);
-  assert.equal((await downPayment(order, { amount: '1.00' })).status, 201);
+  assert.equal((await downPayment(order)).status, 201);
   const requestId = `phase5a-same:${randomUUID()}`;
-  const [first, replay] = await Promise.all([1, 2].map(() => additionalPayment(order, { requestId, amount: '10.00', proofCount: 2 })));
+  const finalAmount = halfOfQuotationTotal(order);
+  const [first, replay] = await Promise.all([1, 2].map(() => additionalPayment(order, { requestId, amount: finalAmount, proofCount: 2 })));
   assert.deepEqual([first.status, replay.status].sort(), [200, 201], JSON.stringify([first, replay]));
-  assert.equal((await additionalPayment(order, { requestId, amount: '11.00' })).status, 409);
-  const [racingA, racingB] = await Promise.all([1, 2].map(() => additionalPayment(order, { requestId: `phase5a-race:${randomUUID()}`, amount: '260.00' })));
-  assert.equal([racingA, racingB].filter((result) => result.status === 201).length, 1, JSON.stringify([racingA, racingB]));
-  assert.ok([400, 409].includes([racingA, racingB].find((result) => result.status !== 201).status));
+  assert.equal((await additionalPayment(order, { requestId, amount: finalAmount })).status, 200, 'idempotent retry returns the committed final payment');
+  const [racingA, racingB] = await Promise.all([1, 2].map(() => additionalPayment(order, { requestId: `phase5a-race:${randomUUID()}`, amount: finalAmount })));
+  assert.ok(racingA.status === 409 && racingB.status === 409, JSON.stringify([racingA, racingB]));
   const ledger = await PaymentLedger.findOne({ specialOrder: order._id });
-  assert.equal(ledger.payments.length, 3);
-  assert.equal(ledger.amountPaidCentavos, 27100);
-  assert.equal(ledger.remainingBalanceCentavos, 980);
+  assert.equal(ledger.payments.length, 2);
+  assert.equal(ledger.amountPaidCentavos, 28080);
+  assert.equal(ledger.remainingBalanceCentavos, 0);
   assert.equal(await Sale.countDocuments({ specialOrderId: order._id }), 0);
 });
 
@@ -2162,7 +2184,7 @@ test('Phase 5A stock availability and existing reservation workflow remain usabl
   const order = await acceptedStockOrder(body);
   const itemId = body.items[1].itemId;
   assert.equal((await sourceCustom(order, itemId, 1)).status, 409);
-  assert.equal((await downPayment(order, { amount: '1.00' })).status, 201);
+  assert.equal((await downPayment(order)).status, 201);
   let availability = (await api(`/special-orders/${order._id}/stock-availability`)).body;
   assert.equal(availability.items[0].allocatedToOrder, 1);
   assert.equal(availability.items[0].remainingToAllocate, 1);
@@ -2204,7 +2226,7 @@ test('Phase 5A distinguishes delivery readiness and keeps legacy orders outside 
   const { body } = await phaseOneFixture();
   body.fulfillment = { method: 'Free Delivery', addressLine: '123 Main St', barangay: 'Baclaran', cityMunicipality: 'Cabuyao', province: 'Laguna', preferredDate: '2026-12-02' };
   const order = await acceptedStockOrder(body);
-  assert.equal((await downPayment(order, { amount: '1.00' })).status, 201);
+  assert.equal((await downPayment(order)).status, 201);
   assert.equal((await sourceCustom(order, body.items[1].itemId, 3)).status, 200);
   const before = (await api(`/special-orders/${order._id}/stock-availability`)).body;
   assert.equal(before.fulfillment.status, 'Stock Available');
@@ -2226,11 +2248,11 @@ test('Phase 5B records Sale once then completes and consumes reserved exact-SKU 
   const order = await acceptedStockOrder(body);
   const completeUrl = `/special-orders/${order._id}/complete`;
   assert.equal((await api(completeUrl, { user: admin, method: 'POST', body: { requestId: `complete:${randomUUID()}` } })).status, 409);
-  assert.equal((await downPayment(order, { amount: '1.00', proofCount: 0 })).status, 201);
+  assert.equal((await downPayment(order, { proofCount: 0 })).status, 201);
   assert.equal((await sourceCustom(order, body.items[1].itemId, 3)).status, 200);
   assert.equal((await availabilityFor(order)).body.fulfillment.status, 'Stock Available');
   assert.equal((await api(`/special-orders/${order._id}/finalize`, { user: admin, method: 'POST', form: finalForm(order.quotation) })).status, 409);
-  assert.equal((await additionalPayment(order, { amount: '279.80', method: 'cheque', reference: 'FINAL-5B', proofCount: 0 })).status, 201);
+  assert.equal((await additionalPayment(order, { amount: finalPaymentAmount(order), method: 'cheque', reference: 'FINAL-5B', proofCount: 0 })).status, 201);
   const creditsBefore = await CreditTransaction.countDocuments();
   const [first, retry] = await Promise.all([1, 2].map(() => api(`/special-orders/${order._id}/finalize`, { user: admin, method: 'POST', form: finalForm(order.quotation) })));
   assert.deepEqual([first.status, retry.status].sort(), [200, 201], JSON.stringify([first, retry]));
@@ -2289,8 +2311,13 @@ test('Phase 5B records Sale once then completes and consumes reserved exact-SKU 
   assert.equal(logs[0].quantity, 2);
   assert.equal(String(logs[0].saleRef), String(sale._id));
   assert.equal((await Sale.findById(sale._id)).specialOrderFulfillmentStatus, 'Administrative Closure');
-  assert.equal((await api(completeUrl, { user: admin, method: 'POST', body: { requestId } })).body.replayed, true);
-  assert.equal((await api(completeUrl, { user: admin, method: 'POST', body: { requestId: `complete:${randomUUID()}` } })).body.replayed, true);
+  const repeatedCompletion = await api(completeUrl, { user: admin, method: 'POST', body: { requestId } });
+  assert.equal(repeatedCompletion.status, 200, JSON.stringify(repeatedCompletion));
+  assert.equal(repeatedCompletion.body.order.status, 'Completed');
+  const repeatedWithNewRequestId = await api(completeUrl, { user: admin, method: 'POST', body: { requestId: `complete:${randomUUID()}` } });
+  assert.equal(repeatedWithNewRequestId.status, 200, JSON.stringify(repeatedWithNewRequestId));
+  assert.equal(repeatedWithNewRequestId.body.order.status, 'Completed');
+  assert.equal(await Sale.countDocuments({ specialOrderId: order._id }), 1);
   assert.equal((await SpecialOrder.findById(order._id)).status, 'Completed');
 });
 
@@ -2298,8 +2325,8 @@ test('Complete Order records the missing Sale and consumes exact-SKU stock atomi
   const { product, body } = await phaseOneFixture();
   body.items = [body.items[0]];
   const order = await acceptedStockOrder(body);
-  assert.equal((await downPayment(order, { amount: '1.00', proofCount: 0 })).status, 201);
-  const finalAmount = (order.quotation.total - 1).toFixed(2);
+  assert.equal((await downPayment(order, { proofCount: 0 })).status, 201);
+  const finalAmount = finalPaymentAmount(order);
   assert.equal((await additionalPayment(order, { amount: finalAmount, proofCount: 0 })).status, 201);
   assert.equal(await Sale.countDocuments({ specialOrderId: order._id }), 0);
   const stockBefore = await Product.findById(product._id);
@@ -2339,8 +2366,8 @@ test('Complete Order accepts a supporting document and rolls back the Sale and s
   const { product, body } = await phaseOneFixture();
   body.items = [body.items[0]];
   const order = await acceptedStockOrder(body);
-  assert.equal((await downPayment(order, { amount: '1.00', proofCount: 0 })).status, 201);
-  assert.equal((await additionalPayment(order, { amount: (order.quotation.total - 1).toFixed(2), proofCount: 0 })).status, 201);
+  assert.equal((await downPayment(order, { proofCount: 0 })).status, 201);
+  assert.equal((await additionalPayment(order, { amount: finalPaymentAmount(order), proofCount: 0 })).status, 201);
   const beforeImages = storedImages.size;
   const originalSave = SpecialOrder.prototype.save;
   SpecialOrder.prototype.save = function (...args) {
@@ -2372,8 +2399,8 @@ test('Phase 5B blocks completion for insufficient stock, then completes after st
   const { product, body } = await phaseOneFixture();
   await Product.updateOne({ _id: product._id }, { $set: { stock: 0, reservedStock: 0 } });
   const order = await acceptedStockOrder(body);
-  assert.equal((await downPayment(order, { amount: '1.00', proofCount: 0 })).status, 201);
-  assert.equal((await additionalPayment(order, { amount: '279.80', proofCount: 0 })).status, 201);
+  assert.equal((await downPayment(order, { proofCount: 0 })).status, 201);
+  assert.equal((await additionalPayment(order, { amount: finalPaymentAmount(order), proofCount: 0 })).status, 201);
   assert.equal((await api(`/special-orders/${order._id}/stock-availability`)).body.fulfillment.allItemsReady, false);
   const blockedCompletion = await api(`/special-orders/${order._id}/complete`, {
     user: admin, method: 'POST', form: completeForm(order.quotation, `blocked-complete:${randomUUID()}`, { reference: '700125' }),
@@ -2419,14 +2446,14 @@ test('an owning Cashier can complete a Phase 5B Special Order without exception-
 
   const downPaymentResult = await downPayment(order, {
     requestId: `cashier-down:${randomUUID()}`,
-    amount: '10.00', method: 'Cash', reference: 'CASHIER-DOWN', proofCount: 1,
+    method: 'Cash', reference: 'CASHIER-DOWN', proofCount: 1,
   }, owner);
   assert.equal(downPaymentResult.status, 201, JSON.stringify(downPaymentResult));
-  assert.equal(downPaymentResult.body.ledger.amountPaidCentavos, 1000);
+  assert.equal(downPaymentResult.body.ledger.amountPaidCentavos, 14040);
 
   const finalPayment = await additionalPayment(order, {
     requestId: `cashier-final:${randomUUID()}`,
-    amount: '270.80', method: 'Cheque', reference: 'CASHIER-FINAL', proofCount: 0,
+    amount: finalPaymentAmount(order), method: 'Cheque', reference: 'CASHIER-FINAL', proofCount: 0,
   }, owner);
   assert.equal(finalPayment.status, 201, JSON.stringify(finalPayment));
   assert.equal(finalPayment.body.ledger.status, 'Fully Paid');
@@ -2465,8 +2492,8 @@ test('historical readiness cannot bypass current inventory availability, and old
   const { product, body } = await phaseOneFixture();
   await Product.updateOne({ _id: product._id }, { $set: { stock: 0, reservedStock: 0 } });
   const order = await acceptedStockOrder(body);
-  assert.equal((await downPayment(order, { amount: '1.00', proofCount: 0 })).status, 201);
-  assert.equal((await additionalPayment(order, { amount: '279.80', proofCount: 0 })).status, 201);
+  assert.equal((await downPayment(order, { proofCount: 0 })).status, 201);
+  assert.equal((await additionalPayment(order, { amount: finalPaymentAmount(order), proofCount: 0 })).status, 201);
   assert.equal((await api(`/special-orders/${order._id}/finalize`, { user: admin, method: 'POST', form: finalForm(order.quotation) })).status, 201);
   const historicalDate = new Date('2026-09-01T10:00:00.000Z');
   await SpecialOrder.updateOne({ _id: order._id }, { $set: { readyConfirmation: {
@@ -2491,11 +2518,11 @@ test('automatic readiness rejects conflicting allocations and stock below active
   body.items = [body.items[0]];
   const first = await acceptedStockOrder(body);
   const second = await acceptedStockOrder({ ...body, clientRequestId: `competing-order:${randomUUID()}` });
-  assert.equal((await downPayment(first, { amount: '1.00', proofCount: 0 })).status, 201);
-  assert.equal((await downPayment(second, { amount: '1.00', proofCount: 0 })).status, 201);
+  assert.equal((await downPayment(first, { proofCount: 0 })).status, 201);
+  assert.equal((await downPayment(second, { proofCount: 0 })).status, 201);
   assert.equal((await Product.findById(product._id)).reservedStock, 4);
   assert.equal((await availabilityFor(first)).body.fulfillment.status, 'Stock Available');
-  assert.equal((await additionalPayment(first, { amount: (first.quotation.total - 1).toFixed(2), proofCount: 0 })).status, 201);
+  assert.equal((await additionalPayment(first, { amount: finalPaymentAmount(first), proofCount: 0 })).status, 201);
   const recorded = await api(`/special-orders/${first._id}/finalize`, { user: admin, method: 'POST', form: finalForm(first.quotation) });
   assert.equal(recorded.status, 201, JSON.stringify(recorded));
 
@@ -2525,8 +2552,8 @@ test('a paid and ready older quotation cannot finalize from a customer tax defau
   body.taxTreatment = 'standard';
   body.items = [{ ...body.items[0], quantity: 1 }];
   const order = await acceptedStockOrder(body);
-  assert.equal((await downPayment(order, { amount: '1.00', proofCount: 0 })).status, 201);
-  assert.equal((await additionalPayment(order, { amount: '124.25', proofCount: 0 })).status, 201);
+  assert.equal((await downPayment(order, { proofCount: 0 })).status, 201);
+  assert.equal((await additionalPayment(order, { amount: finalPaymentAmount(order), proofCount: 0 })).status, 201);
   assert.equal((await availabilityFor(order)).body.fulfillment.status, 'Stock Available');
 
   await Quotation.collection.updateOne({ _id: new mongoose.Types.ObjectId(order.quotation._id) }, { $unset: { 'documentSnapshot.taxTreatment': '' } });
@@ -2555,8 +2582,8 @@ test('a paid and ready older quotation cannot finalize from a customer tax defau
 test('completion rolls back stock deduction and closure on inventory-log failure while retaining the recorded Sale', async () => {
   const { product, body } = await phaseOneFixture();
   const order = await acceptedStockOrder(body);
-  assert.equal((await downPayment(order, { amount: '1.00', proofCount: 0 })).status, 201);
-  assert.equal((await additionalPayment(order, { amount: '279.80', proofCount: 0 })).status, 201);
+  assert.equal((await downPayment(order, { proofCount: 0 })).status, 201);
+  assert.equal((await additionalPayment(order, { amount: finalPaymentAmount(order), proofCount: 0 })).status, 201);
   assert.equal((await sourceCustom(order, body.items[1].itemId, 3)).status, 200);
   assert.equal((await availabilityFor(order)).body.fulfillment.status, 'Stock Available');
   const original = InventoryLog.create;
@@ -2585,8 +2612,8 @@ test('completion preserves VAT-Rated agreed prices and consumes grouped exact-SK
   body.items.push({ ...body.items[0], itemId: randomUUID(), quantity: 1 });
   const order = await acceptedStockOrder(body);
   assert.equal(order.quotation.total, 406.05);
-  assert.equal((await downPayment(order, { amount: '1.00', proofCount: 0 })).status, 201);
-  assert.equal((await additionalPayment(order, { amount: '405.05', proofCount: 0 })).status, 201);
+  assert.equal((await downPayment(order, { proofCount: 0 })).status, 201);
+  assert.equal((await additionalPayment(order, { amount: finalPaymentAmount(order), proofCount: 0 })).status, 201);
   assert.equal((await sourceCustom(order, body.items[1].itemId, 3)).status, 200);
   assert.equal((await availabilityFor(order)).body.fulfillment.status, 'Stock Available');
   const done = await api(`/special-orders/${order._id}/finalize`, { user: admin, method: 'POST', form: finalForm(order.quotation) });
@@ -2624,23 +2651,24 @@ test('completion preserves VAT-Rated agreed prices and consumes grouped exact-SK
   assert.equal((await api(`/special-orders/${order._id}/stock-availability`)).body.fulfillment.status, 'Stock Consumed');
 });
 
-test('custom-only partial and final payments record one Sale without reposting collections or issuing stock', async () => {
+test('custom-only down payment and final settlement record one Sale without reposting collections or issuing stock', async () => {
   const { body } = await phaseOneFixture();
   body.items = [body.items[1]];
   const order = await acceptedStockOrder(body);
-  const before = await downPayment(order, { amount: '1.00', proofCount: 0 });
+  const before = await downPayment(order, { proofCount: 0 });
   assert.equal(before.status, 201, JSON.stringify(before));
   const partial = await additionalPayment(order, { amount: '10.00', proofCount: 0 });
-  assert.equal(partial.status, 201, JSON.stringify(partial));
-  assert.equal(partial.body.ledger.remainingBalanceCentavos, 1930);
+  assert.equal(partial.status, 400, JSON.stringify(partial));
+  assert.equal(partial.body.message, 'The remaining Cash Special Order balance must be settled in one final payment.');
+  assert.equal((await PaymentLedger.findOne({ specialOrder: order._id })).remainingBalanceCentavos, 1515);
   assert.equal(await Sale.countDocuments({ specialOrderId: order._id }), 0);
 
   const requestId = `custom-final:${randomUUID()}`;
-  const missingInvoice = await additionalPayment(order, { amount: '19.30', requestId, proofCount: 0 });
+  const missingInvoice = await additionalPayment(order, { amount: finalPaymentAmount(order), requestId, proofCount: 0 });
   assert.equal(missingInvoice.status, 400, JSON.stringify(missingInvoice));
-  assert.equal((await PaymentLedger.findOne({ specialOrder: order._id })).amountPaidCentavos, 1100);
+  assert.equal((await PaymentLedger.findOne({ specialOrder: order._id })).amountPaidCentavos, 1515);
 
-  const payment = { amount: '19.30', requestId, invoiceNumber: '780003', proofCount: 0 };
+  const payment = { amount: finalPaymentAmount(order), requestId, invoiceNumber: '780003', proofCount: 0 };
   const final = await additionalPayment(order, payment);
   assert.equal(final.status, 201, JSON.stringify(final));
   assert.equal(final.body.ledger.status, 'Fully Paid');
@@ -2664,8 +2692,8 @@ test('custom-only partial and final payments record one Sale without reposting c
   const collections = await api('/special-orders/collections', { user: superadmin });
   assert.equal(collections.status, 200, JSON.stringify(collections));
   const events = collections.body.events.filter((event) => event.specialOrderId === order._id);
-  assert.deepEqual(events.map((event) => event.amountCentavos), [100, 1000, 1930]);
-  assert.deepEqual(events.map((event) => event.type), ['down_payment', 'partial_payment', 'final_payment']);
+  assert.deepEqual(events.map((event) => event.amountCentavos), [1515, 1515]);
+  assert.deepEqual(events.map((event) => event.type), ['down_payment', 'final_payment']);
   assert.equal(events.every((event) => !Number.isNaN(new Date(event.recordedAt).getTime())), true);
 
   const replay = await additionalPayment(order, payment);
@@ -2674,7 +2702,7 @@ test('custom-only partial and final payments record one Sale without reposting c
   assert.equal(replay.body.order.linkedSaleId, final.body.order.linkedSaleId);
   assert.equal((await additionalPayment(order, { ...payment, invoiceNumber: '780004' })).status, 409);
   assert.equal(await Sale.countDocuments({ specialOrderId: order._id }), 1);
-  assert.equal((await PaymentLedger.findOne({ specialOrder: order._id })).payments.length, 3);
+  assert.equal((await PaymentLedger.findOne({ specialOrder: order._id })).payments.length, 2);
   assert.equal((await SpecialOrder.findById(order._id)).status, 'In Progress');
 });
 
@@ -2682,13 +2710,13 @@ test('custom-only final payment accepts a separate Sale document without an invo
   const { body } = await phaseOneFixture();
   body.items = [body.items[1]];
   const order = await acceptedStockOrder(body);
-  assert.equal((await downPayment(order, { amount: '1.00', proofCount: 0 })).status, 201);
-  const invalid = await additionalPayment(order, { amount: '29.30', saleDocument: true, invalidSaleDocument: true, proofCount: 0 });
+  assert.equal((await downPayment(order, { proofCount: 0 })).status, 201);
+  const invalid = await additionalPayment(order, { amount: finalPaymentAmount(order), saleDocument: true, invalidSaleDocument: true, proofCount: 0 });
   assert.equal(invalid.status, 400, JSON.stringify(invalid));
-  assert.equal((await PaymentLedger.findOne({ specialOrder: order._id })).amountPaidCentavos, 100);
+  assert.equal((await PaymentLedger.findOne({ specialOrder: order._id })).amountPaidCentavos, 1515);
   assert.equal(await Sale.countDocuments({ specialOrderId: order._id }), 0);
 
-  const recorded = await additionalPayment(order, { amount: '29.30', saleDocument: true, proofCount: 1 });
+  const recorded = await additionalPayment(order, { amount: finalPaymentAmount(order), saleDocument: true, proofCount: 1 });
   assert.equal(recorded.status, 201, JSON.stringify(recorded));
   const sale = await Sale.findOne({ specialOrderId: order._id });
   assert.equal(sale.transactionReference.referenceNumber, '');
@@ -2706,8 +2734,8 @@ test('custom-only final payment rolls back when Sale creation fails, then retrie
   const { body } = await phaseOneFixture();
   body.items = [body.items[1]];
   const order = await acceptedStockOrder(body);
-  assert.equal((await downPayment(order, { amount: '1.00', proofCount: 0 })).status, 201);
-  const request = { amount: '29.30', requestId: `custom-retry:${randomUUID()}`, invoiceNumber: '780005', proofCount: 0 };
+  assert.equal((await downPayment(order, { proofCount: 0 })).status, 201);
+  const request = { amount: finalPaymentAmount(order), requestId: `custom-retry:${randomUUID()}`, invoiceNumber: '780005', proofCount: 0 };
   const originalCreate = Sale.create;
   Sale.create = async function failSale(rows, options) {
     if (rows?.[0]?.specialOrderId && String(rows[0].specialOrderId) === String(order._id)) throw new Error('Injected Sale failure');
@@ -2717,8 +2745,8 @@ test('custom-only final payment rolls back when Sale creation fails, then retrie
     assert.equal((await additionalPayment(order, request)).status, 500);
   } finally { Sale.create = originalCreate; }
   const ledger = await PaymentLedger.findOne({ specialOrder: order._id });
-  assert.equal(ledger.amountPaidCentavos, 100);
-  assert.equal(ledger.remainingBalanceCentavos, 2930);
+  assert.equal(ledger.amountPaidCentavos, 1515);
+  assert.equal(ledger.remainingBalanceCentavos, 1515);
   assert.equal(ledger.payments.length, 1);
   assert.equal(await Sale.countDocuments({ specialOrderId: order._id }), 0);
   assert.equal((await SpecialOrder.findById(order._id)).linkedSaleId, null);
@@ -2731,12 +2759,12 @@ test('custom-only final payment does not collect or create a Sale when approved 
   const { body } = await phaseOneFixture();
   body.items = [body.items[1]];
   const order = await acceptedStockOrder(body);
-  assert.equal((await downPayment(order, { amount: '1.00', proofCount: 0 })).status, 201);
+  assert.equal((await downPayment(order, { proofCount: 0 })).status, 201);
   await SpecialOrder.updateOne({ _id: order._id }, { $set: { taxTreatment: 'standard' } });
-  const blocked = await additionalPayment(order, { amount: '29.30', invoiceNumber: '780007', proofCount: 0 });
+  const blocked = await additionalPayment(order, { amount: finalPaymentAmount(order), invoiceNumber: '780007', proofCount: 0 });
   assert.equal(blocked.status, 409, JSON.stringify(blocked));
   assert.match(blocked.body.message, /approved tax classification needs review/i);
-  assert.equal((await PaymentLedger.findOne({ specialOrder: order._id })).amountPaidCentavos, 100);
+  assert.equal((await PaymentLedger.findOne({ specialOrder: order._id })).amountPaidCentavos, 1515);
   assert.equal(await Sale.countDocuments({ specialOrderId: order._id }), 0);
 });
 
@@ -2744,8 +2772,8 @@ test('concurrent custom-only final payments create exactly one Sale and collecti
   const { body } = await phaseOneFixture();
   body.items = [body.items[1]];
   const order = await acceptedStockOrder(body);
-  assert.equal((await downPayment(order, { amount: '1.00', proofCount: 0 })).status, 201);
-  const request = { amount: '29.30', requestId: `custom-concurrent:${randomUUID()}`, invoiceNumber: '780006', proofCount: 0 };
+  assert.equal((await downPayment(order, { proofCount: 0 })).status, 201);
+  const request = { amount: finalPaymentAmount(order), requestId: `custom-concurrent:${randomUUID()}`, invoiceNumber: '780006', proofCount: 0 };
   const outcomes = await Promise.all([additionalPayment(order, request), additionalPayment(order, request)]);
   assert.deepEqual(outcomes.map((result) => result.status).sort(), [200, 201]);
   assert.equal(await Sale.countDocuments({ specialOrderId: order._id }), 1);
@@ -2761,9 +2789,9 @@ test('custom-only completion needs no inventory operations; mixed orders still r
   const custom = await acceptedStockOrder(body);
   assert.equal((await stockRequest(custom, 'Reserve', `custom-only-reserve:${randomUUID()}`)).status, 409);
   assert.equal(await StockOperation.countDocuments({ specialOrder: custom._id, action: 'Reserve' }), 0);
-  assert.equal((await downPayment(custom, { amount: '1.00', proofCount: 0 })).status, 201);
+  assert.equal((await downPayment(custom, { proofCount: 0 })).status, 201);
   assert.equal((await api(`/special-orders/${custom._id}/complete`, { user: admin, method: 'POST', body: { requestId: `unpaid-custom-complete:${randomUUID()}` } })).status, 409);
-  const finalPayment = await additionalPayment(custom, { amount: '29.30', invoiceNumber: '780001', proofCount: 0 });
+  const finalPayment = await additionalPayment(custom, { amount: finalPaymentAmount(custom), invoiceNumber: '780001', proofCount: 0 });
   assert.equal(finalPayment.status, 201, JSON.stringify(finalPayment));
   assert.ok(finalPayment.body.order.linkedSaleId);
   const customAvailability = (await availabilityFor(custom)).body;
@@ -2795,8 +2823,8 @@ test('custom-only completion needs no inventory operations; mixed orders still r
 
   const { product, body: mixedBody } = await phaseOneFixture();
   const mixed = await acceptedStockOrder(mixedBody);
-  assert.equal((await downPayment(mixed, { amount: '1.00', proofCount: 0 })).status, 201);
-  assert.equal((await additionalPayment(mixed, { amount: '279.80', proofCount: 0 })).status, 201);
+  assert.equal((await downPayment(mixed, { proofCount: 0 })).status, 201);
+  assert.equal((await additionalPayment(mixed, { amount: finalPaymentAmount(mixed), proofCount: 0 })).status, 201);
   const mixedAvailability = (await availabilityFor(mixed)).body;
   assert.equal(mixedAvailability.fulfillment.status, 'Stock Available');
   assert.equal(mixedAvailability.fulfillment.allItemsReady, true);
@@ -2813,11 +2841,11 @@ test('custom-only final payment refuses an unexpected pre-existing Sale and roll
   const { body } = await phaseOneFixture();
   body.items = [body.items[1]];
   const order = await acceptedStockOrder(body);
-  assert.equal((await downPayment(order, { amount: '1.00', proofCount: 0 })).status, 201);
+  assert.equal((await downPayment(order, { proofCount: 0 })).status, 201);
   await Sale.create({ ...controller.__test.buildSalePayload(await SpecialOrder.findById(order._id), { user: admin }, { quotation: await Quotation.findById(order.quotation._id) }),
     clientRequestId: `unexpected:${randomUUID()}` });
-  assert.equal((await additionalPayment(order, { amount: '29.30', invoiceNumber: '780002', proofCount: 0 })).status, 409);
+  assert.equal((await additionalPayment(order, { amount: finalPaymentAmount(order), invoiceNumber: '780002', proofCount: 0 })).status, 409);
   assert.equal((await SpecialOrder.findById(order._id)).status, 'In Progress');
-  assert.equal((await PaymentLedger.findOne({ specialOrder: order._id })).amountPaidCentavos, 100);
+  assert.equal((await PaymentLedger.findOne({ specialOrder: order._id })).amountPaidCentavos, 1515);
   assert.equal(await Sale.countDocuments({ specialOrderId: order._id }), 1);
 });

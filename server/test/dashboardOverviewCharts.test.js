@@ -149,7 +149,7 @@ test('Dashboard charts use the existing filtered sales sets and bar charts witho
   assert.match(dashboard, /buildDashboardTopSellingProducts\([\s\S]*?processedInventory,[\s\S]*?10/);
   assert.match(dashboard, /topProducts\.slice\(0, 5\)/);
   assert.match(dashboard, /buildDashboardSalesByCategory\(selectedDateTransactions, processedInventory\)/);
-  assert.match(dashboard, /\['products', 'Top Products by Revenue'\]/);
+  assert.match(dashboard, /\['products', 'Top Selling Products'\]/);
   assert.match(dashboard, /<BarChart data=\{topSellingBarData\} layout="vertical"/);
   assert.match(dashboard, /dataKey="revenue"/);
   assert.match(dashboard, /<BarChart data=\{salesByCategory\}/);

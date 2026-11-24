@@ -9,7 +9,7 @@ import { formatCurrency, formatNumber } from '../utils/numberFormat';
 import { DASHBOARD_BAR_ACTIVE_COLOR, DASHBOARD_BAR_COLOR, SALES_ANALYTICS_LINE_STYLE } from '../utils/analyticsChart';
 import { areTopSellingProductRowsStable, buildDashboardSalesByCategory, buildDashboardTopSellingProducts, getBoundedChartTooltipPosition, wrapDashboardCategoryLabel } from '../utils/dashboardOverviewCharts.mjs';
 import { getConfiguredCategoryCount } from '../utils/categorySummary';
-import { listCreditTransactionsApi } from '../services/inventoryApi';
+import { getCreditTransactionsDashboardSnapshotApi } from '../services/inventoryApi';
 import { getOutstandingCreditSummary } from '../utils/creditDueStatus';
 import { getDashboardComparisonPeriod, getMetricTrend, getPreviousPeriodMetrics } from '../utils/dashboardTrend';
 import MetricTrendLine from '../components/MetricTrendLine';
@@ -181,6 +181,8 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
         transactions = [],
         processedInventory = [],
         categories = [],
+        isInventoryLoading,
+        isTransactionsLoading,
         isCategoriesLoading,
         categoriesError,
     } = useInventory();
@@ -208,6 +210,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
     ));
     const [creditTransactions, setCreditTransactions] = useState([]);
     const creditTransactionsRequestRef = React.useRef(0);
+    const [isCreditSnapshotLoading, setIsCreditSnapshotLoading] = useState(true);
     // helper for currency display (show or mask based on toggle)
     const formatMoney = (amount) => {
         if (!showFinancials) return '₱ ••••••';
@@ -254,12 +257,14 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
         const loadCreditTransactions = async () => {
             const requestId = ++creditTransactionsRequestRef.current;
             try {
-                const rows = await listCreditTransactionsApi({ status: 'All' });
+                const rows = await getCreditTransactionsDashboardSnapshotApi();
                 if (isMounted && requestId === creditTransactionsRequestRef.current) {
                     setCreditTransactions(Array.isArray(rows) ? rows : []);
                 }
             } catch {
                 // Keep the last successful dashboard snapshot until the next resync.
+            } finally {
+                if (isMounted && requestId === creditTransactionsRequestRef.current) setIsCreditSnapshotLoading(false);
             }
         };
         let refreshTimer = null;
@@ -389,7 +394,6 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
             // Sync Recharts animation state before paint so values-only updates start smoothly.
             const nextAnimationKey = canAnimateValues ? topSellingChartKey : null;
             if (topSellingAnimationKey !== nextAnimationKey) {
-                // eslint-disable-next-line react-hooks/set-state-in-effect
                 setTopSellingAnimationKey(nextAnimationKey);
             }
         } else if ((prefersReducedMotion || isTopSellingChartResizing) && topSellingAnimationKey !== null) {
@@ -556,6 +560,13 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
         [cashierSelectedDateTransactions]
     );
     const cashierTransactionCount = cashierSelectedDateTransactions.length;
+    const totalProductsDisplay = isInventoryLoading ? '—' : totalProducts.toString();
+    const selectedSalesDisplay = isTransactionsLoading ? '—' : formatMoney(selectedDateSales);
+    const selectedOrdersDisplay = isTransactionsLoading ? '—' : selectedDateOrders.toString();
+    const inventorySellingValueDisplay = isInventoryLoading ? '—' : formatMoney(totalInventorySellingValue);
+    const cashierSalesDisplay = isTransactionsLoading ? '—' : formatCurrency(cashierSalesTotal);
+    const cashierOrdersDisplay = isTransactionsLoading ? '—' : cashierTransactionCount.toString();
+    const lowStockCountDisplay = isInventoryLoading ? '—' : String(lowStockCount);
     // Compute sales by product category (revenue = price * qty)
     const salesByCategory = useMemo(() => isSuperAdmin
         ? buildDashboardSalesByCategory(selectedDateTransactions, processedInventory)
@@ -567,7 +578,6 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
         if (activeAnalyticsView !== 'categories' || !container) {
             if (categoryChartInitialDimension !== null) {
                 // Reset so reopening the tab uses its current container dimensions.
-                // eslint-disable-next-line react-hooks/set-state-in-effect
                 setCategoryChartInitialDimension(null);
             }
             return;
@@ -697,7 +707,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                         <>
                             <StatCard
                                 title="My Sales"
-                                value={formatCurrency(cashierSalesTotal)}
+                                value={cashierSalesDisplay}
                                 icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 17l6-6 4 4 7-7" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14 8h6v6" /></svg>}
                                 color="green"
                                 onClick={() => onNavigate && onNavigate('History Logs')}
@@ -708,7 +718,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                             />
                             <StatCard
                                 title="My Transactions"
-                                value={cashierTransactionCount.toString()}
+                                value={cashierOrdersDisplay}
                                 icon={<ReceiptText />}
                                 color="amber"
                                 onClick={() => onNavigate && onNavigate('History Logs')}
@@ -719,7 +729,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                             />
                             <StatCard
                                 title="Total Products"
-                                value={processedInventory.length.toString()}
+                                value={totalProductsDisplay}
                                 icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7h18M3 12h18M3 17h18"/></svg>}
                                 color="gray"
                                 onClick={() => onNavigate && onNavigate('Product Master List')}
@@ -744,7 +754,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                         <>
                             <StatCard
                                 title="Total Sales"
-                                value={formatMoney(selectedDateSales)}
+                                value={selectedSalesDisplay}
                                 subtitle={previousPeriod ? <MetricTrendLine trend={salesTrend} label={previousPeriod.label} formatDelta={formatCurrency} /> : null}
                                 subtitleClassName="whitespace-nowrap"
                                 icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 17l6-6 4 4 7-7" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14 8h6v6" /></svg>}
@@ -756,12 +766,12 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                                 valueClassName="text-[21px] leading-tight"
                             />
 
-                            <StatCard title="Total Orders" value={selectedDateOrders.toString()} subtitle={previousPeriod ? <MetricTrendLine trend={ordersTrend} label={previousPeriod.label} formatDelta={formatNumber} unit=" orders" /> : null} subtitleClassName="whitespace-nowrap" icon={<ReceiptText />} color="amber" onClick={() => onNavigate && onNavigate('History Logs')} refined metricHierarchy titleClassName="text-[13px]" valueClassName="text-[21px] leading-tight" />
+                            <StatCard title="Total Orders" value={selectedOrdersDisplay} subtitle={previousPeriod ? <MetricTrendLine trend={ordersTrend} label={previousPeriod.label} formatDelta={formatNumber} unit=" orders" /> : null} subtitleClassName="whitespace-nowrap" icon={<ReceiptText />} color="amber" onClick={() => onNavigate && onNavigate('History Logs')} refined metricHierarchy titleClassName="text-[13px]" valueClassName="text-[21px] leading-tight" />
 
                             <StatCard
                                 title="Outstanding Credit"
-                                value={formatMoney(outstandingCredit.outstandingBalance)}
-                                subtitle={`${outstandingCredit.openCount} open · ${outstandingCredit.overdueCount} overdue`}
+                                value={isCreditSnapshotLoading ? '—' : formatMoney(outstandingCredit.outstandingBalance)}
+                                subtitle={isCreditSnapshotLoading ? 'Loading credit summary' : `${outstandingCredit.openCount} open · ${outstandingCredit.overdueCount} overdue`}
                                 icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h18M7 15h2m3 0h5M5 5h14a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2z" /></svg>}
                                 color="gray"
                                 onClick={() => onNavigate && onNavigate('Credit Transactions')}
@@ -775,7 +785,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                             <StatCard
                                 title="Active Inventory Selling Value"
                                 tooltip="Selling-price value of physical stock for active products, including reserved quantities. Not inventory cost."
-                                value={formatMoney(totalInventorySellingValue)}
+                                value={inventorySellingValueDisplay}
                                 icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7.5A2.5 2.5 0 015.5 5h11A2.5 2.5 0 0119 7.5V8h1.5A1.5 1.5 0 0122 9.5v7a1.5 1.5 0 01-1.5 1.5H5.5A2.5 2.5 0 013 15.5v-8z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 8v7"/><circle cx="16" cy="12.5" r="1" fill="currentColor" stroke="none"/></svg>}
                                 color="indigo"
                                 onClick={() => onNavigate && onNavigate('Reports')}
@@ -789,7 +799,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                         <>
                             <StatCard
                                 title="Total Products"
-                                value={totalProducts.toString()}
+                                value={totalProductsDisplay}
                                 icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7h18M3 12h18M3 17h18"/></svg>}
                                 color="gray"
                                 onClick={() => onNavigate && onNavigate('Product Master List')}
@@ -800,7 +810,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                             />
                             <StatCard
                                 title="Orders"
-                                value={selectedDateOrders.toString()}
+                                value={selectedOrdersDisplay}
                                 icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/></svg>}
                                 color="amber"
                                 onClick={() => onNavigate && onNavigate('History Logs')}
@@ -812,7 +822,7 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                             <StatCard
                                 title="Active Inventory Selling Value"
                                 tooltip="Selling-price value of physical stock for active products, including reserved quantities. Not inventory cost."
-                                value={formatMoney(totalInventorySellingValue)}
+                                value={inventorySellingValueDisplay}
                                 icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7.5A2.5 2.5 0 015.5 5h11A2.5 2.5 0 0119 7.5V8h1.5A1.5 1.5 0 0122 9.5v7a1.5 1.5 0 01-1.5 1.5H5.5A2.5 2.5 0 013 15.5v-8z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 8v7"/><circle cx="16" cy="12.5" r="1" fill="currentColor" stroke="none"/></svg>}
                                 color="indigo"
                                 onClick={() => onNavigate && onNavigate('Reports')}
@@ -878,10 +888,12 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                             <div className="bg-white p-0 rounded-xl shadow-sm border border-gray-100 flex flex-col relative overflow-hidden w-1/2 h-full min-h-0">
                                 <div className="px-4 py-2 border-b border-gray-100 flex justify-between items-center shrink-0">
                                     <h3 className="text-sm font-semibold text-slate-800 flex items-center gap-2"><svg className="w-3.5 h-3.5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>Low / Out of Stock</h3>
-                                    <span className="bg-gray-100 text-gray-700 text-[9px] font-medium px-1.5 py-0.5 rounded-full">{lowStockCount} Items</span>
+                                    <span className="bg-gray-100 text-gray-700 text-[9px] font-medium px-1.5 py-0.5 rounded-full">{lowStockCountDisplay} Items</span>
                                 </div>
                                 <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-2">
-                                    {lowStockItems.length === 0 ? (
+                                    {isInventoryLoading ? (
+                                        <div className="flex h-full items-center justify-center text-xs text-gray-400">Loading stock status...</div>
+                                    ) : lowStockItems.length === 0 ? (
                                         <div className="flex flex-col items-center justify-center h-full text-gray-400"><svg className="w-8 h-8 mb-1 text-gray-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg><p className="text-xs font-medium">All stocked</p></div>
                                     ) : (
                                         <div className="space-y-1">
@@ -1066,14 +1078,16 @@ const DashboardHome = ({ onViewAllProducts, onNavigate }) => {
                                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 px-3 py-2 shrink-0">
                                     <h3 className="text-sm font-semibold text-slate-800 flex items-center gap-2"><span className="p-1.5 bg-gray-100 rounded-lg text-slate-500"><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg></span>Low / Out of Stock</h3>
                                     <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-                                        <span className="whitespace-nowrap rounded-full bg-gray-900 px-1.5 py-0.5 text-[9px] font-medium text-white">{lowStockCount} Items</span>
+                                        <span className="whitespace-nowrap rounded-full bg-gray-900 px-1.5 py-0.5 text-[9px] font-medium text-white">{lowStockCountDisplay} Items</span>
                                         <button type="button" onClick={() => onNavigate?.('Inventory')} className="inline-flex items-center gap-1 rounded-md px-1 py-1 text-[10px] font-medium text-slate-600 transition-colors hover:bg-gray-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-1">
                                             View Inventory <span aria-hidden="true">→</span>
                                         </button>
                                     </div>
                                 </div>
                                 <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-1.5">
-                                    {lowStockItems.length === 0 ? (
+                                    {isInventoryLoading ? (
+                                        <div className="flex h-full items-center justify-center text-xs text-gray-400">Loading stock status...</div>
+                                    ) : lowStockItems.length === 0 ? (
                                         <div className="flex flex-col items-center justify-center h-full text-gray-400"><svg className="w-8 h-8 mb-1 text-gray-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg><p className="text-xs font-medium">All stocked</p></div>
                                     ) : (
                                         <div className="space-y-1">

@@ -1,6 +1,7 @@
 const express = require('express');
 const {
   listCreditTransactions,
+  getCreditTransactionsDashboardSnapshot,
   getCustomerOverdueHistory,
   getCreditTransactionsSummary,
   getCreditTransactionById,
@@ -18,6 +19,7 @@ const { uploadCreditPaymentProof } = require('../middleware/creditProofUploadMid
 const router = express.Router();
 
 router.get('/', requireAuth, authorizeRoles('superadmin', 'admin', 'cashier'), listCreditTransactions);
+router.get('/dashboard-snapshot', requireAuth, authorizeRoles('superadmin', 'admin', 'cashier'), getCreditTransactionsDashboardSnapshot);
 router.get('/customer-overdue-history', requireAuth, authorizeRoles('superadmin', 'admin', 'cashier'), getCustomerOverdueHistory);
 router.get('/summary', requireAuth, authorizeRoles('superadmin', 'admin', 'cashier'), getCreditTransactionsSummary);
 router.get('/:id', requireAuth, authorizeRoles('superadmin', 'admin', 'cashier'), getCreditTransactionById);

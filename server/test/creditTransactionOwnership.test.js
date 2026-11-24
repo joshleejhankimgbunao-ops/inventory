@@ -96,6 +96,8 @@ test.before(async () => {
   await createCreditFixture('owner', users.owner);
   await createCreditFixture('other', users.otherCashier);
   await createCreditFixture('legacy', users.owner, { legacy: true });
+  await createCreditFixture('voided', users.owner);
+  await Sale.collection.updateOne({ _id: sales.voided._id }, { $set: { status: 'voided' } });
 
   const app = express();
   app.use(express.json());
@@ -136,7 +138,10 @@ const request = async (route, key) => {
 test('Cashier list and details use the linked Sale cashier ObjectId as the same ownership rule', async () => {
   const listed = await request('/credit-transactions', 'owner');
   assert.equal(listed.status, 200);
-  assert.deepEqual(listed.body.map((entry) => entry._id), [String(credits.owner._id)]);
+  assert.deepEqual(
+    listed.body.map((entry) => entry._id).sort(),
+    [String(credits.owner._id), String(credits.voided._id)].sort(),
+  );
 
   const detail = await request(`/credit-transactions/${credits.owner._id}`, 'owner');
   assert.equal(detail.status, 200);
@@ -158,5 +163,19 @@ test('Admin and Super Admin retain access to other and legacy Credit Transaction
   for (const role of ['admin', 'superadmin']) {
     assert.equal((await request(`/credit-transactions/${credits.other._id}`, role)).status, 200);
     assert.equal((await request(`/credit-transactions/${credits.legacy._id}`, role)).status, 200);
+  }
+});
+
+test('Dashboard snapshot returns only compact credit fields and preserves linked void-sale status', async () => {
+  const snapshot = await request('/credit-transactions/dashboard-snapshot', 'owner');
+  assert.equal(snapshot.status, 200);
+  assert.equal(snapshot.body.length, 2, 'cashier snapshot follows the linked-sale ownership rule');
+  assert.ok(snapshot.body.some((row) => row.saleStatus === 'voided'));
+  assert.ok(snapshot.body.some((row) => row.saleStatus === 'completed'));
+  for (const row of snapshot.body) {
+    assert.deepEqual(Object.keys(row).sort(), ['dueDate', 'remainingBalance', 'saleStatus', 'status']);
+    assert.equal(typeof row.remainingBalance, 'number');
+    assert.equal(Object.prototype.hasOwnProperty.call(row, 'paymentHistory'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(row, 'customerName'), false);
   }
 });

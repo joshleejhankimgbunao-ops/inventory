@@ -18,6 +18,7 @@ import {
 } from '../utils/offlineTransactionSync';
 import {
     listProductsApi,
+    listProductImagesApi,
     createSaleApi,
     listCategoriesApi,
     listSalesHistoryViewApi,
@@ -40,6 +41,7 @@ const INVENTORY_FALLBACK = {
     setActivityLogs: () => {},
     logActivity: () => {},
     processedInventory: [],
+    ensureInventoryImages: async () => false,
     logAction: () => {},
     handleResetHistory: () => {},
     renameUserReferences: () => {},
@@ -58,9 +60,11 @@ const INVENTORY_FALLBACK = {
     isInventoryLogsLoading: false,
     inventoryLogsError: null,
     retryInventoryLogs: () => {},
+    ensureInventoryLogs: async () => false,
     isActivityLogsLoading: false,
     activityLogsError: null,
     retryActivityLogs: () => {},
+    ensureActivityLogs: async () => false,
     isPageDataLoading: false,
 };
 
@@ -81,6 +85,28 @@ const getTransactionsCacheScope = (userId, username) => {
 const getTransactionsCacheKey = (scope) => (
     scope ? `${TRANSACTIONS_CACHE_PREFIX}${scope}` : ''
 );
+
+const mergeCachedProductImages = (products, previousProducts, imageCache) => {
+    const previousByIdentity = new Map();
+    for (const product of Array.isArray(previousProducts) ? previousProducts : []) {
+        const imageUrl = String(product?.imageUrl || '');
+        if (!imageUrl) continue;
+        if (product.id) previousByIdentity.set(`id:${product.id}`, imageUrl);
+        if (product.code) previousByIdentity.set(`sku:${product.code}`, imageUrl);
+    }
+
+    return (Array.isArray(products) ? products : []).map((product) => {
+        const idKey = product.id ? `id:${product.id}` : '';
+        const skuKey = product.code ? `sku:${product.code}` : '';
+        const imageUrl = String(product.imageUrl || '')
+            || imageCache.current.get(idKey)
+            || imageCache.current.get(skuKey)
+            || previousByIdentity.get(idKey)
+            || previousByIdentity.get(skuKey)
+            || '';
+        return imageUrl === product.imageUrl ? product : { ...product, imageUrl };
+    });
+};
 
 const readTransactionsCache = (scope) => {
     const cacheKey = getTransactionsCacheKey(scope);
@@ -138,13 +164,100 @@ export const InventoryProvider = ({ children }) => {
     };
     const inventoryRef = useRef([]);
     const inventoryRequestSequenceRef = useRef(0);
+    const productImagesByIdentityRef = useRef(new Map());
+    const productImagesLoadedRef = useRef(false);
+    const productImagesRequestedRef = useRef(false);
+    const productImagesInFlightRef = useRef(null);
+    const productImagesRefreshPendingRef = useRef(false);
+    const productImagesRequestSequenceRef = useRef(0);
+    const productImagesSessionKey = `${currentAuthUserId || ''}:${currentAuthUsername || ''}`;
+    const productImagesSessionKeyRef = useRef(productImagesSessionKey);
     const transactionsRequestSequenceRef = useRef(0);
     const activityLogsRequestSequenceRef = useRef(0);
     const inventoryLogsRequestSequenceRef = useRef(0);
+    const activityLogsRequestedRef = useRef(false);
+    const inventoryLogsRequestedRef = useRef(false);
+    const logRequestSessionKey = `${currentAuthUserId || ''}:${currentAuthUsername || ''}:${userRole || ''}:${Boolean(getAuthToken())}`;
+    const logRequestSessionKeyRef = useRef(logRequestSessionKey);
+
+    useEffect(() => {
+        if (logRequestSessionKeyRef.current === logRequestSessionKey) return;
+        logRequestSessionKeyRef.current = logRequestSessionKey;
+        activityLogsRequestedRef.current = false;
+        inventoryLogsRequestedRef.current = false;
+        activityLogsRequestSequenceRef.current += 1;
+        inventoryLogsRequestSequenceRef.current += 1;
+        setActivityLogs([]);
+        setActivityLogsError(null);
+        setIsActivityLogsLoading(false);
+        setInventoryLogs([]);
+        setInventoryLogsError(null);
+        setIsInventoryLogsLoading(false);
+    }, [logRequestSessionKey]);
 
     useEffect(() => {
         inventoryRef.current = inventory;
     }, [inventory]);
+
+    useEffect(() => {
+        if (productImagesSessionKeyRef.current === productImagesSessionKey) return;
+        productImagesSessionKeyRef.current = productImagesSessionKey;
+        productImagesRequestSequenceRef.current += 1;
+        productImagesLoadedRef.current = false;
+        productImagesRequestedRef.current = false;
+        productImagesInFlightRef.current = null;
+        productImagesRefreshPendingRef.current = false;
+        productImagesByIdentityRef.current.clear();
+    }, [productImagesSessionKey]);
+
+    const ensureInventoryImages = useCallback(({ force = false } = {}) => {
+        productImagesRequestedRef.current = true;
+        if (!force && productImagesLoadedRef.current) return Promise.resolve(true);
+        if (productImagesInFlightRef.current) {
+            if (force) productImagesRefreshPendingRef.current = true;
+            return productImagesInFlightRef.current;
+        }
+
+        const requestSequence = ++productImagesRequestSequenceRef.current;
+        const sessionKey = productImagesSessionKeyRef.current;
+        const request = listProductImagesApi()
+            .then((rows) => {
+                if (requestSequence !== productImagesRequestSequenceRef.current
+                    || sessionKey !== productImagesSessionKeyRef.current) return false;
+
+                const imageByIdentity = new Map();
+                for (const row of rows) {
+                    const imageUrl = String(row?.imageUrl || '');
+                    if (row?.id) imageByIdentity.set(`id:${row.id}`, imageUrl);
+                    if (row?.code) imageByIdentity.set(`sku:${row.code}`, imageUrl);
+                }
+                productImagesByIdentityRef.current = imageByIdentity;
+                setInventory((previous) => previous.map((product) => {
+                    const idKey = product.id ? `id:${product.id}` : '';
+                    const skuKey = product.code ? `sku:${product.code}` : '';
+                    const imageUrl = imageByIdentity.has(idKey)
+                        ? imageByIdentity.get(idKey)
+                        : imageByIdentity.get(skuKey);
+                    return imageUrl === undefined || imageUrl === product.imageUrl
+                        ? product
+                        : { ...product, imageUrl };
+                }));
+                productImagesLoadedRef.current = true;
+                return true;
+            })
+            .catch(() => false)
+            .finally(() => {
+                if (productImagesInFlightRef.current === request) {
+                    productImagesInFlightRef.current = null;
+                    if (productImagesRefreshPendingRef.current) {
+                        productImagesRefreshPendingRef.current = false;
+                        void ensureInventoryImages({ force: true });
+                    }
+                }
+            });
+        productImagesInFlightRef.current = request;
+        return request;
+    }, []);
 
      useEffect(() => {
         let isMounted = true;
@@ -165,9 +278,9 @@ export const InventoryProvider = ({ children }) => {
 
             const requestSequence = ++inventoryRequestSequenceRef.current;
             try {
-                const remoteProducts = await listProductsApi();
+                const remoteProducts = await listProductsApi({ includeImages: false });
                 if (isMounted && requestSequence === inventoryRequestSequenceRef.current && Array.isArray(remoteProducts)) {
-                    setInventory(remoteProducts);
+                    setInventory((previous) => mergeCachedProductImages(remoteProducts, previous, productImagesByIdentityRef));
                     setInventoryLoadError(null);
                 }
             } catch (error) {
@@ -448,12 +561,13 @@ export const InventoryProvider = ({ children }) => {
 
             try {
                 const previousInventory = inventoryRef.current;
-                const remoteProducts = await listProductsApi();
+                const remoteProducts = await listProductsApi({ includeImages: false });
                 if (!disposed && requestSequence === inventoryRequestSequenceRef.current && Array.isArray(remoteProducts)) {
-                    setInventory(remoteProducts);
+                    const nextInventory = mergeCachedProductImages(remoteProducts, previousInventory, productImagesByIdentityRef);
+                    setInventory(nextInventory);
                     setInventoryLoadError(null);
                     if (notifyTransitions) {
-                        showStockTransitionAlerts(previousInventory, remoteProducts);
+                        showStockTransitionAlerts(previousInventory, nextInventory);
                     }
                 }
             } catch (error) {
@@ -469,12 +583,17 @@ export const InventoryProvider = ({ children }) => {
             }
         };
 
-        const onInventoryUpdated = () => {
+        const onInventoryUpdated = (event) => {
             void refreshInventory({ notifyTransitions: true });
+            let payload = {};
+            try { payload = JSON.parse(event?.data || '{}'); } catch { /* Ignore malformed event data. */ }
+            if (productImagesRequestedRef.current && ['product.created', 'product.updated'].includes(payload.reason)) {
+                void ensureInventoryImages({ force: true });
+            }
         };
 
         const refreshActivityLogs = async () => {
-            if (disposed) return;
+            if (disposed || !activityLogsRequestedRef.current) return;
             if (isActivityLogsRefreshInFlight) {
                 activityLogsRefreshPending = true;
                 return;
@@ -501,7 +620,7 @@ export const InventoryProvider = ({ children }) => {
         };
 
         const refreshInventoryLogs = async () => {
-            if (disposed) return;
+            if (disposed || !inventoryLogsRequestedRef.current) return;
             if (isInventoryLogsRefreshInFlight) {
                 inventoryLogsRefreshPending = true;
                 return;
@@ -538,8 +657,8 @@ export const InventoryProvider = ({ children }) => {
         const refreshSaleRelatedState = () => {
             void refreshTransactions();
             void refreshInventory();
-            void refreshActivityLogs();
-            void refreshInventoryLogs();
+            if (activityLogsRequestedRef.current) void refreshActivityLogs();
+            if (inventoryLogsRequestedRef.current) void refreshInventoryLogs();
         };
 
         const unsubscribeSaleCreated = subscribeRealtimeEvent('sale.created', onSaleCreated);
@@ -558,20 +677,29 @@ export const InventoryProvider = ({ children }) => {
             unsubscribeActivityLogged();
             unsubscribeInventoryLogged();
         };
-    }, [appSettings, userRole, currentAuthUsername, currentAuthUserId, transactionsCacheScope, ROLES]);
+    }, [appSettings, userRole, currentAuthUsername, currentAuthUserId, transactionsCacheScope, ROLES, ensureInventoryImages]);
      
      // 3. Inventory Logs State (backend-first)
      const [inventoryLogs, setInventoryLogs] = useState([]);
-    const [isInventoryLogsLoading, setIsInventoryLogsLoading] = useState(true);
+    const [isInventoryLogsLoading, setIsInventoryLogsLoading] = useState(false);
     const [inventoryLogsError, setInventoryLogsError] = useState(null);
     const [inventoryLogsRetryVersion, setInventoryLogsRetryVersion] = useState(0);
     const retryInventoryLogs = () => {
+        inventoryLogsRequestedRef.current = true;
         setIsInventoryLogsLoading(true);
         setInventoryLogsError(null);
         setInventoryLogsRetryVersion((version) => version + 1);
     };
+    const ensureInventoryLogs = useCallback(() => {
+        if (inventoryLogsRequestedRef.current) return;
+        inventoryLogsRequestedRef.current = true;
+        setIsInventoryLogsLoading(true);
+        setInventoryLogsError(null);
+        setInventoryLogsRetryVersion((version) => version + 1);
+    }, []);
 
      useEffect(() => {
+        if (!inventoryLogsRequestedRef.current) return undefined;
         let isMounted = true;
 
         const loadRemoteInventoryLogs = async () => {
@@ -610,7 +738,7 @@ export const InventoryProvider = ({ children }) => {
         return () => {
             isMounted = false;
         };
-    }, [userRole, currentAuthUsername, inventoryLogsRetryVersion]);
+    }, [userRole, currentAuthUsername, logRequestSessionKey, inventoryLogsRetryVersion]);
 
      // 3.1 Sync Queue State (Offline Config)
      const [syncQueue, setSyncQueue] = useState([]);
@@ -704,9 +832,9 @@ export const InventoryProvider = ({ children }) => {
                     // The queued sale is already accepted. A follow-up refresh failure
                     // must not restore/retry that successfully synchronized sale.
                     try {
-                        const remoteProducts = await listProductsApi();
+                        const remoteProducts = await listProductsApi({ includeImages: false });
                         if (Array.isArray(remoteProducts) && remoteProducts.length > 0) {
-                            setInventory(remoteProducts);
+                            setInventory((previous) => mergeCachedProductImages(remoteProducts, previous, productImagesByIdentityRef));
                         }
                     } catch (refreshError) {
                         console.warn('Offline sale synchronized, but inventory refresh failed:', refreshError);
@@ -766,16 +894,25 @@ export const InventoryProvider = ({ children }) => {
 
      // 4. Activity Logs (backend-first)
      const [activityLogs, setActivityLogs] = useState([]);
-    const [isActivityLogsLoading, setIsActivityLogsLoading] = useState(true);
+    const [isActivityLogsLoading, setIsActivityLogsLoading] = useState(false);
     const [activityLogsError, setActivityLogsError] = useState(null);
     const [activityLogsRetryVersion, setActivityLogsRetryVersion] = useState(0);
     const retryActivityLogs = () => {
+        activityLogsRequestedRef.current = true;
         setIsActivityLogsLoading(true);
         setActivityLogsError(null);
         setActivityLogsRetryVersion((version) => version + 1);
     };
+    const ensureActivityLogs = useCallback(() => {
+        if (activityLogsRequestedRef.current) return;
+        activityLogsRequestedRef.current = true;
+        setIsActivityLogsLoading(true);
+        setActivityLogsError(null);
+        setActivityLogsRetryVersion((version) => version + 1);
+    }, []);
 
      useEffect(() => {
+        if (!activityLogsRequestedRef.current) return undefined;
         let isMounted = true;
 
         const loadRemoteActivityLogs = async () => {
@@ -815,7 +952,7 @@ export const InventoryProvider = ({ children }) => {
         return () => {
             isMounted = false;
         };
-    }, [userRole, currentAuthUsername, activityLogsRetryVersion]);
+    }, [userRole, currentAuthUsername, logRequestSessionKey, activityLogsRetryVersion]);
 
      useEffect(() => {
         if (!preferredSuperAdminName || normalizeName(preferredSuperAdminName) === 'admin user') {
@@ -1025,6 +1162,7 @@ export const InventoryProvider = ({ children }) => {
             activityLogs, setActivityLogs,
             logActivity,
             processedInventory,
+            ensureInventoryImages,
             logAction,
             handleResetHistory,
             categories,
@@ -1047,9 +1185,11 @@ export const InventoryProvider = ({ children }) => {
             isInventoryLogsLoading,
             inventoryLogsError,
             retryInventoryLogs,
+            ensureInventoryLogs,
             isActivityLogsLoading,
             activityLogsError,
             retryActivityLogs,
+            ensureActivityLogs,
             isPageDataLoading
         }}>
             {children}

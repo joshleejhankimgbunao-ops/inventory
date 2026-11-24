@@ -121,9 +121,11 @@ export const AuthProvider = ({ children }) => {
 
     // 2. App Settings (backend-first)
     const [appSettings, setAppSettings] = useState(DEFAULT_APP_SETTINGS);
+    const appSettingsRef = useRef(appSettings);
+    appSettingsRef.current = appSettings;
     const [userPreferences, setUserPreferences] = useState(DEFAULT_USER_PREFERENCES);
     const [isSettingsLoading, setIsSettingsLoading] = useState(true);
-    const [isSessionHydrating, setIsSessionHydrating] = useState(true);
+    const [isSessionHydrating, setIsSessionHydrating] = useState(() => Boolean(getAuthToken()));
     const [hasHydratedUserPreferences, setHasHydratedUserPreferences] = useState(false);
 
     useEffect(() => {
@@ -333,7 +335,7 @@ export const AuthProvider = ({ children }) => {
     const canViewPage = (page) => canAccess(userRole, page);
 
     // avatar for current session – keep as state so role-stable switches refresh
-    const computeAvatar = () => {
+    const computeAvatar = useCallback(() => {
         const sessionAvatar = sessionStorage.getItem('userAvatar');
         if (sessionAvatar) {
             return sessionAvatar;
@@ -344,15 +346,21 @@ export const AuthProvider = ({ children }) => {
         }
 
         return null;
-    };
+    }, [appSettings.avatar, userRole]);
 
     const [currentUserAvatar, setCurrentUserAvatar] = useState(() => computeAvatar());
     useEffect(() => {
         setCurrentUserAvatar(computeAvatar());
-    }, [userRole, currentUserName, currentAuthUsername, appSettings]);
+    }, [computeAvatar]);
 
     useEffect(() => {
         let isMounted = true;
+
+        if (!getAuthToken()) {
+            return () => {
+                isMounted = false;
+            };
+        }
 
         const hydrateCurrentUserFromBackend = async () => {
             try {
@@ -401,7 +409,7 @@ export const AuthProvider = ({ children }) => {
                     setCurrentUserAvatar(backendAvatar);
                 } else {
                     sessionStorage.removeItem('userAvatar');
-                    setCurrentUserAvatar(isSuperAdminAccount ? (appSettings.avatar || null) : null);
+                    setCurrentUserAvatar(isSuperAdminAccount ? (appSettingsRef.current.avatar || null) : null);
                 }
             } catch {
                 // Keep session fallback values when user hydration is unavailable.
@@ -417,7 +425,7 @@ export const AuthProvider = ({ children }) => {
         return () => {
             isMounted = false;
         };
-    }, [appSettings.avatar]);
+    }, []);
 
     const resolveAvatarForSession = (roleOverride) => {
         const sessionAvatar = sessionStorage.getItem('userAvatar');
@@ -438,6 +446,9 @@ export const AuthProvider = ({ children }) => {
         const nextName = name || currentUserName;
         const nextFullName = String(fullName || currentUserFullName || nextName || '').trim() || 'User';
         const nextMustChangeCredentials = Boolean(mustChangeCredentialsOverride);
+        // Login/PIN verification already returned the authenticated identity.
+        // Do not hold the Dashboard behind a second /me request after success.
+        setIsSessionHydrating(false);
         setUserPreferences(mergeUserPreferences(preferences));
         setHasHydratedUserPreferences(true);
 
@@ -511,6 +522,7 @@ export const AuthProvider = ({ children }) => {
         setCurrentAuthUsername('');
         setCurrentAuthUserId('');
         setMustChangeCredentials(false);
+        setIsSessionHydrating(false);
         setUserPreferences(DEFAULT_USER_PREFERENCES);
         setHasHydratedUserPreferences(false);
         setAppSettings(DEFAULT_APP_SETTINGS);
