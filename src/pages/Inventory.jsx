@@ -15,6 +15,7 @@ import ExpiryMonitoring from '../components/ExpiryMonitoring';
 import ExpiryBatchRemovalSelector from '../components/ExpiryBatchRemovalSelector';
 import ExpiryBatchVerificationForm from '../components/ExpiryBatchVerificationForm';
 import InventoryProductDetails from '../components/InventoryProductDetails';
+import RemoteProductImage from '../components/RemoteProductImage';
 import ProductDetailsModalShell from '../components/ProductDetailsModalShell';
 import { getStockStatus } from '../utils/recommendationLogic';
 import { formatNumber } from '../utils/numberFormat';
@@ -452,7 +453,7 @@ const Inventory = () => {
             setExpiryVerificationProduct((current) => ({ ...current, ...result }));
             if (expiryVerificationProduct.inlineStockFlow) {
                 if (expiryVerificationProduct.activationPreview) {
-                    const freshProducts = await listProductsApi();
+                    const freshProducts = await listProductsApi({ includeImages: false });
                     const freshItem = freshProducts.find((item) => String(item.id) === String(expiryVerificationProduct.productId));
                     if (freshItem) {
                         setInventory((previous) => previous.map((item) => String(item.id) === String(freshItem.id) ? freshItem : item));
@@ -518,7 +519,7 @@ const Inventory = () => {
         const requestSequence = ++expiryBatchRequestSequenceRef.current;
         setStockDetailsSyncStatus('loading');
         try {
-            const productsResult = await listProductsApi();
+            const productsResult = await listProductsApi({ includeImages: false });
             if (requestSequence !== expiryBatchRequestSequenceRef.current) return;
             const freshItem = (Array.isArray(productsResult) ? productsResult : []).find((item) => String(item.id || item._id || '') === String(productId));
             if (!freshItem) throw new Error('Product details are unavailable. Refresh and try again.');
@@ -1439,32 +1440,14 @@ const Inventory = () => {
                                         <IdentifierChip>{item.code}</IdentifierChip>
                                     </td>
                                     <td className="px-3 py-1.5 text-center border border-gray-200 dark:border-gray-700">
-                                        {getProductImageUrl(item) ? (
-                                            <button
-                                                type="button"
-                                                onClick={() => openProductImagePreview(item)}
-                                                className="group/photo mx-auto relative flex h-10 w-10 items-center justify-center overflow-hidden rounded-lg border border-gray-200 bg-gray-100 transition-transform duration-150 hover:scale-105 focus:outline-none focus:ring-2 focus:ring-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:focus:ring-gray-300"
-                                                aria-label={`Enlarge image for ${item._displayName || item.name || item.code || 'product'}`}
-                                            >
-                                                <img
-                                                    src={getProductImageUrl(item)}
-                                                    alt={item._displayName || item.name || item.code || 'Product'}
-                                                    className="h-full w-full object-cover transition-all duration-200 group-hover/photo:scale-110 group-hover/photo:opacity-35 group-hover/photo:blur-[1.5px]"
-                                                    loading="lazy"
-                                                />
-                                                <div className="absolute inset-0 flex items-center justify-center pointer-events-none bg-black/0 opacity-0 transition-all duration-150 group-hover/photo:bg-black/45 group-hover/photo:opacity-100">
-                                                    <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/92 text-gray-900 shadow-md ring-1 ring-black/5">
-                                                        <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 3H3v5M3 3l6 6M16 3h5v5m0-5l-6 6M8 21H3v-5m0 5l6-6M16 21h5v-5m0 5l-6-6"></path>
-                                                        </svg>
-                                                    </span>
-                                                </div>
-                                            </button>
-                                        ) : (
-                                            <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg border border-dashed border-gray-200 bg-gray-50 text-[10px] font-semibold text-gray-400 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-500">
-                                                IMG
-                                            </div>
-                                        )}
+                                            <RemoteProductImage
+                                                fit="cover"
+                                                product={item}
+                                                onPreview={(event, loadedProduct) => openProductImagePreview(loadedProduct)}
+                                                alt={item._displayName || item.name || item.code || 'Product'}
+                                                className="group/photo mx-auto h-10 w-10 rounded-lg border border-gray-200 bg-gray-100 transition-transform duration-150 hover:scale-105 focus:outline-none focus:ring-2 focus:ring-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:focus:ring-gray-300"
+                                                imageClassName="transition-all duration-200 group-hover/photo:scale-110 group-hover/photo:opacity-35 group-hover/photo:blur-[1.5px]"
+                                            />
                                     </td>
                                     <td className="px-3 py-1.5 text-center border border-gray-200 dark:border-gray-700">
                                         {(() => {

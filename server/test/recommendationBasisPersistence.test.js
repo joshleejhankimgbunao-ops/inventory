@@ -472,6 +472,8 @@ test('activity identifies actor, link and changed fields without copying free te
 
 test('active recommendation catalog hides archived products without mutating saved links or review history', async () => {
   const row = await pair('ACTIVE-CATALOG');
+  const privateImagePayload = 'data:image/png;base64,cHJvZHVjdC1pbWFnZS1wYXlsb2Fk';
+  await Product.updateOne({ _id: row.candidate._id }, { $set: { imageUrl: privateImagePayload } });
   await add(row, { justification: 'Keep this manual basis.' });
   await review(row, { expectedRevision: 1, decision: 'approved', reviewReason: 'Existing approval.' });
   const before = await Product.findById(row.target._id).lean();
@@ -488,6 +490,9 @@ test('active recommendation catalog hides archived products without mutating sav
   await Product.updateOne({ _id: row.candidate._id }, { $set: { isActive: true } });
   response = await request('GET', '/recommendations/active', undefined, 'cashier');
   assert.equal(response.body.some((product) => String(product._id) === String(row.candidate._id)), true);
+  const restoredCandidate = response.body.find((product) => String(product._id) === String(row.candidate._id));
+  assert.equal(Object.hasOwn(restoredCandidate, 'imageUrl'), false, 'recommendation catalog keeps image payloads out of the list response');
+  assert.equal((await Product.findById(row.candidate._id).lean()).imageUrl, privateImagePayload, 'stored image remains available through the scoped image endpoint');
   const restored = await Product.findById(row.target._id).lean();
   assert.deepEqual(restored.recommendationBases, before.recommendationBases);
   assert.deepEqual(restored.recommendationReviews, before.recommendationReviews);

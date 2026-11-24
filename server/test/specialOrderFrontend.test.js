@@ -432,7 +432,8 @@ test('inventory SKU picker shows the selected product in its searchable input', 
   assert.match(fields, /onClick=\{\(\) => \{ if \(!open\) \{ setQuery\(''\); setOpen\(true\); \} \}\}/);
   assert.match(fields, /onSelect\(product\); setQuery\(''\); setOpen\(false\);/);
   assert.doesNotMatch(fields, /Selected SKU:/);
-  assert.match(page, /inventoryProductPhotosForSelection\(item\.photos, item\.inventoryProduct, product\)/);
+  assert.match(page, /onSelectInventoryProduct=\{selectInventoryProductForQuotation\}/);
+  assert.match(page, /const photos = inventoryProductPhotosForSelection\(item\.photos, item\.inventoryProduct, selectedProduct\)/);
 });
 
 test('delivery address UI uses optional searchable PSGC fields and canonical Laguna province', () => {
@@ -509,7 +510,7 @@ test('page wires quotation-first creation, guarded loading and contextual row sh
   assert.match(page, /quotationFirst: true/);
   assert.doesNotMatch(page, /Save Draft & Continue|requestedRowAction|rowActionHandlersRef/);
   assert.match(page, /generateQuotation: true/);
-  assert.match(page, /onClick=\{addItemRow\} disabled=\{isSubmitting\} aria-disabled=\{!canAddAnotherItem \|\| isSubmitting\}[^>]*>Add Item<\/button>/);
+  assert.match(page, /onClick=\{addItemRow\} disabled=\{isSubmitting \|\| loadingProductImages\} aria-disabled=\{!canAddAnotherItem \|\| isSubmitting \|\| loadingProductImages\}[^>]*>Add Item<\/button>/);
   assert.match(page, /ref=\{formScrollContainerRef\} className="min-h-0 space-y-4 overflow-y-auto/);
   assert.match(page, /min-h-0 space-y-4 overflow-y-auto bg-slate-50/);
   assert.match(page, /rounded-xl border border-slate-200 bg-white p-3 sm:p-4/);
@@ -645,13 +646,47 @@ test('Prepare Quotation consolidates a completed duplicate on Add Item and befor
 
 test('Prepare Quotation prepopulates existing SKU images as removable references and submits selected image order', () => {
   const imageHelper = fs.readFileSync(path.resolve(__dirname, '../../src/utils/specialOrderProductImages.mjs'), 'utf8');
-  assert.match(page, /photos: inventoryProductPhotosForSelection\(item\.photos, item\.inventoryProduct, product\)/);
+  assert.match(page, /ensureInventoryImages\(\{ productIds: \[id\] \}\)/);
+  assert.match(page, /current\.productImageRequest !== productImageRequest/);
+  assert.match(page, /photos: \[\.\.\.loadedPhotos\.slice\(0, Math\.max\(0, 3 - current\.photos\.length\)\), \.\.\.current\.photos\]/);
   assert.match(page, /isProductImageReference\(photo\)/);
   assert.match(page, /photoSelections: quotationPhotoSelections\(item\.photos\)/);
   assert.match(page, /item\.photos\.filter\(\(photo\) => !isProductImageReference\(photo\)\)/);
   assert.match(page, /item\.photos\.filter\(\(_, current\) => current !== photoIndex\)/);
   assert.match(imageHelper, /Array\.isArray\(product\?\.images\)/);
   assert.match(imageHelper, /source: 'product'/);
+});
+
+test('a deferred SKU image populates only the current selection and preserves uploads and removals', async () => {
+  const imageHelpers = await import('../../src/utils/specialOrderProductImages.mjs');
+  const handler = page.slice(page.indexOf('  const selectInventoryProductForQuotation'), page.indexOf('  const validateForm'));
+  let form = { items: [{ itemId: 'row', photos: [] }] };
+  const pending = new Map();
+  const scope = {
+    ...imageHelpers,
+    categories: [],
+    inventoryItemFromProduct: (product) => ({ inventoryProduct: product.id }),
+    replaceItemRow: (_id, item) => { form = { items: [item] }; },
+    ensureInventoryImages: ({ productIds: [id] }) => new Promise((resolve) => pending.set(id, resolve)),
+    setForm: (update) => { form = update(form); },
+  };
+  const select = new Function(...Object.keys(scope), `${handler}\nreturn selectInventoryProductForQuotation;`)(...Object.values(scope));
+  select('row', form.items[0], { id: 'first' });
+  select('row', form.items[0], { id: 'second' });
+  const upload = { name: 'manual.png' };
+  form.items[0].photos.push(upload);
+  pending.get('first')(new Map([['first', 'https://example.test/first.png']]));
+  await Promise.resolve();
+  assert.deepEqual(form.items[0].photos, [upload]);
+  assert.ok(form.items[0].productImageRequest);
+  pending.get('second')(new Map([['second', 'https://example.test/second.png']]));
+  await Promise.resolve();
+  assert.equal(form.items[0].productImageRequest, null);
+  assert.equal(form.items[0].photos[0].productId, 'second');
+  assert.equal(form.items[0].photos[1], upload);
+  form.items[0].photos.shift();
+  select('row', form.items[0], { id: 'second', imageUrl: 'https://example.test/second.png' });
+  assert.deepEqual(form.items[0].photos, [upload]);
 });
 
 test('Prepare Quotation confirms individual item removal by stable ID before changing the draft', () => {

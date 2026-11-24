@@ -183,10 +183,12 @@ const publishSaleUpdated = ({ saleId = '', cashierId = '', changeType = 'sale.up
   if (cashierId) publishEvent('sale.updated', payload, { roles: ['cashier'], userIds: [cashierId] });
 };
 
-const publishInventoryUpdated = ({ reason = 'unknown', productCodes = [] } = {}) => {
+const publishInventoryUpdated = ({ reason = 'unknown', productCodes = [], productIds = [], imageChanged } = {}) => {
   publishEvent('inventory.updated', {
     reason,
     productCodes: Array.isArray(productCodes) ? productCodes : [],
+    ...(Array.isArray(productIds) && productIds.length ? { productIds: productIds.map((id) => String(id || '')).filter(Boolean) } : {}),
+    ...(typeof imageChanged === 'boolean' ? { imageChanged } : {}),
     occurredAt: new Date().toISOString(),
   });
 };

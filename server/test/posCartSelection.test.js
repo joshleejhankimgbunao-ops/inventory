@@ -105,11 +105,9 @@ test('Current Order cards use the exact cart product image with a non-interactiv
   assert.match(cartPanel, /pos-cart-item-controls[\s\S]*?formatCurrency\(item\.price \* item\.qty\)[\s\S]*?@ \{formatCurrency\(item\.price\)\}/);
   assert.match(cartPanel, /data-pos-cart-item-remove onClick=\{\(event\) => \{ event\.stopPropagation\(\); requestSingleCartRemoval/);
   assert.match(cartPanel, /onClick=\{\(event\) => event\.stopPropagation\(\)\} className="pos-cart-item-controls/);
-  assert.match(thumbnail, /const imageUrl = getProductImageUrl\(item\)/);
-  assert.match(thumbnail, /if \(!interactive\) \{[\s\S]*?aria-hidden="true"/);
-  assert.match(thumbnail, /if \(imageUrl && !imageFailed\)/);
-  assert.match(thumbnail, /aria-hidden=\{!interactive \|\| undefined\}/);
-  assert.match(thumbnail, /<svg className="h-7 w-7 text-slate-300"/);
+  assert.match(thumbnail, /<RemoteProductImage\s+product=\{item\}/);
+  assert.match(thumbnail, /onPreview=\{interactive \? onPreview : undefined\}/);
+  assert.match(thumbnail, /decorative=\{!interactive\}/);
   assert.match(cartAddition, /\[\.\.\.previousCart, \{ \.\.\.product, qty: requestedQty \}\]/);
   assert.match(quantityUpdate, /item\.code === code \? \{ \.\.\.item, qty: newQty \}/);
   assert.match(cartPanel, /onClick=\{\(event\) => handleCartItemClick\(event, item\.code\)\}/);

@@ -6,8 +6,9 @@ import TableActionButton from './TableActionButton';
 import ViewportTooltip from './ViewportTooltip';
 import Pagination from './Pagination';
 import ColorSwatch from './ColorSwatch';
+import RemoteProductImage from './RemoteProductImage';
 import { formatMoney } from '../utils/numberFormat';
-import { formatProductAttributeValue, getFamilyGeneralImageUrl } from '../utils/productFamilies';
+import { formatProductAttributeValue, getFamilyImageCandidates } from '../utils/productFamilies';
 import { getStockStatus } from '../utils/recommendationLogic';
 
 const VARIANT_STOCK_FILTERS = ['All', 'In Stock', 'Low Stock', 'Out of Stock'];
@@ -99,25 +100,17 @@ const VariantArchiveCheckbox = ({ variant, checked, onChange, className = '' }) 
     );
 };
 
-const VariantPhoto = ({ variant, imageUrl, onPreview }) => {
-    const [failedUrl, setFailedUrl] = useState('');
-    const hasImage = imageUrl && failedUrl !== imageUrl;
-
-    return hasImage ? (
-        <button
-            type="button"
-            onClick={(event) => onPreview(variant, event.currentTarget)}
-            className="mx-auto flex h-10 w-10 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-slate-600 dark:bg-slate-700"
-            aria-label={`View photo for variant ${variant.code}`}
-        >
-            <img src={imageUrl} alt="" className="h-full w-full object-contain" onError={() => setFailedUrl(imageUrl)} />
-        </button>
-    ) : (
-        <span className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50 text-[9px] font-medium text-slate-400 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-500" aria-label={`No photo for variant ${variant.code}`}>
-            No photo
-        </span>
-    );
-};
+const VariantPhoto = ({ variant, onPreview }) => (
+    <RemoteProductImage
+        product={variant}
+        onPreview={(event, selectedVariant) => onPreview(selectedVariant, event.currentTarget)}
+        className="mx-auto h-10 w-10 rounded-lg border border-slate-200 bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-slate-600 dark:bg-slate-700"
+        ariaLabel={`View photo for variant ${variant.code}`}
+        placeholderClassName="text-[9px] font-medium text-slate-400 dark:text-slate-500"
+        placeholderText="No photo"
+        alt=""
+    />
+);
 
 const ProductFamilyModal = ({
     family,
@@ -129,13 +122,11 @@ const ProductFamilyModal = ({
     onToggleArchive,
     onArchiveSelected,
     onPreviewVariantImage,
-    getProductImageUrl,
     settings,
 }) => {
     const [stockFilter, setStockFilter] = useState('All');
     const [currentPage, setCurrentPage] = useState(1);
     const [itemsPerPage, setItemsPerPage] = useState(10);
-    const [failedGeneralImageUrl, setFailedGeneralImageUrl] = useState('');
     const [selectedVariantIds, setSelectedVariantIds] = useState(() => new Set());
     const [isArchiveConfirmationOpen, setIsArchiveConfirmationOpen] = useState(false);
     const [isArchivingSelected, setIsArchivingSelected] = useState(false);
@@ -353,7 +344,6 @@ const ProductFamilyModal = ({
     const hasVariants = family.variants.length > 0;
     const emptyState = EMPTY_VARIANT_FILTER_COPY[stockFilter];
     const tableColumnCount = family.attributeDefinitions.length + 7 + (canManage ? 2 : 0);
-    const generalImageUrl = getFamilyGeneralImageUrl(family.variants);
     const archiveConfirmationMessage = `You are about to archive ${selectedVariants.length} selected variant${selectedVariants.length === 1 ? '' : 's'} of ${family.name}.`;
 
     return (
@@ -381,11 +371,14 @@ const ProductFamilyModal = ({
                         <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400 dark:text-slate-500">General</p>
                         <div className="grid gap-3 rounded-xl border border-slate-200 bg-white p-4 sm:grid-cols-[64px_minmax(0,1fr)_minmax(180px,0.7fr)] dark:border-slate-700 dark:bg-slate-800">
                             <div className="flex h-16 w-16 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-slate-100 dark:border-slate-600 dark:bg-slate-700">
-                                {generalImageUrl && failedGeneralImageUrl !== generalImageUrl ? (
-                                    <img src={generalImageUrl} alt="" className="h-full w-full object-contain" onError={() => setFailedGeneralImageUrl(generalImageUrl)} />
-                                ) : (
-                                    <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500">NO IMG</span>
-                                )}
+                                <RemoteProductImage
+                                    product={family.variants[0]}
+                                    products={getFamilyImageCandidates(family.variants)}
+                                    className="h-full w-full"
+                                    alt=""
+                                    placeholderClassName="text-[10px] font-semibold text-slate-400 dark:text-slate-500"
+                                    placeholderText="NO IMG"
+                                />
                             </div>
                             <div className="min-w-0">
                                 <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">Product Name</p>
@@ -518,7 +511,7 @@ const ProductFamilyModal = ({
                                                 />
                                             );
                                         })()}
-                                        <VariantPhoto variant={variant} imageUrl={getProductImageUrl(variant)} onPreview={onPreviewVariantImage} />
+                                        <VariantPhoto variant={variant} onPreview={onPreviewVariantImage} />
                                         <div className="min-w-0 flex-1">
                                             <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">SKU</p>
                                             <span className="mt-1 block max-w-full overflow-x-auto whitespace-nowrap rounded-md border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-xs font-semibold text-slate-700 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200" title={variant.code}>
@@ -668,7 +661,7 @@ const ProductFamilyModal = ({
                                                 );
                                             })()}
                                             <td className="w-16 min-w-16 px-2 py-1.5 text-center">
-                                                <VariantPhoto variant={variant} imageUrl={getProductImageUrl(variant)} onPreview={onPreviewVariantImage} />
+                                                <VariantPhoto variant={variant} onPreview={onPreviewVariantImage} />
                                             </td>
                                             {family.attributeDefinitions.map((definition) => (
                                                 <td key={definition.key} className="min-w-32 whitespace-nowrap px-3 py-2.5">

@@ -103,7 +103,7 @@ const mapUiProductToApi = (product) => ({
   size: product.size || '',
   attributes: product.attributes || {},
   supplierName: product.supplier || '',
-  imageUrl: product.imageUrl || '',
+  ...(Object.prototype.hasOwnProperty.call(product || {}, 'imageUrl') ? { imageUrl: product.imageUrl || '' } : {}),
   sellingUnit: product.sellingUnit || '',
   ...(Object.prototype.hasOwnProperty.call(product || {}, 'expiryTrackingEnabled')
     ? { expiryTrackingEnabled: product.expiryTrackingEnabled === true }
@@ -117,8 +117,13 @@ export const listProductsApi = async ({ includeImages = true } = {}) => {
   return Array.isArray(products) ? products.map(mapApiProductToUi) : [];
 };
 
-export const listProductImagesApi = async () => {
-  const images = await apiRequest('/api/products/images');
+export const listProductImagesApi = async (productIds = []) => {
+  const ids = [...new Set((Array.isArray(productIds) ? productIds : [])
+    .map((id) => String(id || '').trim())
+    .filter((id) => /^[a-f\d]{24}$/i.test(id)))];
+  if (!ids.length) return [];
+  const query = new URLSearchParams({ ids: ids.join(',') });
+  const images = await apiRequest(`/api/products/images?${query.toString()}`);
   return Array.isArray(images) ? images : [];
 };
 

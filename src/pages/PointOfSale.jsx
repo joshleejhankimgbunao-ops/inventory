@@ -44,6 +44,7 @@ import { ExpiryBatchPickEditor } from '../components/ExpiryBatchVerification';
 import { isExpiryBatchVerificationConfirmed } from '../utils/expiryBatchVerification';
 import ToolbarDropdown from '../components/ToolbarDropdown';
 import ProductDetailsModalShell from '../components/ProductDetailsModalShell';
+import RemoteProductImage from '../components/RemoteProductImage';
 import { subscribeRealtimeEvent } from '../services/realtimeClient';
 import { ORDER_CONFIRMATION_PREVIEW_SIZE } from '../constants/orderConfirmationPreview';
 import { getEffectiveProductAttributes, productAttributeValues } from '../utils/productAttributes';
@@ -129,48 +130,46 @@ const PosFieldTooltip = ({ id, children }) => (
 );
 
 const ProductThumbnail = ({ item, className = '', onPreview, fit = 'cover', interactive = true }) => {
-    const imageUrl = getProductImageUrl(item);
-    const [failedImageUrl, setFailedImageUrl] = useState('');
-    const imageFailed = Boolean(imageUrl && failedImageUrl === imageUrl);
-
     const thumbnailClassName = `shrink-0 overflow-hidden rounded-xl border border-slate-200 bg-slate-50 ${className}`;
-
-    if (imageUrl && !imageFailed) {
-        const image = (
-            <img
-                src={imageUrl}
-                alt={item?.name || item?.code || 'Product image'}
-                onError={() => setFailedImageUrl(imageUrl)}
-                className={`h-full w-full ${fit === 'contain' ? 'object-contain' : 'object-cover'}`}
-            />
-        );
-
-        if (!interactive) {
-            return <div aria-hidden="true" className={thumbnailClassName}>{image}</div>;
-        }
-
-        return (
-            <button
-                type="button"
-                onClick={(event) => onPreview?.(event, item)}
-                className={`${thumbnailClassName} cursor-zoom-in transition-all hover:opacity-90 hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-slate-900`}
-                aria-label={`Enlarge image for ${item?.name || item?.code || 'product'}`}
-            >
-                {image}
-            </button>
-        );
-    }
-
     return (
-        <div aria-hidden={!interactive || undefined} className={thumbnailClassName}>
-            <div className="flex h-full w-full items-center justify-center">
-                <svg className="h-7 w-7 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M4 16l4-4a3 3 0 014 0l4 4m-2-2l2-2a3 3 0 014 0l2 2m-14 4h16" />
-                </svg>
-            </div>
-        </div>
+        <RemoteProductImage
+            product={item}
+            className={`${thumbnailClassName} ${interactive ? 'transition-all hover:opacity-90 hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-slate-900' : ''}`}
+            fit={fit}
+            alt={item?.name || item?.code || 'Product image'}
+            ariaLabel={`Enlarge image for ${item?.name || item?.code || 'product'}`}
+            onPreview={interactive ? onPreview : undefined}
+            decorative={!interactive}
+        />
     );
 };
+
+const CatalogProductImageButton = ({ item, products, onPreview }) => (
+    <RemoteProductImage
+        product={item}
+        products={products}
+        onPreview={onPreview}
+        fit="contain"
+        className="group/photo relative z-10 mb-3 h-24 w-full touch-manipulation select-none rounded-lg border border-slate-200 bg-slate-50 transition-colors duration-200 hover:border-slate-300"
+        imageClassName="p-1.5"
+        attributes={{
+            'data-pos-image-preview': 'true',
+            onPointerDown: (event) => event.stopPropagation(),
+            onMouseDown: (event) => event.stopPropagation(),
+            onTouchStart: (event) => event.stopPropagation(),
+            onKeyDown: (event) => { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation(); },
+        }}
+        overlay={(
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-all duration-150 group-hover/photo:bg-black/20 group-hover/photo:opacity-100">
+                <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-white/92 text-gray-900 shadow-md ring-1 ring-black/5" aria-hidden="true">
+                    <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 3H3v5M3 3l6 6M16 3h5v5m0-5l-6 6M8 21H3v-5m0 5l6-6M16 21h5v-5m0 5l-6-6" />
+                    </svg>
+                </span>
+            </div>
+        )}
+    />
+);
 
 const PosRecommendationReasons = ({ recommendation }) => {
     const explanation = getPosRecommendationPresentation(recommendation);
@@ -2818,44 +2817,7 @@ const PointOfSale = () => {
                                                         }`}
                                                 >
                                                     <div className="flex flex-1 flex-col p-3">
-                                                        <button
-                                                            type="button"
-                                                            data-pos-image-preview="true"
-                                                                onPointerDown={(e) => e.stopPropagation()}
-                                                                onMouseDown={(e) => e.stopPropagation()}
-                                                                onTouchStart={(e) => e.stopPropagation()}
-                                                                onClick={(e) => handleProductImagePreviewClick(e, item)}
-                                                            disabled={!item.imageUrl}
-                                                                className={`group/photo relative z-10 mb-3 h-24 w-full touch-manipulation select-none overflow-hidden rounded-lg border transition-colors duration-200 ${
-                                                                item.imageUrl
-                                                                    ? 'cursor-zoom-in border-slate-200 bg-slate-50 hover:border-slate-300'
-                                                                    : 'border-dashed border-slate-200 bg-slate-50 cursor-default'
-                                                            }`}
-                                                            aria-label={item.imageUrl ? `Enlarge image for ${item.name}` : `No image for ${item.name}`}
-                                                        >
-                                                            {item.imageUrl ? (
-                                                                <>
-                                                                    <img
-                                                                        src={item.imageUrl}
-                                                                        alt={item.name}
-                                                                        className="h-full w-full object-contain p-1.5"
-                                                                    />
-                                                                    <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-all duration-150 group-hover/photo:bg-black/20 group-hover/photo:opacity-100">
-                                                                        <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-white/92 text-gray-900 shadow-md ring-1 ring-black/5">
-                                                                            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 3H3v5M3 3l6 6M16 3h5v5m0-5l-6 6M8 21H3v-5m0 5l6-6M16 21h5v-5m0 5l-6-6"></path>
-                                                                            </svg>
-                                                                        </span>
-                                                                    </div>
-                                                                </>
-                                                            ) : (
-                                                                <div className="absolute inset-0 flex items-center justify-center">
-                                                                    <svg className="w-8 h-8 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M4 16l4-4a3 3 0 014 0l4 4m-2-2l2-2a3 3 0 014 0l2 2m-14 4h16"></path>
-                                                                    </svg>
-                                                                </div>
-                                                            )}
-                                                        </button>
+                                                        <CatalogProductImageButton item={item} products={item.variants} onPreview={handleProductImagePreviewClick} />
 
                                                         <p className="mb-1 text-[9px] font-semibold uppercase tracking-widest text-slate-400">{item.category || 'Product Group'}</p>
                                                         <h3 className="mb-1.5 min-h-[38px] line-clamp-2 text-[14px] font-semibold leading-snug text-slate-900">
@@ -2961,44 +2923,7 @@ const PointOfSale = () => {
                                             }`}
                                     >
                                         <div className="flex flex-1 flex-col p-3">
-                                            <button
-                                                type="button"
-                                                data-pos-image-preview="true"
-                                                    onPointerDown={(e) => e.stopPropagation()}
-                                                    onMouseDown={(e) => e.stopPropagation()}
-                                                    onTouchStart={(e) => e.stopPropagation()}
-                                                    onClick={(e) => handleProductImagePreviewClick(e, item)}
-                                                disabled={!item.imageUrl}
-                                                    className={`group/photo relative z-10 mb-3 h-24 w-full touch-manipulation select-none overflow-hidden rounded-lg border transition-colors duration-200 ${
-                                                    item.imageUrl
-                                                            ? 'cursor-zoom-in border-slate-200 bg-slate-50 hover:border-slate-300'
-                                                        : 'border-dashed border-slate-200 bg-slate-50 cursor-default'
-                                                }`}
-                                                aria-label={item.imageUrl ? `Enlarge image for ${item.name}` : `No image for ${item.name}`}
-                                            >
-                                                {item.imageUrl ? (
-                                                    <>
-                                                        <img
-                                                            src={item.imageUrl}
-                                                            alt={item.name}
-                                                            className="h-full w-full object-contain p-1.5"
-                                                        />
-                                                        <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-all duration-150 group-hover/photo:bg-black/20 group-hover/photo:opacity-100">
-                                                            <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-white/92 text-gray-900 shadow-md ring-1 ring-black/5">
-                                                                <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 3H3v5M3 3l6 6M16 3h5v5m0-5l-6 6M8 21H3v-5m0 5l6-6M16 21h5v-5m0 5l-6-6"></path>
-                                                                </svg>
-                                                            </span>
-                                                        </div>
-                                                    </>
-                                                ) : (
-                                                    <div className="absolute inset-0 flex items-center justify-center">
-                                                        <svg className="w-8 h-8 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M4 16l4-4a3 3 0 014 0l4 4m-2-2l2-2a3 3 0 014 0l2 2m-14 4h16"></path>
-                                                        </svg>
-                                                    </div>
-                                                )}
-                                            </button>
+                                            <CatalogProductImageButton item={item} onPreview={handleProductImagePreviewClick} />
 
                                             <p className="mb-1 text-[9px] font-semibold uppercase tracking-widest text-slate-400">{item.category || 'Product'}</p>
                                             <h3 className="mb-1.5 min-h-[38px] line-clamp-2 text-[14px] font-semibold leading-snug text-slate-900">

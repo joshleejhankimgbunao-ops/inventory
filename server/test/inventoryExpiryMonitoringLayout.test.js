@@ -210,7 +210,7 @@ test('Inventory refreshes an open expiry batch view automatically for Add Stock 
   assert.doesNotMatch(snapshotHelper, /setStockForm/);
   const conflictRefresh = inventorySource.slice(inventorySource.indexOf('const refreshStockDetailsAfterConflict'), inventorySource.indexOf('const retryStockDetailsRefresh'));
   assert.doesNotMatch(conflictRefresh, /setStockForm/);
-  assert.ok(conflictRefresh.indexOf('await listProductsApi()') < conflictRefresh.indexOf('requestSequence !== expiryBatchRequestSequenceRef.current'));
+  assert.match(conflictRefresh, /await listProductsApi\(\{ includeImages: false \}\);\s*if \(requestSequence !== expiryBatchRequestSequenceRef\.current\)/);
   assert.ok(conflictRefresh.indexOf('await listProductExpiryBatchesApi(productId)') < conflictRefresh.indexOf('applyExpiryBatchSnapshot(batchResult, productId)'));
   const reconcileHandler = inventorySource.slice(inventorySource.indexOf('const handleExpiryReconciliation'), inventorySource.indexOf('const handleStockSubmit'));
   assert.match(reconcileHandler, /else \{\s*await reconcileProductExpiryBatchesApi\(expiryVerificationProduct\.productId, verificationPayload\);[\s\S]*?setExpiryMonitoringRefreshKey/);

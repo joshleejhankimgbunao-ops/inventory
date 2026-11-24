@@ -161,9 +161,10 @@ const invokeProductsList = async (user = actor, query = {}) => {
   await listProducts({ user, query }, res, (error) => { throw error; });
   return res;
 };
-const invokeProductImagesList = async (user = actor) => {
+const invokeProductImagesList = async (ids, user = actor) => {
   const res = response();
-  await listProductImages({ user }, res, (error) => { throw error; });
+  const query = ids === undefined ? {} : { ids: Array.isArray(ids) ? ids.join(',') : ids };
+  await listProductImages({ user, query }, res, (error) => { throw error; });
   return res;
 };
 const invokeBatchList = async (id, query = {}, user = actor) => {
@@ -476,10 +477,17 @@ test('product listing can omit image payloads and retrieves legacy image referen
     .find((row) => String(row._id) === String(product._id));
   assert.equal(full.imageUrl, imageDataUrl);
 
-  const imageReferences = await invokeProductImagesList();
+  const imageReferences = await invokeProductImagesList([String(product._id)]);
   assert.deepEqual(imageReferences.body.find((row) => row.id === String(product._id)), {
     id: String(product._id), code: product.sku, imageUrl: imageDataUrl,
   });
+  assert.equal(imageReferences.body.length, 1, 'image endpoint returns only requested records');
+  const tooManyIds = await invokeProductImagesList(Array.from({ length: 51 }, () => String(new mongoose.Types.ObjectId())));
+  assert.equal(tooManyIds.statusCode, 400);
+  const invalidIds = await invokeProductImagesList(['not-an-object-id']);
+  assert.equal(invalidIds.statusCode, 400);
+  const unscoped = await invokeProductImagesList();
+  assert.equal(unscoped.statusCode, 400, 'the image endpoint rejects unbounded full-catalog reads');
 });
 
 test('tracked Stock-In responses fail closed for missing-period and unreconciled products while untracked availability stays aggregate-based', async () => {

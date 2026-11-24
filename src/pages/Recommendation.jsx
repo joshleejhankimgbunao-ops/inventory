@@ -24,6 +24,7 @@ import { formatStockWithSellingUnit, getRecordedProductDetails, hasRecordedDetai
 import RecommendationBasis from '../components/RecommendationBasis';
 import { getRecommendationPresentation } from '../utils/recommendationPresentation';
 import RecommendationBasisEditor from '../components/RecommendationBasisEditor';
+import RemoteProductImage from '../components/RemoteProductImage';
 import { getBlockedRecommendationEntries, getManualRecommendationLink, getRecommendationActionSources, getRecommendationReview, mergeRecommendationProduct, RECOMMENDATION_BASIS_LIMITS } from '../utils/recommendationBasis';
 import { getInitialAlternativePreview, INITIAL_ALTERNATIVE_LIMIT, MOBILE_ALTERNATIVE_LIMIT } from '../utils/recommendationLayout';
 import { ROLES } from '../constants/roles';
@@ -40,19 +41,12 @@ const countUniqueRecommendationEntries = (entries = []) => new Set(
 ).size;
 
 const RecommendationThumbnail = ({ item, className = 'h-12 w-12' }) => {
-    const [failedUrl, setFailedUrl] = useState('');
-    const hasImage = item?.imageUrl && failedUrl !== item.imageUrl;
-    return <div className={`shrink-0 overflow-hidden rounded-lg border border-slate-200 bg-slate-50 ${className}`}>
-        {hasImage ? (
-            <img src={item.imageUrl} alt="" onError={() => setFailedUrl(item.imageUrl)} className="h-full w-full object-contain p-0.5" />
-        ) : (
-            <div className="flex h-full w-full items-center justify-center text-slate-300">
-                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M4 16l4-4a3 3 0 014 0l4 4m-2-2 2-2a3 3 0 014 0l2 2m-14 4h16" />
-                </svg>
-            </div>
-        )}
-    </div>;
+    return <RemoteProductImage
+        product={item}
+        className={`shrink-0 rounded-lg border border-slate-200 bg-slate-50 ${className}`}
+        imageClassName="p-0.5"
+        alt=""
+    />;
 };
 
 const Recommendation = () => {

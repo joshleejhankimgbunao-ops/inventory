@@ -121,15 +121,8 @@ const Dashboard = ({ onLogout }) => {
     isActivityLogsLoading, activityLogsError, retryActivityLogs,
     ensureActivityLogs,
     processedInventory, 
-        ensureInventoryImages,
         isPageDataLoading
   } = useInventory();
-
-  useEffect(() => {
-    if (['Point of Sale', 'Inventory', 'Product Master List', 'Recommendation', 'Special Orders'].includes(activeMenu)) {
-      void ensureInventoryImages();
-    }
-  }, [activeMenu, ensureInventoryImages]);
 
     const [backendUsers, setBackendUsers] = useState([]);
   const [pendingVoidRequestCount, setPendingVoidRequestCount] = useState(0);

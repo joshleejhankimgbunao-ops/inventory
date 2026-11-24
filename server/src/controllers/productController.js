@@ -363,7 +363,14 @@ const listProducts = async (req, res, next) => {
 
 const listProductImages = async (req, res, next) => {
   try {
-    const products = await Product.find().select('_id sku imageUrl').lean();
+    const rawIds = typeof req.query?.ids === 'string' ? req.query.ids.split(',').map((id) => id.trim()).filter(Boolean) : [];
+    const uniqueIds = [...new Set(rawIds)];
+    if (!uniqueIds.length || uniqueIds.length > 50 || uniqueIds.some((id) => !/^[a-f\d]{24}$/i.test(id))) {
+      return res.status(400).json({ message: 'Request between 1 and 50 valid product IDs to load images.' });
+    }
+    const products = await Product.find({ _id: { $in: uniqueIds.map((id) => new mongoose.Types.ObjectId(id)) } })
+      .select('_id sku imageUrl')
+      .lean();
     return res.json(products.map((product) => ({
       id: String(product._id),
       code: String(product.sku || ''),
@@ -1225,7 +1232,12 @@ const updateProduct = async (req, res, next) => {
       });
     }
 
-    publishInventoryUpdated({ reason: 'product.updated', productCodes: [product.sku] });
+    publishInventoryUpdated({
+      reason: 'product.updated',
+      productCodes: [product.sku],
+      productIds: [product._id],
+      imageChanged: String(existing.imageUrl || '') !== String(product.imageUrl || ''),
+    });
 
     return res.json(product);
   } catch (error) {

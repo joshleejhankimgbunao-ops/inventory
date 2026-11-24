@@ -90,7 +90,10 @@ const handle = (operation) => async (req, res, next) => {
 
 const listActiveRecommendationProducts = async (req, res, next) => {
   try {
-    const products = await Product.find({ isActive: { $ne: false } }).sort({ createdAt: -1 }).lean();
+    const products = await Product.find({ isActive: { $ne: false } })
+      .select('-imageUrl')
+      .sort({ createdAt: -1 })
+      .lean();
     const canViewPurchaseCost = ['admin', 'superadmin'].includes(req.user?.role);
     return res.json(products.map((product) => {
       const payload = {

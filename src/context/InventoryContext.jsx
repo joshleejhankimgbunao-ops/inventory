@@ -41,7 +41,8 @@ const INVENTORY_FALLBACK = {
     setActivityLogs: () => {},
     logActivity: () => {},
     processedInventory: [],
-    ensureInventoryImages: async () => false,
+    ensureInventoryImages: async () => new Map(),
+    productImageRevisions: {},
     logAction: () => {},
     handleResetHistory: () => {},
     renameUserReferences: () => {},
@@ -71,6 +72,7 @@ const INVENTORY_FALLBACK = {
 const InventoryContext = createContext(INVENTORY_FALLBACK);
 
 const TRANSACTIONS_CACHE_PREFIX = 'transactionsCache:';
+const PRODUCT_IMAGE_BATCH_SIZE = 12;
 
 const getTransactionsCacheScope = (userId, username) => {
     const normalizedUserId = String(userId || '').trim();
@@ -165,11 +167,15 @@ export const InventoryProvider = ({ children }) => {
     const inventoryRef = useRef([]);
     const inventoryRequestSequenceRef = useRef(0);
     const productImagesByIdentityRef = useRef(new Map());
-    const productImagesLoadedRef = useRef(false);
+    const productImagesLoadedRef = useRef(new Set());
     const productImagesRequestedRef = useRef(false);
-    const productImagesInFlightRef = useRef(null);
-    const productImagesRefreshPendingRef = useRef(false);
+    const productImagesInFlightRef = useRef(new Map());
+    const productImagesResolversRef = useRef(new Map());
+    const productImagesForceRefreshPromisesRef = useRef(new Map());
+    const productImagesQueueRef = useRef(new Set());
+    const productImagesFlushTimerRef = useRef(null);
     const productImagesRequestSequenceRef = useRef(0);
+    const [productImageRevisions, setProductImageRevisions] = useState({});
     const productImagesSessionKey = `${currentAuthUserId || ''}:${currentAuthUsername || ''}`;
     const productImagesSessionKeyRef = useRef(productImagesSessionKey);
     const transactionsRequestSequenceRef = useRef(0);
@@ -203,61 +209,134 @@ export const InventoryProvider = ({ children }) => {
         if (productImagesSessionKeyRef.current === productImagesSessionKey) return;
         productImagesSessionKeyRef.current = productImagesSessionKey;
         productImagesRequestSequenceRef.current += 1;
-        productImagesLoadedRef.current = false;
+        if (productImagesFlushTimerRef.current) clearTimeout(productImagesFlushTimerRef.current);
+        productImagesFlushTimerRef.current = null;
+        productImagesResolversRef.current.forEach((resolve) => resolve(''));
+        productImagesLoadedRef.current.clear();
         productImagesRequestedRef.current = false;
-        productImagesInFlightRef.current = null;
-        productImagesRefreshPendingRef.current = false;
+        productImagesInFlightRef.current.clear();
+        productImagesResolversRef.current.clear();
+        productImagesForceRefreshPromisesRef.current.clear();
+        productImagesQueueRef.current.clear();
         productImagesByIdentityRef.current.clear();
+        setProductImageRevisions({});
     }, [productImagesSessionKey]);
 
-    const ensureInventoryImages = useCallback(({ force = false } = {}) => {
+    const flushProductImageQueue = useCallback(async () => {
+        if (productImagesFlushTimerRef.current) clearTimeout(productImagesFlushTimerRef.current);
+        productImagesFlushTimerRef.current = null;
+        const ids = [...productImagesQueueRef.current].slice(0, PRODUCT_IMAGE_BATCH_SIZE);
+        ids.forEach((id) => productImagesQueueRef.current.delete(id));
+        if (!ids.length) return;
+
+        const requestSequence = productImagesRequestSequenceRef.current;
+        const sessionKey = productImagesSessionKeyRef.current;
+        const requestsById = new Map(ids.map((id) => [id, productImagesInFlightRef.current.get(id)]));
+        try {
+            const rows = await listProductImagesApi(ids);
+            if (requestSequence !== productImagesRequestSequenceRef.current
+                || sessionKey !== productImagesSessionKeyRef.current) return;
+
+            const rowsById = new Map((Array.isArray(rows) ? rows : []).map((row) => [String(row?.id || ''), row]));
+            const codesById = new Map();
+            setInventory((previous) => previous.map((product) => {
+                const id = String(product.id || '');
+                if (!ids.includes(id)) return product;
+                const row = rowsById.get(id);
+                const imageUrl = String(row?.imageUrl || '');
+                const code = String(row?.code || product.code || '');
+                codesById.set(id, code);
+                productImagesByIdentityRef.current.set(`id:${id}`, imageUrl);
+                if (code) productImagesByIdentityRef.current.set(`sku:${code}`, imageUrl);
+                return imageUrl === product.imageUrl ? product : { ...product, imageUrl };
+            }));
+
+            ids.forEach((id) => {
+                const row = rowsById.get(id);
+                const imageUrl = String(row?.imageUrl || '');
+                productImagesByIdentityRef.current.set(`id:${id}`, imageUrl);
+                const code = String(row?.code || codesById.get(id) || '');
+                if (code) productImagesByIdentityRef.current.set(`sku:${code}`, imageUrl);
+                productImagesLoadedRef.current.add(id);
+                productImagesResolversRef.current.get(id)?.(imageUrl);
+            });
+        } catch {
+            if (requestSequence === productImagesRequestSequenceRef.current
+                && sessionKey === productImagesSessionKeyRef.current) {
+                ids.forEach((id) => productImagesResolversRef.current.get(id)?.(''));
+            }
+        } finally {
+            if (requestSequence === productImagesRequestSequenceRef.current
+                && sessionKey === productImagesSessionKeyRef.current) {
+                ids.forEach((id) => {
+                    if (productImagesInFlightRef.current.get(id) !== requestsById.get(id)) return;
+                    productImagesInFlightRef.current.delete(id);
+                    productImagesResolversRef.current.delete(id);
+                });
+                if (productImagesQueueRef.current.size && !productImagesFlushTimerRef.current) {
+                    productImagesFlushTimerRef.current = setTimeout(() => { void flushProductImageQueue(); }, 0);
+                }
+            }
+        }
+    }, []);
+
+    const ensureInventoryImages = useCallback(({ productIds = [], force = false } = {}) => {
+        const ids = [...new Set((Array.isArray(productIds) ? productIds : [])
+            .map((id) => String(id || '').trim())
+            .filter((id) => /^[a-f\d]{24}$/i.test(id)))];
+        if (!ids.length) return Promise.resolve(new Map());
         productImagesRequestedRef.current = true;
-        if (!force && productImagesLoadedRef.current) return Promise.resolve(true);
-        if (productImagesInFlightRef.current) {
-            if (force) productImagesRefreshPendingRef.current = true;
-            return productImagesInFlightRef.current;
+
+        const imagePromises = ids.map((id) => {
+            const activeRequest = productImagesInFlightRef.current.get(id);
+            if (force && activeRequest) {
+                const pendingRefresh = productImagesForceRefreshPromisesRef.current.get(id);
+                if (pendingRefresh) return pendingRefresh;
+                const requestSequence = productImagesRequestSequenceRef.current;
+                const sessionKey = productImagesSessionKeyRef.current;
+                const refreshPromise = activeRequest.then(async () => {
+                    if (productImagesForceRefreshPromisesRef.current.get(id) === refreshPromise) {
+                        productImagesForceRefreshPromisesRef.current.delete(id);
+                    }
+                    if (requestSequence !== productImagesRequestSequenceRef.current
+                        || sessionKey !== productImagesSessionKeyRef.current) return '';
+                    const refreshed = await ensureInventoryImages({ productIds: [id], force: true });
+                    return refreshed.get(id) || '';
+                });
+                productImagesForceRefreshPromisesRef.current.set(id, refreshPromise);
+                return refreshPromise;
+            }
+
+            if (force) {
+                productImagesLoadedRef.current.delete(id);
+                productImagesByIdentityRef.current.delete(`id:${id}`);
+                const product = inventoryRef.current.find((entry) => String(entry.id || '') === id);
+                if (product?.code) productImagesByIdentityRef.current.delete(`sku:${product.code}`);
+                setProductImageRevisions((previous) => ({ ...previous, [id]: Number(previous[id] || 0) + 1 }));
+                setInventory((previous) => previous.map((entry) => (
+                    String(entry.id || '') === id && entry.imageUrl ? { ...entry, imageUrl: '' } : entry
+                )));
+            } else if (productImagesLoadedRef.current.has(id)) {
+                return Promise.resolve(String(productImagesByIdentityRef.current.get(`id:${id}`) || ''));
+            }
+
+            const existingRequest = productImagesInFlightRef.current.get(id);
+            if (existingRequest) return existingRequest;
+
+            let resolveImage;
+            const request = new Promise((resolve) => { resolveImage = resolve; });
+            productImagesInFlightRef.current.set(id, request);
+            productImagesResolversRef.current.set(id, resolveImage);
+            productImagesQueueRef.current.add(id);
+            return request;
+        });
+
+        if (productImagesQueueRef.current.size && !productImagesFlushTimerRef.current) {
+            productImagesFlushTimerRef.current = setTimeout(() => { void flushProductImageQueue(); }, 0);
         }
 
-        const requestSequence = ++productImagesRequestSequenceRef.current;
-        const sessionKey = productImagesSessionKeyRef.current;
-        const request = listProductImagesApi()
-            .then((rows) => {
-                if (requestSequence !== productImagesRequestSequenceRef.current
-                    || sessionKey !== productImagesSessionKeyRef.current) return false;
-
-                const imageByIdentity = new Map();
-                for (const row of rows) {
-                    const imageUrl = String(row?.imageUrl || '');
-                    if (row?.id) imageByIdentity.set(`id:${row.id}`, imageUrl);
-                    if (row?.code) imageByIdentity.set(`sku:${row.code}`, imageUrl);
-                }
-                productImagesByIdentityRef.current = imageByIdentity;
-                setInventory((previous) => previous.map((product) => {
-                    const idKey = product.id ? `id:${product.id}` : '';
-                    const skuKey = product.code ? `sku:${product.code}` : '';
-                    const imageUrl = imageByIdentity.has(idKey)
-                        ? imageByIdentity.get(idKey)
-                        : imageByIdentity.get(skuKey);
-                    return imageUrl === undefined || imageUrl === product.imageUrl
-                        ? product
-                        : { ...product, imageUrl };
-                }));
-                productImagesLoadedRef.current = true;
-                return true;
-            })
-            .catch(() => false)
-            .finally(() => {
-                if (productImagesInFlightRef.current === request) {
-                    productImagesInFlightRef.current = null;
-                    if (productImagesRefreshPendingRef.current) {
-                        productImagesRefreshPendingRef.current = false;
-                        void ensureInventoryImages({ force: true });
-                    }
-                }
-            });
-        productImagesInFlightRef.current = request;
-        return request;
-    }, []);
+        return Promise.all(imagePromises).then((imageUrls) => new Map(ids.map((id, index) => [id, imageUrls[index] || ''])));
+    }, [flushProductImageQueue]);
 
      useEffect(() => {
         let isMounted = true;
@@ -587,8 +666,13 @@ export const InventoryProvider = ({ children }) => {
             void refreshInventory({ notifyTransitions: true });
             let payload = {};
             try { payload = JSON.parse(event?.data || '{}'); } catch { /* Ignore malformed event data. */ }
-            if (productImagesRequestedRef.current && ['product.created', 'product.updated'].includes(payload.reason)) {
-                void ensureInventoryImages({ force: true });
+            if (productImagesRequestedRef.current && payload.reason === 'product.updated' && payload.imageChanged === true) {
+                const changedCodes = new Set((Array.isArray(payload.productCodes) ? payload.productCodes : []).map((code) => String(code || '')));
+                const changedIds = new Set((Array.isArray(payload.productIds) ? payload.productIds : []).map((id) => String(id || '')));
+                inventoryRef.current
+                    .filter((product) => changedCodes.has(String(product.code || '')))
+                    .forEach((product) => changedIds.add(String(product.id || '')));
+                if (changedIds.size) void ensureInventoryImages({ productIds: [...changedIds], force: true });
             }
         };
 
@@ -1163,6 +1247,7 @@ export const InventoryProvider = ({ children }) => {
             logActivity,
             processedInventory,
             ensureInventoryImages,
+            productImageRevisions,
             logAction,
             handleResetHistory,
             categories,

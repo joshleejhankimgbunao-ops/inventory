@@ -6,6 +6,7 @@ import IdentifierChip from '../components/IdentifierChip';
 import ArchiveIcon from '../components/ArchiveIcon';
 import EditIcon from '../components/EditIcon';
 import TableActionButton from '../components/TableActionButton';
+import RemoteProductImage from '../components/RemoteProductImage';
 import ToolbarDropdown from '../components/ToolbarDropdown';
 import ProductAttributeFields from '../components/ProductAttributeFields';
 import ProductExpiryFields from '../components/ProductExpiryFields';
@@ -68,6 +69,7 @@ const ProductList = () => {
     const productImagePreviewCloseRef = useRef(null);
     const productSubmitInFlightRef = useRef(false);
     const productCreateRequestIdRef = useRef('');
+    const productImageEditRequestRef = useRef(0);
     const productArchiveInFlightRef = useRef(false);
     const { appSettings: settings, currentUserName, ROLES, isAdminOrAbove } = useAuth();
     const {
@@ -82,6 +84,7 @@ const ProductList = () => {
         retryInventory,
         isCategoriesLoading,
         categoriesError,
+        ensureInventoryImages,
     } = useInventory();
 
     const [searchTerm, setSearchTerm] = useState('');
@@ -943,6 +946,7 @@ const ProductList = () => {
 
     // Handlers
     const handleOpenAdd = () => {
+        productImageEditRequestRef.current += 1;
         productCreateRequestIdRef.current = '';
         setSellingUnitError('');
         setSupplierSearchQuery('');
@@ -963,6 +967,7 @@ const ProductList = () => {
     };
 
     const handleCloseProductForm = (familyKeyOverride = '') => {
+        productImageEditRequestRef.current += 1;
         const nextFamilyKey = typeof familyKeyOverride === 'string' && familyKeyOverride ? familyKeyOverride : variantFamilyKey;
         setIsModalOpen(false);
         setIsCategoryChangeOpen(false);
@@ -977,6 +982,7 @@ const ProductList = () => {
     };
 
     const handleOpenAddVariant = (family) => {
+        const imageRequestId = ++productImageEditRequestRef.current;
         productCreateRequestIdRef.current = '';
         setSellingUnitError('');
         setManagedFamilyKey(family.key);
@@ -998,9 +1004,23 @@ const ProductList = () => {
             attributes: productAttributeValues({}, family.attributeDefinitions),
         });
         setIsModalOpen(true);
+        const variantIds = (family.variants || []).map((variant) => String(variant.id || '')).filter(Boolean);
+        if (!family.sharedImageUrl && variantIds.length) {
+            void ensureInventoryImages({ productIds: variantIds }).then((images) => {
+                if (productImageEditRequestRef.current !== imageRequestId) return;
+                const sharedImages = [...new Set(variantIds.map((id) => String(images.get(id) || '')).filter(Boolean))];
+                if (sharedImages.length !== 1) return;
+                setFormData((current) => (
+                    current.code === initialFormState.code && !String(current.imageUrl || '').trim()
+                        ? { ...current, imageUrl: sharedImages[0] }
+                        : current
+                ));
+            });
+        }
     };
 
     const handleOpenEdit = (product) => {
+        const imageRequestId = ++productImageEditRequestRef.current;
         productCreateRequestIdRef.current = '';
         setSellingUnitError('');
         setSupplierSearchQuery(product.supplier || '');
@@ -1031,6 +1051,21 @@ const ProductList = () => {
             attributes: productAttributeValues(product, definitions),
         });
         setIsModalOpen(true);
+        const productId = String(product?.id || '').trim();
+        if (productId && !String(product.imageUrl || '').trim()) {
+            void ensureInventoryImages({ productIds: [productId] }).then((images) => {
+                if (productImageEditRequestRef.current !== imageRequestId) return;
+                const imageUrl = String(images.get(productId) || '');
+                setEditingProduct((current) => (
+                    String(current?.id || '') === productId ? { ...current, imageUrl } : current
+                ));
+                setFormData((current) => (
+                    String(current.code || '') === String(product.code || '') && !String(current.imageUrl || '').trim()
+                        ? { ...current, imageUrl }
+                        : current
+                ));
+            });
+        }
     };
 
     const handleOpenVariantEdit = (product, family) => {
@@ -1270,7 +1305,9 @@ const ProductList = () => {
             }
 
             const purchaseCostChanged = !purchaseCostMatches(formData.purchaseCost, editingProduct.purchaseCost);
-            const { sizeUnit: _su, purchaseCost: _purchaseCost, ...saveData } = formData;
+            const { sizeUnit: _su, purchaseCost: _purchaseCost, imageUrl: _imageUrl, ...saveData } = formData;
+            const submittedImageUrl = String(formData.imageUrl || '').trim();
+            const existingImageUrl = String(editingProduct.imageUrl || '').trim();
             const localUpdatedProduct = {
                 ...editingProduct,
                 ...saveData,
@@ -1278,7 +1315,6 @@ const ProductList = () => {
                 name: cleanedName,
                 brand: normalizedBrand,
                 color: normalizedColor,
-                imageUrl: String(formData.imageUrl || '').trim(),
                 size: finalSize,
                 price: Number(normalizedPrice),
                 ...(purchaseCostChanged ? { purchaseCost: normalizedPurchaseCost === '' ? null : Number(normalizedPurchaseCost) } : {}),
@@ -1286,6 +1322,8 @@ const ProductList = () => {
                 supplier: normalizedSupplier,
                 attributes: normalizedAttributeValues,
             };
+            if (submittedImageUrl || existingImageUrl) localUpdatedProduct.imageUrl = submittedImageUrl;
+            else delete localUpdatedProduct.imageUrl;
             localUpdatedProduct.status = deriveStatus(localUpdatedProduct);
 
             if (!editingProduct?.id) {
@@ -1327,7 +1365,7 @@ const ProductList = () => {
                     ].join(' ');
                     showToast('Product Not Saved', message, 'warning', 'product-conflict');
                     try {
-                        const remoteProducts = await listProductsApi();
+                        const remoteProducts = await listProductsApi({ includeImages: false });
                         if (Array.isArray(remoteProducts)) {
                             setInventory(remoteProducts);
                         }
@@ -1835,35 +1873,27 @@ const ProductList = () => {
                                         </td>
                                         {/* Photo */}
                                         <td className="px-3 py-1.5 align-middle whitespace-nowrap text-center border border-gray-200 dark:border-gray-700">
-                                            {family.representativeImageUrl ? (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => openProductImagePreview(family.imageProduct)}
-                                                    className={`group/photo mx-auto relative h-12 w-12 rounded-xl overflow-hidden border flex items-center justify-center transition-all hover:opacity-90 hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-300 ${
-                                                        isArchivedFamily
-                                                            ? 'bg-gray-50 border-gray-100 dark:bg-gray-800 dark:border-gray-700'
-                                                            : 'bg-gray-100 border-gray-200 dark:bg-gray-700 dark:border-gray-600'
-                                                    }`}
-                                                    aria-label={`Enlarge image for ${getProductDisplayName(product, customCategories)}`}
-                                                >
-                                                    <img
-                                                        src={family.representativeImageUrl}
-                                                        alt={getProductDisplayName(product, customCategories)}
-                                                        className={`h-full w-full object-cover transition-all duration-200 group-hover/photo:scale-110 group-hover/photo:opacity-35 group-hover/photo:blur-[1.5px] ${isArchivedFamily ? 'opacity-40 grayscale' : ''}`}
-                                                    />
+                                            <RemoteProductImage
+                                                product={family.imageProduct || product}
+                                                products={family.variants}
+                                                fit="cover"
+                                                onPreview={(event, imageProduct) => openProductImagePreview(imageProduct, false, event.currentTarget)}
+                                                alt={getProductDisplayName(product, customCategories)}
+                                                ariaLabel={`Enlarge image for ${getProductDisplayName(product, customCategories)}`}
+                                                className={`group/photo mx-auto h-12 w-12 rounded-xl border transition-all hover:opacity-90 hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-300 ${
+                                                    isArchivedFamily
+                                                        ? 'bg-gray-50 border-gray-100 dark:bg-gray-800 dark:border-gray-700'
+                                                        : 'bg-gray-100 border-gray-200 dark:bg-gray-700 dark:border-gray-600'
+                                                }`}
+                                                imageClassName={`transition-all duration-200 group-hover/photo:scale-110 group-hover/photo:opacity-35 group-hover/photo:blur-[1.5px] ${isArchivedFamily ? 'opacity-40 grayscale' : ''}`}
+                                                overlay={(
                                                     <div className="absolute inset-0 flex items-center justify-center pointer-events-none bg-black/0 opacity-0 transition-all duration-150 group-hover/photo:bg-black/45 group-hover/photo:opacity-100">
-                                                        <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-white/92 text-gray-900 shadow-md ring-1 ring-black/5">
-                                                            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 3H3v5M3 3l6 6M16 3h5v5m0-5l-6 6M8 21H3v-5m0 5l6-6M16 21h5v-5m0 5l-6-6"></path>
-                                                            </svg>
+                                                        <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-white/92 text-gray-900 shadow-md ring-1 ring-black/5" aria-hidden="true">
+                                                            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 3H3v5M3 3l6 6M16 3h5v5m0-5l-6 6M8 21H3v-5m0 5l6-6M16 21h5v-5m0 5l-6-6" /></svg>
                                                         </span>
                                                     </div>
-                                                </button>
-                                            ) : (
-                                                <div className="mx-auto h-12 w-12 rounded-xl border border-dashed border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 flex items-center justify-center text-[11px] font-semibold text-gray-400 dark:text-gray-500">
-                                                    IMG
-                                                </div>
-                                            )}
+                                                )}
+                                            />
                                         </td>
                                         {/* Product family */}
                                         <td className="px-3 py-1.5 align-middle text-center border border-gray-200 dark:border-gray-700">
@@ -1933,7 +1963,6 @@ const ProductList = () => {
                     onEditVariant={handleOpenVariantEdit}
                     onToggleArchive={(variant) => toggleArchive(variant, { isVariant: true })}
                     onArchiveSelected={archiveSelectedVariants}
-                    getProductImageUrl={getProductImageUrl}
                     onPreviewVariantImage={(variant, trigger) => openProductImagePreview(variant, true, trigger)}
                 />
             )}

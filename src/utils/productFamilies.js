@@ -58,20 +58,24 @@ export const getMatchingFamilyVariants = (family, query) => {
     return family.variants.filter((_, index) => searchTexts[index].includes(normalizedQuery));
 };
 
-export const getFamilyGeneralImageUrl = (variants) => (Array.isArray(variants) ? variants : [])
+export const getFamilyImageCandidates = (variants) => (Array.isArray(variants) ? variants : [])
     .map((variant, index) => {
         const createdAt = Date.parse(variant?.createdAt || '');
         const id = String(variant?.id || '');
         const fallbackCreatedAt = /^[a-f\d]{24}$/i.test(id) ? parseInt(id.slice(0, 8), 16) * 1000 : Infinity;
         return {
-            imageUrl: String(variant?.imageUrl || '').trim(),
+            variant,
             createdAt: Number.isFinite(createdAt) ? createdAt : fallbackCreatedAt,
             id: /^[a-f\d]{24}$/i.test(id) ? id.toLowerCase() : '',
             index,
         };
     })
     .sort((left, right) => left.createdAt - right.createdAt || (left.id && right.id ? left.id.localeCompare(right.id) : 0) || left.index - right.index)
-    .find(({ imageUrl }) => imageUrl)?.imageUrl || '';
+    .map(({ variant }) => variant);
+
+export const getFamilyGeneralImageUrl = (variants) => getFamilyImageCandidates(variants)
+    .map((variant) => String(variant?.imageUrl || '').trim())
+    .find(Boolean) || '';
 
 export const groupProductsIntoFamilies = (products, categories = []) => {
     const groups = new Map();

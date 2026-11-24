@@ -63,7 +63,7 @@ import { getAttentionRowClass } from '../utils/tableStatusStyle';
 import { normalizeHumanReadable } from '../utils/textNormalization';
 import { getTransactionReferenceNumberError, normalizeTransactionReferenceInput } from '../utils/transactionReference';
 import { buildSpecialOrderFormalQuotationModel } from '../utils/formalQuotation';
-import { inventoryProductPhotosForSelection, isProductImageReference, quotationPhotoSelections } from '../utils/specialOrderProductImages.mjs';
+import { inventoryProductPhotosForSelection, isProductImageReference, productImageEntries, quotationPhotoSelections } from '../utils/specialOrderProductImages.mjs';
 import { acceptedQuotationTransaction, approvedSpecialOrderTaxTreatment, createQuotationDraft, createQuotationRequestGate, quotationCapabilities, quotationDraftSummary, quotationOrderView } from '../utils/specialOrderQuotation';
 import { canViewSpecialOrderTransaction, getPhaseFiveTableNextAction } from '../utils/specialOrderTableActions';
 import logo from '../assets/logo.png';
@@ -578,7 +578,7 @@ const LocalItemPhoto = ({ photo }) => {
   return imageSrc ? <img src={imageSrc} alt={photo.name || 'Product photo'} className="h-12 w-12 rounded-md border border-slate-200 bg-slate-50 object-contain" /> : null;
 };
 
-const ItemEditor = ({ item, index, itemCount, disabled, errors = {}, registerFieldRef, suppliers, isSuppliersLoading, inventory, categories = [], userRole, expiryBatchInfoByItemId = {}, onRetryExpiryInfo, onChange, onReplace, onRemove }) => {
+const ItemEditor = ({ item, index, itemCount, disabled, errors = {}, registerFieldRef, suppliers, isSuppliersLoading, inventory, categories = [], userRole, expiryBatchInfoByItemId = {}, onRetryExpiryInfo, onChange, onReplace, onSelectInventoryProduct, onRemove }) => {
   const itemId = String(item.itemId || item.__rowId);
   const itemFieldPrefix = `items.${itemId}`;
   const expiryInfo = expiryBatchInfoByItemId[itemId] || {};
@@ -608,7 +608,7 @@ const ItemEditor = ({ item, index, itemCount, disabled, errors = {}, registerFie
       <div className="mb-3 inline-flex rounded-lg border border-slate-200 bg-slate-100 p-1" role="group" aria-label={`Item ${index + 1} source`}>
         {[['custom', 'Custom Product'], ['inventory', 'Existing Product']].map(([type, label]) => <button key={type} type="button" disabled={disabled} aria-pressed={item.itemType === type} onClick={() => { if (item.itemType !== type) onReplace(itemId, { ...createFormItem(), itemId: item.itemId, __rowId: item.__rowId, itemType: type, quantity: item.quantity }); }} className={`min-h-8 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-60 ${item.itemType === type ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-600 hover:bg-white hover:text-slate-900'}`}>{label}</button>)}
       </div>
-      {item.itemType === 'inventory' && <div className="mb-3"><span className={QUOTATION_FIELD_LABEL_CLASS}>Select exact inventory SKU <span className="text-rose-700">*</span></span><InventorySkuPicker products={inventory} categories={categories} selectedSku={item.sku} disabled={disabled} name={`${itemFieldPrefix}.sku`} validationKey={`${itemFieldPrefix}.sku`} inputRef={inputProps('sku').ref} error={errors.sku} errorId={fieldId('sku')} onSelect={(product) => onReplace(itemId, { ...item, ...inventoryItemFromProduct(product, categories), photos: inventoryProductPhotosForSelection(item.photos, item.inventoryProduct, product) })} /><FieldError id={fieldId('sku')} message={errors.sku} /></div>}
+      {item.itemType === 'inventory' && <div className="mb-3"><span className={QUOTATION_FIELD_LABEL_CLASS}>Select exact inventory SKU <span className="text-rose-700">*</span></span><InventorySkuPicker products={inventory} categories={categories} selectedSku={item.sku} disabled={disabled} name={`${itemFieldPrefix}.sku`} validationKey={`${itemFieldPrefix}.sku`} inputRef={inputProps('sku').ref} error={errors.sku} errorId={fieldId('sku')} onSelect={(product) => onSelectInventoryProduct(itemId, item, product)} /><FieldError id={fieldId('sku')} message={errors.sku} /></div>}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-12">
         <label className="sm:col-span-2 md:col-span-6">
           <span className={QUOTATION_FIELD_LABEL_CLASS}>Item name <span className="text-rose-700">*</span></span>
@@ -739,7 +739,7 @@ const ItemEditor = ({ item, index, itemCount, disabled, errors = {}, registerFie
 
 const SpecialOrders = () => {
   const navigate = useNavigate();
-  const { logActivity, setTransactions, inventory, categories = [] } = useInventory();
+  const { logActivity, setTransactions, inventory, categories = [], ensureInventoryImages } = useInventory();
   const { appSettings, currentUserName, userRole, currentAuthUserId } = useAuth();
   const [orders, setOrders] = useState([]);
   const [initialLoading, setInitialLoading] = useState(true);
@@ -796,6 +796,7 @@ const SpecialOrders = () => {
   const [imageError, setImageError] = useState('');
   const imageRequestRef = useRef(0);
   const [form, setForm] = useState(createEmptyForm);
+  const loadingProductImages = form.items.some((item) => item.productImageRequest);
   const initialFormSnapshotRef = useRef('');
   const formDraftRef = useRef(form);
   formDraftRef.current = form;
@@ -1505,6 +1506,7 @@ const SpecialOrders = () => {
 
   const addItemRow = () => {
     const currentItems = formDraftRef.current.items || [];
+    if (currentItems.some((item) => item.productImageRequest)) return;
     const currentItem = currentItems[currentItems.length - 1];
     if (!currentItem) {
       const newItem = createFormItem();
@@ -1637,6 +1639,43 @@ const SpecialOrders = () => {
     }
   };
 
+  const selectInventoryProductForQuotation = (itemId, item, product) => {
+    const id = String(product?.id || product?._id || '');
+    const selectedProduct = { ...product, id };
+    const isNewSelection = id !== String(item.inventoryProduct || '');
+    if (!isNewSelection && item.productImageRequest) return;
+    const photos = inventoryProductPhotosForSelection(item.photos, item.inventoryProduct, selectedProduct);
+    const productImageRequest = id && isNewSelection && !productImageEntries(selectedProduct).length
+      ? Symbol('quotation product image request')
+      : null;
+    replaceItemRow(itemId, {
+      ...item,
+      ...inventoryItemFromProduct(selectedProduct, categories),
+      photos,
+      productImageRequest,
+    });
+    if (!productImageRequest) return;
+
+    void ensureInventoryImages({ productIds: [id] }).then((images) => {
+      const imageUrl = String(images.get(id) || '');
+      const loadedPhotos = productImageEntries({ ...selectedProduct, imageUrl });
+      setForm((previous) => {
+        let changed = false;
+        const items = (previous.items || []).map((current) => {
+          if (String(current.itemId || current.__rowId) !== String(itemId)
+            || current.productImageRequest !== productImageRequest) return current;
+          changed = true;
+          return {
+            ...current,
+            productImageRequest: null,
+            photos: [...loadedPhotos.slice(0, Math.max(0, 3 - current.photos.length)), ...current.photos],
+          };
+        });
+        return changed ? { ...previous, items } : previous;
+      });
+    });
+  };
+
   const validateForm = (items) => {
     const errors = { items: {} };
     let firstInvalidField = '';
@@ -1670,7 +1709,7 @@ const SpecialOrders = () => {
 
   const saveForm = async (event) => {
     event.preventDefault();
-    if (submitInFlightRef.current) return;
+    if (submitInFlightRef.current || loadingProductImages) return;
     const normalizedItems = (form.items || []).map((item) => ({
       ...item,
       purchaseCost: item.purchaseCost === '' ? '' : formatMoneyInput(item.purchaseCost),
@@ -2728,11 +2767,11 @@ const SpecialOrders = () => {
                       <h3 className="text-sm font-semibold text-slate-900">Item Details</h3>
                       <p className="mt-0.5 text-xs text-slate-600">{formSummary.itemCount} item{formSummary.itemCount === 1 ? '' : 's'} in this order</p>
                     </div>
-                    <button ref={addItemButtonRef} type="button" onClick={addItemRow} disabled={isSubmitting} aria-disabled={!canAddAnotherItem || isSubmitting} aria-label={canAddAnotherItem ? 'Add Item' : 'Add Item; complete the current item first'} className={`${QUOTATION_FORM_COMPACT_PRIMARY_BUTTON_CLASS}${canAddAnotherItem ? '' : ' cursor-not-allowed opacity-50'}`}>Add Item</button>
+                    <button ref={addItemButtonRef} type="button" onClick={addItemRow} disabled={isSubmitting || loadingProductImages} aria-disabled={!canAddAnotherItem || isSubmitting || loadingProductImages} aria-label={canAddAnotherItem ? 'Add Item' : 'Add Item; complete the current item first'} className={`${QUOTATION_FORM_COMPACT_PRIMARY_BUTTON_CLASS}${canAddAnotherItem && !loadingProductImages ? '' : ' cursor-not-allowed opacity-50'}`}>Add Item</button>
                   </div>
                   <fieldset className="space-y-3 disabled:opacity-60" disabled={isSubmitting}>
                     {[...(form.items || [])].reverse().map((item, index) => (
-                      <ItemEditor key={item.itemId || item.__rowId} item={item} index={index} itemCount={(form.items || []).length} disabled={isSubmitting} errors={formErrors.items?.[String(item.itemId || item.__rowId)]} registerFieldRef={registerQuotationFormField} suppliers={supplierPartners} isSuppliersLoading={isSuppliersLoading} inventory={inventory} categories={categories} userRole={userRole} expiryBatchInfoByItemId={expiryBatchInfoByItemId} onRetryExpiryInfo={loadExpiryBatchInfo} onChange={updateItemRow} onReplace={replaceItemRow} onRemove={requestRemoveItemRow} />
+                      <ItemEditor key={item.itemId || item.__rowId} item={item} index={index} itemCount={(form.items || []).length} disabled={isSubmitting} errors={formErrors.items?.[String(item.itemId || item.__rowId)]} registerFieldRef={registerQuotationFormField} suppliers={supplierPartners} isSuppliersLoading={isSuppliersLoading} inventory={inventory} categories={categories} userRole={userRole} expiryBatchInfoByItemId={expiryBatchInfoByItemId} onRetryExpiryInfo={loadExpiryBatchInfo} onChange={updateItemRow} onReplace={replaceItemRow} onSelectInventoryProduct={selectInventoryProductForQuotation} onRemove={requestRemoveItemRow} />
                     ))}
                   </fieldset>
                 </section>
@@ -2755,7 +2794,7 @@ const SpecialOrders = () => {
                 </section>
               </div>
               <div className="flex shrink-0 flex-col gap-2 border-t border-slate-200 bg-white px-4 py-3 sm:flex-row sm:justify-end sm:px-5">
-                <button type="submit" disabled={isSubmitting} className={`${QUOTATION_FORM_PRIMARY_BUTTON_CLASS} w-full sm:w-auto`}>{isSubmitting ? 'Generating...' : 'Generate Quotation'}</button>
+                <button type="submit" disabled={isSubmitting || loadingProductImages} className={`${QUOTATION_FORM_PRIMARY_BUTTON_CLASS} w-full sm:w-auto`}>{isSubmitting ? 'Generating...' : loadingProductImages ? 'Loading Product Images...' : 'Generate Quotation'}</button>
               </div>
             </form>
           </div>

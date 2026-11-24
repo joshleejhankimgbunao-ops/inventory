@@ -7,6 +7,7 @@ import { formatExpiryDateLabel, getManilaBusinessDate, isValidExpiryDate } from 
 import { getBatchVerificationException } from '../utils/productExpiryPresentation';
 import { getProductDisplayName, hasStoredProductName } from '../utils/productDisplayName';
 import ColorSwatch from './ColorSwatch';
+import RemoteProductImage from './RemoteProductImage';
 
 const hasValue = (value) => value !== null && value !== undefined && String(value).trim() !== '';
 
@@ -59,36 +60,15 @@ const BatchStatusBadge = ({ status }) => {
 };
 
 const ProductImage = ({ product, categories = [], onPreview }) => {
-  const imageUrl = String(product?.imageUrl || '').trim();
-  const [failedImageUrl, setFailedImageUrl] = useState('');
   const thumbnailClassName = 'h-28 w-28 shrink-0 overflow-hidden rounded-xl border border-slate-200 bg-slate-50';
-
-  if (imageUrl && failedImageUrl !== imageUrl) {
-    return (
-      <button
-        type="button"
-        onClick={(event) => onPreview?.(event, product)}
-        className={`${thumbnailClassName} cursor-zoom-in transition-all hover:opacity-90 hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-slate-900`}
-        aria-label={`Enlarge image for ${getProductDisplayName(product, categories)}`}
-      >
-        <img
-          src={imageUrl}
-          alt={getProductDisplayName(product, categories)}
-          onError={() => setFailedImageUrl(imageUrl)}
-          className="h-full w-full object-contain"
-        />
-      </button>
-    );
-  }
-
   return (
-    <div className={thumbnailClassName}>
-      <div className="flex h-full w-full items-center justify-center">
-        <svg className="h-7 w-7 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M4 16l4-4a3 3 0 014 0l4 4m-2-2l2-2a3 3 0 014 0l2 2m-14 4h16" />
-        </svg>
-      </div>
-    </div>
+    <RemoteProductImage
+      product={product}
+      alt={getProductDisplayName(product, categories)}
+      ariaLabel={`Enlarge image for ${getProductDisplayName(product, categories)}`}
+      onPreview={onPreview}
+      className={`${thumbnailClassName} cursor-zoom-in transition-all hover:opacity-90 hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-slate-900`}
+    />
   );
 };
 

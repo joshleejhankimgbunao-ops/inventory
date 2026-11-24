@@ -235,12 +235,13 @@ test('Manage Variants shows each SKU photo first and reuses the focused image pr
   const productListSource = fs.readFileSync(path.join(__dirname, '../../src/pages/ProductList.jsx'), 'utf8');
 
   assert.match(modalSource, /aria-label="Select all eligible visible variants"[\s\S]*?<th className="w-16 min-w-16 whitespace-nowrap border border-gray-700 px-3 py-2 text-center text-\[11px\] font-semibold">Photo<\/th>\s*\{family\.attributeDefinitions\.map/);
-  assert.match(modalSource, /imageUrl=\{getProductImageUrl\(variant\)\}/);
-  assert.match(modalSource, /onClick=\{\(event\) => onPreview\(variant, event\.currentTarget\)\}/);
-  assert.match(modalSource, /onError=\{\(\) => setFailedUrl\(imageUrl\)\}/);
+  assert.match(modalSource, /<RemoteProductImage\s+product=\{variant\}/);
+  assert.match(modalSource, /onPreview=\{\(event, selectedVariant\) => onPreview\(selectedVariant, event\.currentTarget\)\}/);
+  const imageSource = fs.readFileSync(path.join(__dirname, '../../src/components/RemoteProductImage.jsx'), 'utf8');
+  assert.match(imageSource, /onError=\{\(\) => setFailedImageUrl\(visibleImageUrl\)\}/);
   assert.match(modalSource, /No photo/);
   assert.match(modalSource, /overflow-x-auto/);
-  assert.match(modalSource, /family\.attributeDefinitions\.length \+ 6 \+ \(canManage \? 2 : 0\)/);
+  assert.match(modalSource, /family\.attributeDefinitions\.length \+ 7 \+ \(canManage \? 2 : 0\)/);
   assert.match(productListSource, /onPreviewVariantImage=\{\(variant, trigger\) => openProductImagePreview\(variant, true, trigger\)\}/);
   assert.match(productListSource, /productImagePreviewCloseRef\.current\?\.focus\(\)/);
   assert.match(productListSource, /productImagePreviewTriggerRef\.current\?\.focus\?\.\(\)/);
@@ -287,7 +288,7 @@ test('family grouping retains distinct saved images on individual variants', asy
 });
 
 test('General image follows creation order and falls back to the earliest imaged variant', async () => {
-  const { getFamilyGeneralImageUrl } = await loadHelpers();
+  const { getFamilyGeneralImageUrl, getFamilyImageCandidates } = await loadHelpers();
   const modalSource = fs.readFileSync(path.join(__dirname, '../../src/components/ProductFamilyModal.jsx'), 'utf8');
   const apiSource = fs.readFileSync(path.join(__dirname, '../../src/services/inventoryApi.js'), 'utf8');
   const variants = [
@@ -304,8 +305,8 @@ test('General image follows creation order and falls back to the earliest imaged
     { id: '665000000000000000000001', imageUrl: 'earlier.jpg' },
   ]), 'earlier.jpg');
   assert.match(apiSource, /createdAt: product\.createdAt \|\| null/);
-  assert.match(modalSource, /const generalImageUrl = getFamilyGeneralImageUrl\(family\.variants\)/);
-  assert.match(modalSource, /generalImageUrl && failedGeneralImageUrl !== generalImageUrl/);
+  assert.deepEqual(getFamilyImageCandidates(variants).map(({ code }) => code), ['B-FIRST', 'C-MIDDLE', 'A-NEW']);
+  assert.match(modalSource, /products=\{getFamilyImageCandidates\(family\.variants\)\}/);
 });
 
 test('outer Product Master gives the family variant count its own column', () => {
